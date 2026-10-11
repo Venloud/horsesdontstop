@@ -52,6 +52,16 @@ and [full build log](https://github.com/Venloud/claudevandam/blob/main/HORSESDON
 - [x] Any first actual paper trade requires reviewing its **specific**
       ticker, size, capped entry, stop and live market state.
 
+## Phase 0 research preregistration (owner-approved, merged 2026-10-11)
+
+- [x] Owner approved **seven** candidates including `overnight_drift` and the **exact 21 parameter variants**: [`docs/PREREGISTRATION.md`](PREREGISTRATION.md), merged via [PR #9](https://github.com/Venloud/horsesdontstop/pull/9).
+- [x] Frozen **1% maximum risk for order-placing**, **15% historical max drawdown**, **30bps adverse slippage per side**, **60bps-per-side stress**, **300 sufficiently independent events** where possible, otherwise **10-year low-frequency exception**. No scored Phase 3 runs yet.
+- [x] Frozen **same actual deposits on the same dates** for active strategy vs index benchmark; do not invent $100/mo hypothetical funding. Alternative "tie with lower drawdown" is not an allowed pass until a dated owner-approved quantitative rule exists.
+- [x] Recovered and archived **80 actual previously inspected exploratory trials** from [original GitHub run 38108710763](https://github.com/Venloud/horsesdontstop/actions/runs/38108710763): [`research/TRIAL_LEDGER.csv`](../research/TRIAL_LEDGER.csv). These are NOT independent confirmation data.
+- [x] Phase 0 integrity tests plus existing suite [225 passed](https://github.com/Venloud/horsesdontstop/actions/runs/38125009160) before PR #9 merge. No change to broker order permissions.
+- [ ] **Phase 2 prerequisite before scored Phase 3:** precommit dataset/version/hash and point-in-time membership, strategy-specific universe, exact discovery/holdout/embargo dates, seeds/bootstrap blocks, matched-deposit conventions and fees; inventory earlier five-stock strategy attempts in historical ledger. Missing manifest means `preregistration_incomplete`, **not** permission to run scored tests.
+- [ ] Implement and unit-test the **three new research-only candidate strategies** and statistical comparison harness without connecting order submission code or changing production Neon controls.
+
 ## Completed — research and cloud foundations
 
 - [x] Connected GitHub repo and read-only Alpaca PAPER credentials.
