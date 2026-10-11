@@ -51,7 +51,7 @@ def _safe_asset(root: Path, path_text: Any) -> Path | None:
     if not isinstance(path_text, str) or not path_text:
         return None
     rel = Path(path_text)
-    if (rel.is_absolute() or rel.parts[0] != "research"
+    if (rel.is_absolute() or not rel.parts or rel.parts[0] != "research"
             or ".." in rel.parts or any(p in (".", "") for p in rel.parts)):
         return None
     root = root.resolve()
