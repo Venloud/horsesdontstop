@@ -1,7 +1,4 @@
 """No-network tests for the production executor authentication preflight."""
-from dataclasses import replace
-import os
-
 import pytest
 
 from bot.paper_executor_preflight import inspect_executor, main
@@ -109,7 +106,7 @@ def test_permission_failure_blocks_before_database_count_query():
 def test_main_rejects_missing_secret(monkeypatch, capsys):
     monkeypatch.delenv("PAPER_EXECUTOR_DSN", raising=False)
     assert main() == 2
-    assert "ZERO" not in capsys.readouterr().err.upper() or True
+    assert "missing" in capsys.readouterr().err.lower()
 
 
 def test_main_redacts_bad_dsn_and_errors(monkeypatch, capsys):
