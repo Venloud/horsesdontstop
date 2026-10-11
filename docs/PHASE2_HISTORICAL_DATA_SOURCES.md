@@ -126,3 +126,62 @@ paper/live strategy has earned money.** The original 80 trial ledger
 remains marked `legacy_exploratory_preinspected`. Production Neon
 kill switch TRUE, submissions FALSE and hard-coded order release
 FALSE remain untouched.
+
+
+## QuantConnect FREE cloud notebook: direct owner-observed history and corporate actions (2026-10-11)
+
+**Observation method:** owner manually ran `research.ipynb` in the
+FREE QuantConnect Cloud project `HorsesDontStop-Research` and provided
+screenshots of outputs. **These are directly observed sample results,
+not GitHub CI verification, an exportable local dataset, or a scored
+backtest.** No QuantConnect account credentials or local OHLCV prices
+were sent into the GitHub repository.
+
+- **SPY** January 2012: 20 daily bars; January 2016: 19;
+  January 2022: 20. **AAPL** returned 20, 19, 20 bars for
+  those same samples. `QuantBook.history` used daily resolution.
+- **Continuous SPY history:** `2012-01-01` to `2023-01-01`
+  returned **2,768 daily bars**; first **2012-01-03**, last
+  **2022-12-30**. Annual counts: 2012 **250**, 2013 **252**,
+  2014 **252**, 2015 **252**, 2016 **252**, 2017 **251**,
+  2018 **251**, 2019 **252**, 2020 **253**, 2021 **252**,
+  2022 **251**. These 11 consecutive calendar years of SPY
+  coverage are demonstrated for this research kernel, NOT that
+  10 years of point-in-time membership exist for every security.
+- **FRC** June 2022 returned **21 daily bars**.
+  Historical `qb.history(Delisting, FRC, 2023-04-01,
+  2023-07-01)` returned **WARNING 2023-05-02** and
+  **DELISTED 2023-05-03**. This proves accessibility of
+  *this one ticker's* delisting events, not universe-wide
+  survivorship freedom.
+- **AAPL** 2020 split-event query returned **WARNING 2020-08-28**
+  and **SPLIT_OCCURRED 2020-08-31**, factor **0.25**.
+- **SPY** 2022 dividend events: **2022-03-18 $1.37**,
+  **2022-06-17 $1.58**, **2022-09-16 $1.60**,
+  **2022-12-16 $1.78**. These are observed API output
+  distributions; dividend-adjusted benchmark calculations and
+  historical price normalization remain unverified.
+
+**Implication:** FREE QuantConnect *cloud* research demonstrably
+exposes materially older equity bars plus selected historical
+delisting/split/dividend events than the specific free IEX Alpaca
+2016 probe. It is promising for a **separately executed,
+survivorship-aware research study within QuantConnect**. It does
+NOT grant rights to redistribute vendor data or permit us to
+mark the local `phase2_manifest.json` as frozen/complete.
+Point-in-time universe construction, full sample verification,
+corporate-action treatment, fill modeling, calibration and a
+**never-inspected** future holdout remain prerequisites. Previous
+owner experiments consumed only read-only QuantBook history;
+no orders, deployments or broker integrations.
+
+**Workflow improvement:** After five sequential notebook tests,
+the owner reported that screenshot-by-screenshot interaction
+was too slow. **Stop requesting screenshots after every small
+query.** Plan a single validated batch script within the
+QuantConnect cloud research notebook for the next *meaningful*
+multi-security universe/corporate-action check, or continue
+reproducible offline development in GitHub between human sessions.
+Never run scored Phase 3 tests, enable cloud billing or connect
+broker credentials simply to speed up this process.
+
