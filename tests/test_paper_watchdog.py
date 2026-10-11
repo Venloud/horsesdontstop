@@ -27,9 +27,10 @@ class FakeJournal:
         assert limit == 501
         return list(self.intents)
 
-    def read_equity_references(self, start_utc):
+    def read_equity_references(self, start_utc, as_of_utc):
         self.calls.append("read_equity_references")
         assert start_utc.tzinfo is not None
+        assert as_of_utc.tzinfo is not None
         return self.start, self.peak
 
     def reserve_intent(self, *_):
