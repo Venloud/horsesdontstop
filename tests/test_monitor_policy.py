@@ -161,3 +161,24 @@ def test_no_secrets_in_exception_alert():
     assert "password" not in a.summary.lower()
     assert "dsn" not in a.summary.lower()
     assert a.observed_at_utc is None
+
+
+@pytest.mark.parametrize("change", [
+    lambda p: p["reconciliation"].update({"unresolved_journal_intents": 1}),
+    lambda p: p["reconciliation"].update({"uncovered_symbols": ["F"]}),
+    lambda p: p["reconciliation"].update({"blockers": ["not_reconciled"]}),
+])
+def test_contradictory_consistent_report_is_critical(change):
+    p = clean_report()
+    change(p)
+    report = assess_read_only_report(p, now=NOW)
+    assert report.level == "critical"
+    assert report.code == "unverifiable"
+
+
+def test_missing_reconciliation_fields_refuse_idle():
+    for missing in ("unresolved_journal_intents", "uncovered_symbols"):
+        p = clean_report()
+        del p["reconciliation"][missing]
+        report = assess_read_only_report(p, now=NOW)
+        assert report.level == "critical"
