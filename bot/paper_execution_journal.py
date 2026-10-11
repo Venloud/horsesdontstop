@@ -57,8 +57,8 @@ class PaperExecutorJournal(PostgresPaperJournal):
         if (entry <= 0 or stop <= 0 or stop >= entry
                 or budget <= 0 or cost <= 0
                 or expected_loss < 0 or expected_loss > budget
-                or cost + .02 < entry * plan.whole_shares
-                or expected_loss + .02 <
+                or cost + money('0.02') < entry * plan.whole_shares
+                or expected_loss + money('0.02') <
                    (entry - stop) * plan.whole_shares):
             raise TradeBlocked("Unprotected or over-budget order intent")
 
