@@ -135,7 +135,7 @@ def short_term_reversal_signal(
     latest = completed_bars[-1].close
     previous = completed_bars[-2].close
     rsi = _wilder_rsi2(completed_bars)
-    if (rsi is None or latest <= previous or latest <= current_sma
+    if (rsi is None or latest >= previous or latest <= current_sma
             or current_sma <= previous_sma or rsi > rsi_threshold):
         return None
     return ReversalSignal(
