@@ -110,8 +110,13 @@ Merged from `experiment/paper-broker-lifecycle-v1` via [PR #7](https://github.co
       `bot/paper_execution_journal.py::record_opening_equity` uses
       executor-role permission attestation, Neon server time, exclusive
       transaction advisory lock, and first existing snapshot check.
-      Only within **09:30:00–09:34:59 New York time** and only if
-      `kill_switch_active=TRUE`, `submissions_enabled=FALSE`.
+      Only within **09:30:00–09:34:59 New York time**.
+      In **DRAFT safety PR #11**, sampling is independent of the
+      existing switch values so it can still record risk baselines
+      after a future authorized PAPER launch, but it **never
+      modifies a switch or sends an order**. The current
+      production switches remain kill TRUE/submissions FALSE;
+      no post-launch real session has been tested.
 - [x] Implemented scheduled equity sampler:
       `bot/paper_equity_open.py` reads Alpaca **PAPER** account/clock,
       `.github/workflows/paper-opening-equity.yml` triggers at
