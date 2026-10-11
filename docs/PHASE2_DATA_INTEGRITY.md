@@ -42,6 +42,37 @@ Running this now must exit **2** with `PHASE 2 BLOCKED`, which is
 the **correct and expected safe result**, not a broken workflow.
 
 
+## Semantic CSV validation, staged in draft PR #10
+
+In addition to source paths, headers and SHA-256, the offline gate now
+invokes `bot/phase2_semantic_validation.py` on every verified input.
+The code reads the *actual pinned local CSV contents*, rejecting:
+
+- Missing SPY price history, duplicate or out-of-order ticker sessions,
+  nonfinite/negative prices, inconsistent OHLC, negative or fractional
+  share volume and malformed CSV fields.
+- Unsorted or repeated total-return benchmark dates, zero/nonfinite
+  total-return indices and lack of a common date with SPY price bars.
+- Missing stable security/source/snapshot identifiers, duplicate security
+  per snapshot, unparseable knowledge timestamps, invalid eligibility
+  states and incomplete membership snapshots.
+- Duplicate/unsorted owner cash-transfer dates, nonfinite transfer values
+  and fractions of a U.S. cent. **A header-only contribution CSV is
+  valid for zero actual contributions**; do not invent monthly deposits
+  merely to populate the file.
+
+Every failure is returned as a safe blocker like
+`asset_semantic_invalid:bars`, never ignored because a hash matched.
+The synthetic fixture tests include broken data with *recalculated*
+matching SHA-256 to prove it cannot pass by relying on checksums alone.
+
+**Limits:** These checks do not certify genuine vendor publication time,
+license to export data, complete delistings, adjustment quality, exact
+real-world cash deposits, exchange-session completeness, or a pristine
+future holdout. Review of those sources remains mandatory and the
+production Phase 2 manifest is still **DRAFT/blocked**. No scoring or
+brokerage actions are authorized by passing a semantic parser.
+
 ## Phase 2 historical stock eligibility: no hindsight list
 
 A new **research-only historical universe selector** now lives in
@@ -135,15 +166,16 @@ changes.
   and actions). Fetch and hash genuine research artifacts.
   Large/broker-private datasets need managed/private storage,
   not public GitHub uploads.
-- [ ] Independently validate the actual bars, benchmark total-return
+- [ ] Independently source-verify the actual bars, benchmark total-return
   histories, symbol membership, corporate actions, duplicated bars
-  and missing sessions. The current gate checks **file hash and
-  CSV envelope only**; a later *semantic* parser must check values.
+  and missing sessions. The new parser checks basic **OHLCV, IDs, timestamps, dates,
+  and cash precision**. Still independently audit missing sessions,
+  real vendor history, dividends, split adjustments and PIT truth.
 - [ ] Decide/record exact discovery windows and **untouched**
   prospective holdout start/end, embargo, seed values,
   bootstrap block lengths, and actual matching deposit convention
   **BEFORE inspecting any scored candidate result**.
-- [ ] Implement all three research-only candidates:
+- [x] Implement pure offline signals for all three research-only candidates:
   `short_term_reversal`, `etf_dual_momentum`,
   `overnight_drift`, each with separate strategy-specific
   cash/entry/exit modeling. Overnight drift requires
