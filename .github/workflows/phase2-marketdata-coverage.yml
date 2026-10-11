@@ -1,15 +1,6 @@
 name: Phase 2 Historical Data Coverage (GET Only)
 on:
   workflow_dispatch:
-  # One-time probe on this development branch only; remove this
-  # push trigger after collecting the first credential-safe evidence.
-  push:
-    branches:
-      - phase2/dataset-integrity-gates-20261011
-    paths:
-      - .github/workflows/phase2-marketdata-coverage.yml
-      - bot/phase2_alpaca_coverage_probe.py
-      - tests/test_phase2_alpaca_coverage_probe.py
 
 permissions:
   contents: read
