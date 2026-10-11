@@ -1,0 +1,15 @@
+# Only code and dependency definitions are ever passed to the image.
+*
+!requirements.txt
+!bot/
+!bot/**
+
+# Defense in depth, even when the allowlist above changes.
+.env
+.env.*
+.neon
+node_modules
+.state/
+*.sqlite3
+**/__pycache__/
+**/*.pyc
