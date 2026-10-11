@@ -39,7 +39,7 @@ def opening_window(now: datetime):
     return opened_at
 
 
-def snapshot_one_opening(trading, journal, *, now=None):
+def snapshot_one_opening(trading, journal, *, now=None, after_read_now=None):
     now = now or datetime.now(timezone.utc)
     started = opening_window(now)
     local_day = now.astimezone(NY).date().isoformat()
@@ -61,7 +61,7 @@ def snapshot_one_opening(trading, journal, *, now=None):
         raise TradeBlocked("Invalid PAPER account cash/equity")
     # External requests can be delayed; never use an old 09:30 quote
     # to backfill a missed five-minute baseline.
-    if opening_window(datetime.now(timezone.utc)) is None:
+    if opening_window(after_read_now or datetime.now(timezone.utc)) is None:
         raise TradeBlocked("Opening snapshot window expired during account read")
     inserted = journal.record_opening_equity(
         session_open_utc=started, equity=amount, cash=cash)
