@@ -27,7 +27,10 @@ class Cursor:
     def execute(self, sql, params=None):
         self.data["queries"].append((sql, params))
         if sql.startswith("SELECT current_user"):
-            self.last = self.data["permissions"]
+            if "'public.paper_worker_heartbeat','SELECT'" in sql:
+                self.last = self.data["reader_permissions"]
+            else:
+                self.last = self.data["permissions"]
         elif sql.startswith("SET LOCAL statement_timeout"):
             self.last = None
         elif sql.startswith("SELECT clock_timestamp()"):
@@ -75,9 +78,15 @@ def lease(monkeypatch, permissions=None):
         "queries": [], "now": NOW, "lease": None,
         "permissions": permissions or
         (HEARTBEAT_ROLE, False, False, False, False, True, True, False),
+        "reader_permissions":
+        ("hds_paper_monitor", False, False, True, False, False, False),
     }
     h = PaperWorkerHeartbeat("postgresql://synthetic.invalid/neondb")
     monkeypatch.setattr(h, "_connect", lambda: Conn(data))
+    # The behavioral tests simulate two independently credentialed
+    # connections using one in-memory fake state. Separate role
+    # attestation is tested explicitly below.
+    monkeypatch.setattr(h, "assert_heartbeat_monitor_only", lambda: None)
     return h, data
 
 
@@ -189,6 +198,36 @@ def test_stale_missing_and_future_db_time_are_blockers(monkeypatch):
     result = h.inspect(expected_worker_id=W1)
     assert result.watchdog_heartbeat_seconds is None
     assert "persistent_supervisor_heartbeat_stale_or_future" in result.blockers
+
+
+def test_independent_reader_must_use_select_only_monitor_role(monkeypatch):
+    h, data = lease(monkeypatch)
+    h.pulse(worker_id=W1, sequence=1, poll_succeeded=True)
+    h.pulse(worker_id=W1, sequence=2, poll_succeeded=True)
+    # Replace the test shortcut with the real permission check.
+    monkeypatch.setattr(
+        h, "assert_heartbeat_monitor_only",
+        PaperWorkerHeartbeat.assert_heartbeat_monitor_only.__get__(h)
+    )
+    assert h.inspect(expected_worker_id=W1).healthy is True
+    data["reader_permissions"] = (
+        HEARTBEAT_ROLE, False, False, True, True, False, False
+    )
+    with pytest.raises(TradeBlocked, match="SELECT-only"):
+        h.inspect(expected_worker_id=W1)
+
+
+def test_missing_heartbeat_monitor_grant_blocks_all_inspection(monkeypatch):
+    h, data = lease(monkeypatch)
+    monkeypatch.setattr(
+        h, "assert_heartbeat_monitor_only",
+        PaperWorkerHeartbeat.assert_heartbeat_monitor_only.__get__(h)
+    )
+    data["reader_permissions"] = (
+        "hds_paper_monitor", False, False, False, False, False, False
+    )
+    with pytest.raises(TradeBlocked, match="SELECT-only"):
+        h.inspect(expected_worker_id=W1)
 
 
 def test_worker_lease_code_is_not_alpaca_broker_order_gateway():
