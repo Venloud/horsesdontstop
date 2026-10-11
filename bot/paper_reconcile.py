@@ -138,8 +138,13 @@ def reconcile_observation(
     # sell stop must not justify declaring a PAPER position protected.
     # This still does NOT authenticate the parent against its original
     # approved stop price or prove that the broker will fill a gap.
-    observed_oto_parent_ids = {
-        str(getattr(parent, "id", ""))
+    # A matching parent_order_id field alone is NOT proof of attachment.
+    # Require the child to occur in that parent's actual nested broker legs,
+    # with the same symbol, and a parent that has at least partially filled.
+    # This remains diagnostic, NOT authentication against the journal's
+    # originally approved stop price and order terms.
+    observed_oto_parents = {
+        str(getattr(parent, "id", "")): parent
         for parent in nested
         if (value(getattr(parent, "order_class", None)) == "oto"
             and value(getattr(parent, "side", None)) == "buy"
@@ -160,17 +165,27 @@ def reconcile_observation(
                     or value(getattr(order, "type", None)) not in PROTECTIVE_TYPES
                     or value(getattr(order, "status", None))
                        not in PROTECTIVE_ACTIVE_STATUSES
-                    or value(getattr(order, "time_in_force", None)) != "gtc"
-                    or str(getattr(order, "parent_order_id", ""))
-                       not in observed_oto_parent_ids):
+                    or value(getattr(order, "time_in_force", None)) != "gtc"):
+                continue
+            parent = observed_oto_parents.get(
+                str(getattr(order, "parent_order_id", "")))
+            if (parent is None
+                    or getattr(parent, "symbol", None) != symbol
+                    or value(getattr(parent, "status", None))
+                       not in {"filled", "partially_filled"}
+                    or not any(
+                        str(getattr(leg, "id", "")) == str(getattr(order, "id", ""))
+                        for leg in (getattr(parent, "legs", None) or [])
+                    )):
                 continue
             try:
+                parent_qty = number(getattr(parent, "qty", None))
                 remaining = (number(getattr(order, "qty", None))
                              - number(getattr(order, "filled_qty", None)))
                 trigger = number(getattr(order, "stop_price", None))
             except TradeBlocked:
                 continue
-            if remaining >= qty and trigger > 0:
+            if parent_qty >= qty and remaining >= qty and trigger > 0:
                 protection = True
                 break
         if not protection:
