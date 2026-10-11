@@ -18,6 +18,9 @@ class FakeJournal:
         self.kill_switch = kill_switch
         self.submissions_enabled = submissions_enabled
 
+    def assert_monitor_only(self):
+        self.calls.append("assert_monitor_only")
+
     def read_control(self):
         self.calls.append("read_control")
         return JournalControl(self.kill_switch, self.submissions_enabled)
@@ -94,7 +97,7 @@ def test_paper_preflight_never_trades_even_with_open_switches():
         "get_orders_open", "get_orders_closed",
     ]
     assert journal.calls == [
-        "read_control", "read_unresolved_intents",
+        "assert_monitor_only", "read_control", "read_unresolved_intents",
         "read_equity_references",
     ]
     assert report["reconciliation"]["consistent"] is True
@@ -160,3 +163,16 @@ def test_new_york_open_handles_daylight_saving_time():
     assert new_york_regular_open_utc(july).minute == 30
     with pytest.raises(ValueError):
         new_york_regular_open_utc(datetime(2026, 1, 5))
+
+
+def test_admin_credential_rejected_before_any_broker_call():
+    from bot.paper_safety import TradeBlocked
+
+    class AdminJournal(FakeJournal):
+        def assert_monitor_only(self):
+            raise TradeBlocked("Neon connection inherited admin permissions")
+
+    broker = FakeBroker()
+    with pytest.raises(TradeBlocked, match="admin"):
+        read_only_tick(broker, AdminJournal())
+    assert broker.calls == []
