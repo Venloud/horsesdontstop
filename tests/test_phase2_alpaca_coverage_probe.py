@@ -171,6 +171,20 @@ def test_missing_secrets_exits_before_network(monkeypatch, capsys):
     assert "BLOCKED" in capsys.readouterr().out
 
 
+def test_main_never_logs_arbitrary_secret_like_provider_error(monkeypatch, capsys):
+    monkeypatch.setenv("ALPACA_PAPER_API_KEY", "FAKE_TEST_KEY")
+    monkeypatch.setenv("ALPACA_PAPER_SECRET_KEY", "PRIVATE_EXAMPLE_SECRET")
+
+    def fail(*_args, **_kwargs):
+        raise RuntimeError("alpaca_marketdata_PRIVATE_EXAMPLE_SECRET")
+
+    monkeypatch.setattr(probe, "probe_window", fail)
+    assert probe.main() == 2
+    out = capsys.readouterr().out
+    assert "PRIVATE_EXAMPLE_SECRET" not in out
+    assert "retrieval_invalid" in out
+
+
 def test_probe_has_no_broker_or_database_writes():
     from pathlib import Path
     path = Path(probe.__file__)
