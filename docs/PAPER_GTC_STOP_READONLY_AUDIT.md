@@ -63,6 +63,34 @@ approved intent. We must fetch/validate the real paper stop
 lifecycle, exchange order timestamps and durable stop price
 before autonomous PAPER submissions are considered safe.
 
+## Durable Neon stop-price and parent identity, new read-only audit
+
+The read-only watchdog now requires the actual restricted Neon monitor to
+`SELECT` every potentially accepted/filled `paper_intents` row relevant to
+an observed position. A **500-row-or-more list is incomplete and blocks**
+inspection, rather than trusting a truncated record.
+
+For each long position, `reconcile_observation` refuses to describe an
+active broker stop as covered unless its observed BUY LIMIT OTO parent
+has a matching original Neon `client_order_id`, exact observed
+`broker_order_id`, approved symbol, **approved whole-share size**,
+and a child trigger **equal to the original immutable
+`protective_stop`**. Remaining active GTC stop quantity must cover
+the open shares, without exceeding the approved position.
+
+An absent original record, malformed row, changed stop price or
+wrong broker parent ID **fails closed**. The query is `SELECT` only,
+and fake broker/database regression tests do not require credentials,
+orders or migrations. As before, an open PAPER position still blocks
+new entries even when a stop *appears* linked.
+
+**Limitations:** This is an account-level read-only audit, not a live
+per-client-ID fetch that proves original child order TIF across overnight
+sessions. Broker-stop execution through a gap/market halt cannot be
+guaranteed, the monitor is not a deployed 24/7 worker, and accepted
+broker orders whose Neon status did not advance may conservatively
+remain unverified. None of these limitations permits opening trades.
+
 ## Gaps still blocking activation
 
 - Actual Alpaca PAPER DAY-limit OTO **entry/partial-fill/child
