@@ -15,7 +15,14 @@ OPEN_STATUSES = frozenset({
     "new", "accepted", "pending_new", "accepted_for_bidding",
     "partially_filled", "held", "stopped", "calculated",
 })
-PROTECTIVE_TYPES = frozenset({"stop", "stop_limit"})
+# A stop-limit may fail to exit when an overnight gap skips its limit.
+# DAY stops expire; held, pending-cancel, rejected and stopped states
+# are NOT a proven active overnight protective stop.
+PROTECTIVE_TYPES = frozenset({"stop"})
+PROTECTIVE_ACTIVE_STATUSES = frozenset({
+    "new", "accepted", "pending_new", "accepted_for_bidding",
+    "partially_filled",
+})
 UNRESOLVED_INTENTS = frozenset({"reserved", "submitted", "accepted", "unknown"})
 
 
@@ -126,24 +133,50 @@ def reconcile_observation(
         client_id = getattr(order, "client_order_id", None)
         if client_id not in ids and not getattr(order, "parent_order_id", None):
             blockers.append("open_order_not_in_durable_journal")
+    # Only a genuinely nested child belonging to an observed BUY LIMIT
+    # OTO parent is even a candidate for coverage. An unrelated manual
+    # sell stop must not justify declaring a PAPER position protected.
+    # This still does NOT authenticate the parent against its original
+    # approved stop price or prove that the broker will fill a gap.
+    observed_oto_parent_ids = {
+        str(getattr(parent, "id", ""))
+        for parent in nested
+        if (value(getattr(parent, "order_class", None)) == "oto"
+            and value(getattr(parent, "side", None)) == "buy"
+            and value(getattr(parent, "type", None)) == "limit"
+            and getattr(parent, "id", None))
+    }
     uncovered = []
     for position in positions:
         symbol = getattr(position, "symbol", None)
         qty = number(getattr(position, "qty", None))
-        if not symbol or qty == 0:
+        if not symbol or qty <= 0:
             blockers.append("invalid_broker_position")
             continue
-        protection = any(
-            getattr(order, "symbol", None) == symbol
-            and value(getattr(order, "side", None)) == "sell"
-            and value(getattr(order, "type", None)) in PROTECTIVE_TYPES
-            and value(getattr(order, "status", None)) in OPEN_STATUSES
-            and number(getattr(order, "qty", None)) >= qty
-            for order in open_orders
-        )
+        protection = False
+        for order in open_orders:
+            if (getattr(order, "symbol", None) != symbol
+                    or value(getattr(order, "side", None)) != "sell"
+                    or value(getattr(order, "type", None)) not in PROTECTIVE_TYPES
+                    or value(getattr(order, "status", None))
+                       not in PROTECTIVE_ACTIVE_STATUSES
+                    or value(getattr(order, "time_in_force", None)) != "gtc"
+                    or str(getattr(order, "parent_order_id", ""))
+                       not in observed_oto_parent_ids):
+                continue
+            try:
+                remaining = (number(getattr(order, "qty", None))
+                             - number(getattr(order, "filled_qty", None)))
+                trigger = number(getattr(order, "stop_price", None))
+            except TradeBlocked:
+                continue
+            if remaining >= qty and trigger > 0:
+                protection = True
+                break
         if not protection:
             uncovered.append(symbol)
-            blockers.append("position_missing_live_protective_stop")
+            blockers.append("position_missing_verified_gtc_oto_stop")
+
     reasons = tuple(dict.fromkeys(blockers))
     return Reconciliation(
         consistent=not reasons, blockers=reasons,
