@@ -117,8 +117,8 @@ def test_retroactive_first_last_listing_csv_is_not_a_valid_manifest(tmp_path):
     m = synthetic_manifest(tmp_path)
     universe = tmp_path / m["artifacts"]["universe_membership"]["path"]
     universe.write_text(
-        "symbol,first_eligible_day,last_eligible_day\\n"
-        "FRC,1986-01-01,2023-05-03\\n",
+        "symbol,first_eligible_day,last_eligible_day\n"
+        "FRC,1986-01-01,2023-05-03\n",
         encoding="utf-8",
     )
     m["artifacts"]["universe_membership"]["sha256"] = hashlib.sha256(
