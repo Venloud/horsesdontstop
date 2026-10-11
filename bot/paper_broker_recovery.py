@@ -135,13 +135,19 @@ def inspect_nested_oto(plan: PaperOrderPlan, parent, *, position_qty) -> BrokerO
         blockers.append("filled_entry_flat_without_verified_stop_exit")
     if qty > 0 and len(active) != 1:
         blockers.append("unexpected_protective_order_count")
+    if qty > 0 and len(active) == 1:
+        # Alpaca does not specify a separate child TIF in the DAY OTO
+        # entry request. Never *assume* the leg persists overnight.
+        if field(active[0], "time_in_force") != "gtc":
+            blockers.append("overnight_protective_stop_gtc_not_verified")
     if parent_status == "filled" and fill_qty != expected_qty:
         blockers.append("filled_parent_has_wrong_fill_quantity")
     return BrokerOrderAudit(
         client_order_id=plan.client_order_id,
         parent_order_id=pid,
         status=parent_status,
-        has_verified_protective_stop=qty > 0 and len(active) == 1,
+        has_verified_protective_stop=(qty > 0 and len(active) == 1
+                                     and field(active[0], "time_in_force") == "gtc"),
         paper_exposure_shares=float(qty),
         blockers=tuple(dict.fromkeys(blockers)),
     )
