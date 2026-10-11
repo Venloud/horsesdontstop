@@ -28,16 +28,23 @@ class Cursor:
 
     def execute(self, sql, params=None):
         self.db["queries"].append((sql, params))
-        if "pg_has_role(current_user" in sql:
+        if sql.startswith("SET LOCAL statement_timeout"):
+            self.last = None
+        elif "pg_advisory_xact_lock" in sql:
+            self.last = (None,)
+        elif "pg_has_role(current_user" in sql:
             self.last = self.db["roles"]
         elif "SELECT kill_switch_active" in sql:
             self.last = self.db["controls"]
+        elif "SELECT COUNT(*) FROM public.paper_intents" in sql:
+            self.last = (sum(1 for row in self.db["days"] if row == params[0]),)
         elif "INSERT INTO public.paper_intents" in sql:
             cid = params[0]
             if cid in self.db["keys"]:
                 self.last = None
             else:
                 self.db["keys"].add(cid)
+                self.db["days"].append(params[3])
                 self.db["intent_status"][cid] = "reserved"
                 self.last = (cid,)
         elif "UPDATE public.paper_intents" in sql:
@@ -75,7 +82,7 @@ def journal(monkeypatch, *, allow=False, permissions=None):
     db = {
         "roles": permissions or (False, False, False, True, True, False, True, True),
         "controls": (False, True) if allow else (True, False),
-        "queries": [], "keys": set(), "intent_status": {}, "audits": [],
+        "queries": [], "keys": set(), "days": [], "intent_status": {}, "audits": [],
     }
     j = PaperExecutorJournal("postgresql://fake.invalid/neondb")
     monkeypatch.setattr(j, "_connect", lambda: Conn(db))
@@ -95,7 +102,8 @@ def test_atomic_unique_reservation_stops_duplicate_order_id(monkeypatch):
     j, db = journal(monkeypatch, allow=True)
     plan = sample()
     assert j.reserve_if_enabled(plan) is True
-    assert j.reserve_if_enabled(plan) is False
+    with pytest.raises(TradeBlocked, match="Only one"):
+        j.reserve_if_enabled(plan)
     assert db["keys"] == {plan.client_order_id}
     assert any("FOR SHARE" in sql for sql, _ in db["queries"])
 
@@ -138,7 +146,8 @@ def test_unknown_order_submission_records_durable_no_retry(monkeypatch):
     assert len(db["audits"]) == 1
     with pytest.raises(TradeBlocked):
         j.mark_uncertain(plan.client_order_id)
-    assert not j.reserve_if_enabled(plan)
+    with pytest.raises(TradeBlocked, match="Only one"):
+        j.reserve_if_enabled(plan)
 
 
 def test_readonly_monitor_dsn_cannot_reserve(monkeypatch):
@@ -148,3 +157,14 @@ def test_readonly_monitor_dsn_cannot_reserve(monkeypatch):
     with pytest.raises(TradeBlocked, match="role"):
         j.reserve_if_enabled(sample())
     assert not db["keys"]
+
+
+def test_second_symbol_same_day_rejected_by_account_lock(monkeypatch):
+    j, db = journal(monkeypatch, allow=True)
+    first = sample()
+    other = plan_paper_entry("BAC", DAY, 25, 500, 500, .01)
+    assert j.reserve_if_enabled(first)
+    with pytest.raises(TradeBlocked, match="one protected PAPER order"):
+        j.reserve_if_enabled(other)
+    assert db["keys"] == {first.client_order_id}
+    assert any("pg_advisory_xact_lock" in sql for sql, _ in db["queries"])
