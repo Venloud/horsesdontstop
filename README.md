@@ -23,3 +23,17 @@ Do not use the retired GTC MARKET OTO builder; only a current-quote
 DAY LIMIT OTO may be considered in a separately supervised and
 explicitly authorized future paper test. GitHub cron is not
 an always-on trading supervisor.
+
+
+## Phase 0 strategy preregistration
+
+**Owner-approved research design, pending PR review and merge:**
+[seven strategy candidates, matching actual-deposit benchmark, 15% historical
+drawdown limit, independent-trade and long-history thresholds](docs/PREREGISTRATION.md).
+
+[Audit the prior 80 research outcomes](research/TRIAL_LEDGER.csv) and read
+[trial-ledger provenance / use rules](docs/TRIAL_LEDGER.md). These are
+historical *backtests*, not realized profits. No scored Phase 3 comparison
+should run before the detailed rules are reviewed and frozen.
+
+**Research documentation does not enable PAPER or real-money trading.**
