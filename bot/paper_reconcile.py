@@ -87,6 +87,7 @@ def reconcile_observation(
     positions: Sequence, orders: Sequence,
     journal_intents: Sequence[tuple],
     *, order_fetch_complete: bool,
+    approved_stops: Sequence[tuple] | None = None,
 ) -> Reconciliation:
     """Require a known *flat* account and resolved durable journal.
 
@@ -133,16 +134,41 @@ def reconcile_observation(
         client_id = getattr(order, "client_order_id", None)
         if client_id not in ids and not getattr(order, "parent_order_id", None):
             blockers.append("open_order_not_in_durable_journal")
+    # A complete durable stop record must be read under the restricted
+    # SELECT-only monitor role. Unresolved intents alone omit FILLED orders.
+    # A parent/child with a convincing broker shape is not approved merely
+    # because its broker-side identifiers match.
+    durable_approvals = {}
+    if positions and approved_stops is None:
+        blockers.append("approved_stop_intents_not_observed")
+    for record in approved_stops or ():
+        if not isinstance(record, (tuple, list)) or len(record) != 6:
+            blockers.append("invalid_approved_stop_intent")
+            continue
+        client_id, status, symbol, shares, stop, parent_id = record
+        try:
+            quantity = number(shares)
+            stop_price = number(stop)
+        except TradeBlocked:
+            blockers.append("invalid_approved_stop_intent")
+            continue
+        if (not isinstance(client_id, str) or not client_id
+                or value(status) not in {"accepted", "filled"}
+                or not isinstance(symbol, str) or not symbol
+                or not parent_id or quantity <= 0 or stop_price <= 0
+                or client_id in durable_approvals):
+            blockers.append("invalid_approved_stop_intent")
+            continue
+        durable_approvals[client_id] = (str(parent_id), symbol, quantity, stop_price)
+
     # Only a genuinely nested child belonging to an observed BUY LIMIT
     # OTO parent is even a candidate for coverage. An unrelated manual
     # sell stop must not justify declaring a PAPER position protected.
-    # This still does NOT authenticate the parent against its original
-    # approved stop price or prove that the broker will fill a gap.
+    # Even matching durable intent cannot prove fills through market gaps.
     # A matching parent_order_id field alone is NOT proof of attachment.
     # Require the child to occur in that parent's actual nested broker legs,
     # with the same symbol, and a parent that has at least partially filled.
-    # This remains diagnostic, NOT authentication against the journal's
-    # originally approved stop price and order terms.
+    # Durable stop-price, parent-ID and approved quantity checks follow.
     observed_oto_parents = {
         str(getattr(parent, "id", "")): parent
         for parent in nested
@@ -169,7 +195,11 @@ def reconcile_observation(
                 continue
             parent = observed_oto_parents.get(
                 str(getattr(order, "parent_order_id", "")))
-            if (parent is None
+            durable = durable_approvals.get(
+                str(getattr(parent, "client_order_id", ""))) if parent else None
+            if (parent is None or durable is None
+                    or durable[0] != str(getattr(parent, "id", ""))
+                    or durable[1] != symbol
                     or getattr(parent, "symbol", None) != symbol
                     or value(getattr(parent, "status", None))
                        not in {"filled", "partially_filled"}
@@ -185,7 +215,10 @@ def reconcile_observation(
                 trigger = number(getattr(order, "stop_price", None))
             except TradeBlocked:
                 continue
-            if parent_qty >= qty and remaining >= qty and trigger > 0:
+            # Protective order may not be larger than the durable order,
+            # and its trigger must equal the originally stored stop price.
+            if (parent_qty == durable[2] and 0 < remaining <= durable[2]
+                    and remaining >= qty and trigger == durable[3]):
                 protection = True
                 break
         if not protection:
