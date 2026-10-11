@@ -55,7 +55,8 @@ def test_matching_live_stop_diagnoses_coverage_but_blocks_new_entries():
                    klass="oto")
     report = reconcile_observation(
         [position("F", 2)], [parent], [("hds-c", "filled", "F", 2)],
-        order_fetch_complete=True)
+        order_fetch_complete=True,
+        approved_stops=[("hds-c", "filled", "F", 2, 24, "parent-1")])
     assert not report.uncovered_symbols
     assert "open_broker_positions" in report.blockers
     assert "open_broker_orders" in report.blockers
@@ -222,6 +223,55 @@ def test_nested_same_symbol_filled_parent_remains_candidate_only():
                    cid="hds-F", legs=(stop,))
     report = reconcile_observation(
         [position("F", 2)], [parent], [("hds-F", "filled", "F", 2)],
-        order_fetch_complete=True)
+        order_fetch_complete=True,
+        approved_stops=[("hds-F", "filled", "F", 2, 24, "parent-1")])
     assert not report.uncovered_symbols
     assert not report.consistent  # Entries remain blocked while exposed.
+
+
+@pytest.mark.parametrize("approval", [
+    None,
+    [],
+    [("hds-c", "filled", "F", 2, 25, "parent-1")],   # altered stop trigger
+    [("hds-c", "filled", "F", 2, 24, "other-parent")],
+    [("hds-c", "filled", "Q", 2, 24, "parent-1")],
+    [("hds-c", "filled", "F", 1, 24, "parent-1")],
+    [("hds-c", "unknown", "F", 2, 24, "parent-1")],
+    [("hds-c", "filled", "F", 2, -1, "parent-1")],
+])
+def test_undocumented_or_tampered_neon_stop_terms_cannot_cover_broker_position(approval):
+    stop = order("stop-leg", "F", side="sell", kind="stop", qty=2,
+                 status="new", parent="parent-1", tif="gtc", stop_price=24)
+    parent = order("parent-1", "F", side="buy", kind="limit", qty=2,
+                   status="filled", cid="hds-c", legs=(stop,), klass="oto")
+    result = reconcile_observation(
+        [position("F", 2)], [parent], [], order_fetch_complete=True,
+        approved_stops=approval)
+    assert "F" in result.uncovered_symbols
+    assert "position_missing_verified_gtc_oto_stop" in result.blockers
+    assert not result.consistent
+
+
+def test_reused_or_malformed_durable_stop_approval_blocks():
+    stop = order("stop-leg", "F", side="sell", kind="stop", qty=2,
+                 status="new", parent="parent-1", tif="gtc", stop_price=24)
+    parent = order("parent-1", "F", side="buy", kind="limit", qty=2,
+                   status="filled", cid="hds-c", legs=(stop,), klass="oto")
+    good = ("hds-c", "filled", "F", 2, 24, "parent-1")
+    result = reconcile_observation(
+        [position("F", 2)], [parent], [], order_fetch_complete=True,
+        approved_stops=[good, good, ("bad",)])
+    assert "invalid_approved_stop_intent" in result.blockers
+    assert not result.consistent
+
+
+def test_unapproved_broker_position_not_accepted_from_unresolved_journal():
+    stop = order("stop-leg", "F", side="sell", kind="stop", qty=2,
+                 status="new", parent="parent-1", tif="gtc", stop_price=24)
+    parent = order("parent-1", "F", side="buy", kind="limit", qty=2,
+                   status="filled", cid="hds-c", legs=(stop,), klass="oto")
+    report = reconcile_observation(
+        [position("F", 2)], [parent], [("hds-c", "filled", "F", 2)],
+        order_fetch_complete=True)
+    assert "approved_stop_intents_not_observed" in report.blockers
+    assert report.uncovered_symbols == ("F",)
