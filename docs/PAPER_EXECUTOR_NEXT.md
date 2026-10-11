@@ -1,6 +1,6 @@
 # PAPER journal writer is staged, but execution remains OFF
 
-**Current date:** 2026-10-11, U.S. equity markets closed (Sunday).
+**Verified on:** 2026-10-11. U.S. equity markets closed (Sunday).
 
 ## Verified completed
 - Neon production project `misty-shadow-43891652`, branch
@@ -38,27 +38,34 @@
   closed, zero broker orders. Scan is automatically scheduled
   during weekdays and will skip stale IEX quotes.
 
-## Owner's next credential step (DO NOT share secrets here)
+## Executor credential connection verified — completed
 
-After reviewing role identity in Neon SQL Editor with production
-`neondb` selected, set a strong unique password:
+Owner privately configured `hds_paper_executor` password in Neon
+production and placed its direct PostgreSQL URI in GitHub Actions
+`PAPER_EXECUTOR_DSN`. The original secret had the WRONG role,
+so initial read-only CI integration failed. After the owner
+corrected the secret, GitHub verified the intended role and
+database, restricted PostgreSQL permissions, and locked controls:
 
-```sql
-ALTER ROLE hds_paper_executor
-PASSWORD 'YOUR_UNIQUE_STRONG_PASSWORD';
-```
+**Successful CI read-only executor test:**
+https://github.com/Venloud/horsesdontstop/actions/runs/38118901207
 
-Save securely, never commit or paste password in chat.
-Then in Neon Connection Details, select **production**, **neondb**,
-**hds_paper_executor**, and direct connection. Copy the PostgreSQL URI
-to GitHub `Venloud/horsesdontstop` **Settings > Secrets and variables
-> Actions > New repository secret**, with **name**
-`PAPER_EXECUTOR_DSN`. This credential must NEVER replace or change the
-existing read-only `PAPER_JOURNAL_DSN` secret. Nothing should switch
-the Neon kill switch to OFF yet.
+- **30 focused tests passed**.
+- `PAPER EXECUTOR IDENTITY CHECK PASSED`:
+  role `hds_paper_executor`, database `neondb`.
+- `PAPER EXECUTOR READ-ONLY CHECK PASSED`:
+  `kill_switch_active=True`, `submissions_enabled=False`,
+  `intents=0`, `audits=0`, `equity_snapshots=0`.
+- **ZERO PostgreSQL writes, ZERO broker orders**.
+- The workflow was returned to **manual-only** after successful
+  verification, commit `14a72f114310858ef8971b2c70f2f2f1940a25fb`.
+- Code remains in `bot/paper_executor_preflight.py` and
+  `bot/paper_executor_role_check.py`; the credentials are
+  never printed or committed.
 
-**Do not set this credential up blindly.** Verify the writer role
-still has only the narrow grants, never Neon administrator membership.
+**No further password setup or GitHub secret update is needed.**
+Do not replace the existing independent observer
+`PAPER_JOURNAL_DSN` secret.
 
 ## Not yet implemented or authorized
 
