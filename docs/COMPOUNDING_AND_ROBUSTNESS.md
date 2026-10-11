@@ -37,12 +37,19 @@ the workflow run monthly on the first calendar day at 16:10 UTC.
   energy, consumer sectors, and healthcare, plus sector ETFs and SPY.
 - Four **nonoverlapping ~105-session historical windows** after at
   least 260 earlier sessions to warm indicators.
+- **16 continuous full-horizon simulations**, one for each strategy ×
+  risk level × slippage assumption. Each starts at **$500 once** after
+  the warmup and carries gains and losses into every future position,
+  **including before the first $1,000 and after crossing it**.
+  No cash resets, withdrawals, or assumed contributions.
 - Four predeclared strategies × 1%/2% risk × 10/30 bps adverse fill
-  slippage × four windows = **64 independent what-if tests**.
-- Every experiment starts at $500 **only to make windows comparable**,
-  then compounds realized P&L after its very first closed trade.
-  The four ending balances MUST NOT be added or represented as the
-  growth path of one continuously running account.
+  slippage × four windows = **64 independent what-if tests**, plus **16 continuous
+  simulations** over the post-warmup history.
+- Each *separate window experiment* restarts at $500 **only to make
+  historical periods comparable**. Its gains still compound from the
+  first winning exit. Those four ending balances MUST NOT be added or
+  treated as one portfolio. For uninterrupted compounding, use the
+  separate `continuous_portfolios` section of the JSON report.
 - Same one-position, whole-share, shared-$500 rules from the baseline
   portfolio research engine.
 - Comparison includes worst daily-close drawdown, return, number of
