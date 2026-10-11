@@ -1,50 +1,65 @@
-# Durable PAPER journal, not connected yet
+# Durable PAPER journal, production schema deployed (2026-10-11)
 
-The repository now contains `bot/paper_store.py`: a TLS-only PostgreSQL
-adapter prepared for the future paper-order worker. **It is not connected,
-and no paper orders are enabled.**
+**Neon production PostgreSQL has the four schema tables, but the Python bot
+and the GitHub Actions workflow are NOT connected to them yet. No paper
+order submissions are enabled.**
 
-## Why this is necessary
+## Verified deployment
 
-GitHub Actions jobs are disposable. Neither downloading an artifact nor
-storing SQLite in `.state/` gives unattended runs a reliable shared state.
-A correctly configured hosted database will provide a durable record
-across runs and worker restarts.
+- Neon project: `misty-shadow-43891652` (`horsesdontstop`), branch:
+  `production`, PostgreSQL database `neondb`.
+- Neon migration ID: `a68d87f0-7a04-4b7d-a651-2c60344dde42`.
+  The exact schema from `bot/paper_store.py` was prepared and checked on
+  temporary branch `br-crimson-scene-b5wsv4wp`, then applied to
+  production **only after explicit owner approval**.
+- Neon confirmed **"Migration applied successfully to parent branch"**
+  and deleted the temporary migration branch.
+- Verified directly on production using Neon read-only tools:
+  `paper_control`, `paper_intents`, `paper_audit_events`,
+  `paper_equity_snapshots` all exist in `public`.
+- Verified `paper_control.kill_switch_active = TRUE` and
+  `paper_control.submissions_enabled = FALSE`.
+- Verified `paper_intents = 0`, `paper_audit_events = 0`,
+  `paper_equity_snapshots = 0`. These tables are intentionally empty.
+- This **proves schema deployment**, not a Python worker connection,
+  end-to-end transaction behavior, or broker order execution.
 
-## What is implemented
+## How the journal should work
 
-- DB-unique `client_order_id`, reserved atomically in a transaction.
-- A repeated reservation returns False; it must **never** automatically
-  submit another broker order.
-- States: `reserved`, `submitted`, `accepted`, `filled`, `rejected`,
-  `canceled`, and `unknown`, with restricted transitions.
-- Equity/cash snapshots, an append-only event table, and a peak-equity
-  query. These can support compounding and drawdown checks when attached
-  to real paper account snapshots.
-- Database kill switch defaults to ON and order submission defaults to OFF.
-- Connections enforce TLS and short connection timeouts.
-- Unit tests use an in-memory fake, **not a production database**.
+- `bot/paper_store.py` provides a DB-unique `client_order_id` and a
+  transactional intent reservation. A repeated reservation returns
+  False: **never blindly resubmit a broker order**.
+- Status transitions model `reserved`, `submitted`, `accepted`,
+  `filled`, `unknown`, `rejected`, `canceled`.
+- Equity/cash snapshots, an event ledger and peak-equity lookup are
+  available for future drawdown and profit-compounding checks.
+- The current Python PostgreSQL adapter enforces TLS and short connection
+  timeouts. Mock tests have passed, but it has not been integrated with
+  a live persistent worker or a real broker order adapter.
 
-## Still required
+## Still required before paper trading
 
-1. The account owner selects and provisions hosted PostgreSQL with secure
-   TLS, e.g. a supported managed PostgreSQL service. Check its current
-   limits and inactive-project policies before choosing.
-2. Store the database DSN in a **secret**, not a GitHub commit, chat
-   message, or uploaded log. Future code will read a
-   `PAPER_JOURNAL_DSN` environment secret.
-3. Apply the schema to the provisioned instance and test read/write
-   connectivity from the intended always-on worker.
-4. Verify transactions and duplicate reservations using a real database,
-   including simulating crashes, network partitions and concurrent runs.
-5. Build broker reconciliation and protected paper order execution:
-   reserve before submission; if a submission times out, mark outcome
-   unknown and reconcile via broker `client_order_id` before any retry.
-6. Deploy a monitored persistent worker with a heartbeat and alerts, and
-   require its readiness before disabling the kill switch.
-7. Owner approval is required before turning on paper order submissions.
+1. Provision a least-privileged dedicated database role, securely pass
+   credentials as `PAPER_JOURNAL_DSN` to the future worker or GitHub
+   Secrets, **never in a public file, chat, or logs**.
+2. Add read-only health checks plus real PostgreSQL transaction tests,
+   including concurrent duplicate reservations, rollback and outage
+   handling. Never make test reservations in production trading tables
+   unless explicitly authorized.
+3. Build and test paper-only broker order reconciliation and a guarded
+   adapter for attached stop-loss protection. Ambiguous broker responses
+   must fail closed and be reconciled by client order ID before retrying.
+4. Deploy a reliable always-on monitored worker/heartbeat with alarms
+   and market-hours calendar checks; GitHub cron alone is not sufficient
+   to manage an open position.
+5. Preserve database kill switch ON and order submissions OFF until
+   the owner explicitly approves a supervised first paper order.
+6. Once paper is running, evaluate 8–12 weeks of forward performance
+   before considering any real-money activity.
 
-**Do not paste credentials or database connection strings in chat.**
+**Compounding:** profits and losses adjust the next risk budget immediately,
+including below $1,000. Monthly contributions remain optional, manual and
+capped at $100, with $0 auto-deposits.
 
-No monthly contributions are simulated. Trading profits/losses will
-change the next equity-risk budget immediately, even below $1,000.
+Never paste Neon connection strings, role passwords or Alpaca secrets into
+chat, logs or GitHub files.
