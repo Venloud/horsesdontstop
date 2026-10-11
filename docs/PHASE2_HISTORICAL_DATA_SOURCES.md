@@ -64,6 +64,34 @@ documents an **inclusive** `end` date. Corrected and unit-tested;
 never cite that earlier failure as proof 2022 coverage is absent.
 Newest evidence must be read from GitHub Actions after the fix.
 
+**Confirmed successful sanitized GitHub GET-only run:**
+https://github.com/Venloud/horsesdontstop/actions/runs/38126272354
+
+| Requested source window (start/end inclusive) | SPY | AAPL | XLK | FRC |
+|---|---:|---:|---:|---:|
+| 2016-10-01 through 2016-11-01, raw IEX daily | 0 | 0 | 0 | Not queried |
+| 2022-06-01 through 2022-07-01, raw IEX daily | 22 | 22 | 22 | 22 (separately queried) |
+| 2026-09-01 through 2026-10-01, raw IEX daily | 22 | 22 | 22 | Not queried |
+
+All observed 2022 series had first/last bar
+**2022-06-01 / 2022-07-01**; the recent samples had
+**2026-09-01 / 2026-10-01**. The successful workflow
+ran **15 focused offline tests first**, then used the
+already configured Alpaca PAPER market-data credentials.
+It retrieved bar counts/dates but did **not** publish prices,
+submit brokerage orders or write Neon journal records.
+
+**Interpretation:** The 2022 and recent periods are genuinely
+available under this account's IEX entitlement; the observed
+2016 gap means the free IEX feed **does not yet demonstrate
+our approved continuous ten-year history**, even though
+Alpaca advertises historical data since 2016 in general.
+FRC 2022 availability is one limited historical-ticker
+sanity check, **NOT** evidence that a delisting-complete
+historical universe is present. Do not extrapolate
+full-calendar completeness or SIP market-volume integrity
+from these four short windows.
+
 **Coverage probe is NOT a scoring or ingestion tool.** One month with
 daily bars is not proof that entire ten-year history, delistings,
 historical sector membership, accurate dividends or total-return
