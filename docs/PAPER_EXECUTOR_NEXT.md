@@ -20,12 +20,15 @@
   owner/admin or incomplete roles, verifies a proposed protected
   intent, locks `paper_control` with `SELECT ... FOR SHARE`,
   and atomically refuses to INSERT a unique intent while the
-  kill switch is ON or the submission switch is OFF. Duplicates
-  cannot create a second intent. Broker-response uncertainty can
+  kill switch is ON or the submission switch is OFF. A database
+  transaction advisory lock also serializes competing run attempts,
+  and a one-intent-per-New-York-trading-day constraint blocks
+  overlapping buys of two different tickers. Duplicates cannot
+  create a second intent. Broker-response uncertainty can
   be marked `unknown`, never blindly retried.
 - Automated GitHub Actions research tests:
-  https://github.com/Venloud/horsesdontstop/actions/runs/38115650912,
-  **133 passed**, one warning. Production database control remains
+  https://github.com/Venloud/horsesdontstop/actions/runs/38115779024,
+  **134 passed**, one warning. Production database control remains
   `kill_switch_active = TRUE`, `submissions_enabled=FALSE` with
   zero order intents/fills. No trading submission capability is
   connected to this library yet.
