@@ -156,6 +156,24 @@ Merged from `experiment/paper-broker-lifecycle-v1` via [PR #7](https://github.co
       returned **$500 baseline**, max historical equity **$500**.
       Temp-branch controls remained locked throughout.
 
+## Read-only overnight-stop monitoring hardening (separate draft PR)
+
+- [x] Added strict **synthetic-tested** read-only OTO child stop coverage:
+      active SELL **STOP** (not STOP_LIMIT), observed **GTC** TIF,
+      enough *remaining* quantity, positive trigger, and linked
+      observed BUY LIMIT OTO parent. Missing or unverifiable cases
+      now set `position_missing_verified_gtc_oto_stop`.
+      See [PAPER_GTC_STOP_READONLY_AUDIT.md](PAPER_GTC_STOP_READONLY_AUDIT.md).
+      This work is in a **separate safety PR, not a real Alpaca fill**.
+- [ ] Independently observe **actual PAPER nested child stop TIF**
+      and behavior across a market close before allowing overnight
+      exposure. Official Alpaca examples show DAY LIMIT OTO
+      parent but do NOT prove the child remains GTC.
+- [ ] Persist and reconcile the originally approved stop **price**,
+      order IDs, partial-fill quantities and linked parent across
+      outages; a single read-only account-wide stop listing is
+      insufficient for full overnight protection.
+
 ## Still to do — in dependency order
 
 - [x] Review and merge the tested lifecycle and docs to `main`:
