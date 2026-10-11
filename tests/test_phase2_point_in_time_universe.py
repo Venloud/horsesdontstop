@@ -159,6 +159,21 @@ def test_same_day_future_snapshot_or_naive_decision_rejected(day, decision):
         select([row(snapshot_day=day)], day=day, decision=decision)
 
 
+def test_snapshot_older_than_four_calendar_days_is_rejected():
+    decision = datetime(2023, 5, 9, 13, 30, tzinfo=timezone.utc)
+    with pytest.raises(UniverseBlocked, match="too stale"):
+        select([row()], decision=decision)
+
+
+def test_weekend_gap_is_accepted_if_snapshot_is_complete_and_known():
+    fri = row(snapshot_day="2023-05-05",
+              snapshot_id="friday-snapshot",
+              known_at_utc="2023-05-05T20:10:00Z")
+    monday = datetime(2023, 5, 8, 13, 30, tzinfo=timezone.utc)
+    q = select([fri], day="2023-05-05", decision=monday)
+    assert q.eligible_security_ids == ("QC:SID:FRC",)
+
+
 def test_csv_parser_requires_exact_point_in_time_fields():
     old_format = (
         "symbol,first_eligible_day,last_eligible_day\n"
