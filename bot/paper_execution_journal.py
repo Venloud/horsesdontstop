@@ -74,12 +74,27 @@ class PaperExecutorJournal(PostgresPaperJournal):
         self.assert_executor_permissions()
         with self._connect() as conn:
             with conn.cursor() as cur:
+                cur.execute("SET LOCAL statement_timeout = '3000ms'")
+                # Account-wide advisory lock serializes different symbols
+                # across simultaneously started scheduled jobs.
+                cur.execute(
+                    "SELECT pg_advisory_xact_lock("
+                    "hashtext('horsesdontstop-paper-exclusive-intent'))")
+                cur.fetchone()
                 cur.execute(
                     "SELECT kill_switch_active, submissions_enabled "
                     "FROM public.paper_control WHERE singleton=TRUE FOR SHARE"
                 )
                 if cur.fetchone() != (False, True):
                     raise TradeBlocked("Paper kill switch active or not approved")
+                cur.execute(
+                    "SELECT COUNT(*) FROM public.paper_intents "
+                    "WHERE trading_day=%s", (plan.trading_day,))
+                today = cur.fetchone()
+                if today is None or today[0] != 0:
+                    raise TradeBlocked(
+                        "Only one protected PAPER order intent per NY trading day"
+                    )
                 cur.execute(
                     "INSERT INTO public.paper_intents "
                     "(client_order_id,strategy,symbol,trading_day,whole_shares,"
