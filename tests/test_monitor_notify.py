@@ -2,7 +2,7 @@
 import pytest
 
 from bot.monitor_policy import make_incident, unverified_incident
-from bot.monitor_notify import NotificationError, send_critical_ntfy
+from bot.monitor_notify import NotificationError, NotificationThrottle, send_critical_ntfy
 
 
 class FakeResponse:
@@ -70,3 +70,45 @@ def test_http_failure_requires_retry():
     with pytest.raises(NotificationError):
         send_critical_ntfy(unverified_incident(), topic="s" * 40,
                            open_url=lambda *_a, **_kw: FakeResponse(503))
+
+
+def test_duplicate_critical_alert_suppressed_in_one_process():
+    delivery = []
+    def deliver(incident, *, topic):
+        delivery.append(incident.fingerprint)
+        return True
+    throttle = NotificationThrottle(cooldown_seconds=3600)
+    incident = unverified_incident()
+    assert throttle.maybe_send(incident, topic="z" * 32,
+                               now_seconds=100, transport=deliver)
+    assert not throttle.maybe_send(incident, topic="z" * 32,
+                                  now_seconds=120, transport=deliver)
+    assert throttle.maybe_send(incident, topic="z" * 32,
+                               now_seconds=3701, transport=deliver)
+    assert len(delivery) == 2
+
+
+def test_transport_failure_does_not_block_future_retry():
+    throttle = NotificationThrottle()
+    incident = unverified_incident()
+    calls = []
+    def broken(_incident, *, topic):
+        calls.append(topic)
+        raise NotificationError("NTFY delivery failed")
+    with pytest.raises(NotificationError):
+        throttle.maybe_send(incident, topic="z" * 32,
+                            now_seconds=100, transport=broken)
+    assert throttle.maybe_send(incident, topic="z" * 32,
+                               now_seconds=105,
+                               transport=lambda *_a, **_kw: True)
+    assert len(calls) == 1
+
+
+def test_missing_topic_and_noncritical_never_call_transport():
+    throttle = NotificationThrottle()
+    warning = make_incident("warning", "degraded", ("alert",))
+    explode = lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("sent"))
+    assert not throttle.maybe_send(unverified_incident(), topic=None,
+                                   now_seconds=0, transport=explode)
+    assert not throttle.maybe_send(warning, topic="z" * 32,
+                                   now_seconds=0, transport=explode)
