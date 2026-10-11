@@ -120,6 +120,17 @@ def assess_read_only_report(report: Mapping, *, now=None,
     if not isinstance(rec_blockers, list) or not all(
             isinstance(x, str) for x in rec_blockers):
         return unverified_incident()
+    # A self-contradictory report must not be called healthy. In
+    # particular, a zero-position summary with unreported outstanding
+    # intents or stop gaps cannot be trusted as a safe idle account.
+    unresolved = rec.get("unresolved_journal_intents")
+    uncovered = rec.get("uncovered_symbols")
+    if (type(unresolved) is not int or unresolved < 0
+            or not isinstance(uncovered, list)
+            or not all(isinstance(x, str) for x in uncovered)
+            or (rec.get("consistent") is True
+                and (unresolved or uncovered or rec_blockers))):
+        return unverified_incident()
     if report.get("mode") != NO_TRADE_MODE:
         return unverified_incident()
     if report.get("broker_paper_url") != "https://paper-api.alpaca.markets":
