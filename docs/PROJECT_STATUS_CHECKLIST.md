@@ -165,6 +165,25 @@ Merged from `experiment/paper-broker-lifecycle-v1` via [PR #7](https://github.co
       now set `position_missing_verified_gtc_oto_stop`.
       See [PAPER_GTC_STOP_READONLY_AUDIT.md](PAPER_GTC_STOP_READONLY_AUDIT.md).
       This work is in a **separate safety PR, not a real Alpaca fill**.
+- [x] Staged **non-deployed** read-only persistent supervisor loop,
+      restricted DB-server-clock lease code, worker/monitor privilege
+      attestation and source-level CI release tripwires. See
+      [PAPER_WORKER_HEARTBEAT_STAGE.md](PAPER_WORKER_HEARTBEAT_STAGE.md).
+- [x] Tested staged lease SQL against the **existing isolated Neon
+      `test-paper-entry-20261011` branch only**: first pulse
+      unhealthy, second sequential pulse healthy, duplicate and
+      competing worker rejected. Both test-branch submission
+      switches remained OFF. This was **management SQL**, NOT
+      a verified restricted-role production/real-host test.
+- [ ] Apply and independently privilege-test the heartbeat migration
+      ONLY after owner approval, select safe always-on host and
+      provision a new restricted heartbeat writer credential; neither
+      the production table nor `PAPER_HEARTBEAT_DSN` exists yet.
+- [ ] Prove a real persistent worker/independent alert path and
+      populate the execution gate's genuine watchdog age from
+      independently observed DB heartbeat. Currently
+      `paper_watchdog` correctly reports **None**.
+
 - [ ] Independently observe **actual PAPER nested child stop TIF**
       and behavior across a market close before allowing overnight
       exposure. Official Alpaca examples show DAY LIMIT OTO
