@@ -9,10 +9,12 @@ from bot.paper_watchdog import new_york_regular_open_utc, read_only_tick
 
 
 class FakeJournal:
-    def __init__(self, *, intents=(), start=500, peak=500,
+    def __init__(self, *, intents=(), approved_stops=(),
+                 start=500, peak=500,
                  kill_switch=True, submissions_enabled=False):
         self.calls = []
         self.intents = intents
+        self.approved_stops = approved_stops
         self.start = start
         self.peak = peak
         self.kill_switch = kill_switch
@@ -29,6 +31,11 @@ class FakeJournal:
         self.calls.append("read_unresolved_intents")
         assert limit == 501
         return list(self.intents)
+
+    def read_approved_stop_intents(self, limit):
+        self.calls.append("read_approved_stop_intents")
+        assert limit == 501
+        return list(self.approved_stops)
 
     def read_equity_references(self, start_utc, as_of_utc):
         self.calls.append("read_equity_references")
@@ -176,3 +183,52 @@ def test_admin_credential_rejected_before_any_broker_call():
     with pytest.raises(TradeBlocked, match="admin"):
         read_only_tick(broker, AdminJournal())
     assert broker.calls == []
+
+
+def test_read_only_watchdog_compares_original_neon_stop_terms():
+    stop = SimpleNamespace(
+        id="child-1", status="new", symbol="F", qty="2",
+        filled_qty="0", side="sell", type="stop",
+        time_in_force="gtc", parent_order_id="parent-1",
+        stop_price="24", legs=[],
+    )
+    parent = SimpleNamespace(
+        id="parent-1", client_order_id="hds-F", status="filled",
+        order_class="oto", symbol="F", qty="2",
+        side="buy", type="limit", legs=[stop],
+    )
+    pos = SimpleNamespace(symbol="F", qty="2")
+    approval = ("hds-F", "filled", "F", 2, 24, "parent-1")
+    journal = FakeJournal(approved_stops=[approval])
+    report = read_only_tick(
+        FakeBroker(positions=[pos], open_orders=[stop],
+                   closed_orders=[parent]),
+        journal)
+    assert "read_approved_stop_intents" in journal.calls
+    assert report["reconciliation"]["uncovered_symbols"] == []
+    assert report["can_submit_orders"] is False
+
+    altered = FakeJournal(
+        approved_stops=[("hds-F", "filled", "F", 2, 23, "parent-1")])
+    unsafe = read_only_tick(
+        FakeBroker(positions=[pos], open_orders=[stop],
+                   closed_orders=[parent]), altered)
+    assert unsafe["reconciliation"]["uncovered_symbols"] == ["F"]
+    assert "position_missing_verified_gtc_oto_stop" in unsafe["safety_blockers"]
+    assert unsafe["broker_write_operations"] == 0
+
+
+def test_missing_or_saturated_durable_stop_records_never_claim_coverage():
+    position = SimpleNamespace(symbol="F", qty="2")
+    empty = read_only_tick(
+        FakeBroker(positions=[position]), FakeJournal())
+    assert empty["reconciliation"]["uncovered_symbols"] == ["F"]
+
+    broker = FakeBroker(positions=[position])
+    with pytest.raises(RuntimeError, match="truncated"):
+        read_only_tick(
+            broker, FakeJournal(approved_stops=[
+                ("hds-" + str(i), "filled", "F", 1, 24, "parent-" + str(i))
+                for i in range(501)
+            ]))
+    assert "get_orders_open" not in broker.calls
