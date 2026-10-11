@@ -85,7 +85,8 @@ def test_multiple_pages_cover_symbols_not_seen_on_first_page():
     assert result["symbols"]["SPY"]["bars"] == 2
     assert result["symbols"]["AAPL"]["bars"] == 1
     assert result["symbols"]["AAPL"]["first_day"] == "2016-10-04"
-    assert "o" not in json.dumps(result)
+    assert '"c": 100' not in json.dumps(result)
+    assert '"v": 123' not in json.dumps(result)
     assert result["complete_pagination"] is True
 
 
