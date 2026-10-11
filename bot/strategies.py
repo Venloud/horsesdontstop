@@ -14,7 +14,9 @@ STRATEGIES = ("momentum_volume", "trend_following", "high_52_week", "sector_lead
 # Explicit limited example universe; does not dynamically discover sector members.
 SECTOR_ETFS = {
     "AAPL": "XLK", "MSFT": "XLK", "NVDA": "XLK", "AMD": "XLK",
-    "TSLA": "XLY",
+    "INTC": "XLK", "TSLA": "XLY", "F": "XLY", "DIS": "XLC",
+    "JPM": "XLF", "BAC": "XLF", "XOM": "XLE", "CVX": "XLE",
+    "KO": "XLP", "WMT": "XLP", "PFE": "XLV",
 }
 
 
