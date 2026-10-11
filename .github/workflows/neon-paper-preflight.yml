@@ -1,0 +1,42 @@
+name: Neon + Alpaca Paper Preflight (Read Only)
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: horsesdontstop-neon-preflight
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Validate no-trade safety, reconciliation, and Neon interfaces
+        run: python -m pytest -q tests/test_paper_store.py tests/test_paper_safety.py tests/test_paper_reconcile.py tests/test_paper_watchdog.py
+      - name: Read-only Neon and Alpaca broker preflight
+        env:
+          ALPACA_PAPER_API_KEY: ${{ secrets.ALPACA_PAPER_API_KEY }}
+          ALPACA_PAPER_SECRET_KEY: ${{ secrets.ALPACA_PAPER_SECRET_KEY }}
+          PAPER_JOURNAL_DSN: ${{ secrets.PAPER_JOURNAL_DSN }}
+        run: |
+          if [ -z "$PAPER_JOURNAL_DSN" ]; then
+            echo "BLOCKED: PAPER_JOURNAL_DSN repository secret is not configured."
+            echo "See docs/PAPER_WORKER_READONLY.md for secure setup. ZERO trades."
+            exit 2
+          fi
+          python -m bot.paper_watchdog --output .state/paper-worker-preflight.json
+      - name: Save sanitized status report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: neon-paper-preflight-${{ github.run_id }}
+          path: .state/paper-worker-preflight.json
+          if-no-files-found: ignore
+          retention-days: 7
