@@ -91,3 +91,35 @@ Remember: profits and losses compound immediately from first
 closed trade, including below $1,000. 1% risk is the baseline;
 2% is an experiment and must not be silently enabled. Backtests
 are not forecast profits.
+
+## October 11 Neon role security finding
+
+Neon management API's default `create_postgres_role` produced a role
+that inherited `neon_superuser`, which had INSERT/UPDATE/DELETE power.
+**That unsafe test role was deleted before use.** We then created a
+different role through PostgreSQL SQL:
+
+- Role name: `hds_paper_monitor`.
+- Granted `CONNECT`, `USAGE` on `public`, and **SELECT only** on the
+  four `paper_*` journal tables.
+- Verified no INSERT/UPDATE/DELETE/TRUNCATE privileges; no
+  `neon_superuser` membership, table-creation privilege, database-creation
+  privilege, or role-management attribute.
+- Created WITHOUT a password. `pg_authid.rolpassword IS NULL` and
+  Neon reports `authentication_method = no_login`, so **it cannot
+  connect yet**. This is intentional until a secret is configured.
+
+The Python watcher now calls `assert_monitor_only()` before any broker
+query and **rejects owner/admin/write-enabled DSNs even if supplied**.
+
+**Owner-only next step:** In Neon SQL Editor, set a unique generated
+password on `hds_paper_monitor` using
+`ALTER ROLE hds_paper_monitor PASSWORD 'YOUR_SECRET';` with the
+placeholder replaced. Do not send the real password in chat or code.
+In Neon's Connection Details select `production`, `neondb`, and the
+restricted role, then copy the generated PostgreSQL URI to the
+`PAPER_JOURNAL_DSN` GitHub repository secret. Never commit the URI.
+
+This is a restricted READ-ONLY monitoring credential. Later journal
+writes and live paper order reservations require a **separate, narrowly
+scoped writer role**, a supervised deployment, and separate approval.
