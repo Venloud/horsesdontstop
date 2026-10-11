@@ -167,8 +167,7 @@ class PostgresPaperJournal:
         market-calendar-aware daily baseline, not this check alone.
         """
         from datetime import timedelta
-        if (day_start_utc.tzinfo is None or as_of_utc.tzinfo is None
-                or as_of_utc < day_start_utc):
+        if day_start_utc.tzinfo is None or as_of_utc.tzinfo is None:
             raise TradeBlocked("Invalid timezone-aware equity window")
         with self._connect() as conn:
             with conn.cursor() as cur:
