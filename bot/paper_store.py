@@ -157,22 +157,32 @@ class PostgresPaperJournal:
                     "ORDER BY created_at ASC LIMIT %s", (limit,))
                 return cur.fetchall()
 
-    def read_equity_references(self, day_start_utc):
-        """Read only. Daily starting equity and historical peak from snapshots.
+    def read_equity_references(self, day_start_utc, as_of_utc):
+        """Read only. Require an equity sample very near the NYSE opening.
 
-        Caller supplies the validated New York regular-session opening UTC
-        datetime. Missing values MUST remain a trading blocker.
+        The day's FIRST arbitrary late sample is not its opening equity and
+        would defeat a daily-loss cutoff. Only samples within five minutes
+        of the known New York regular open qualify. If missing, remain
+        BLOCKED for the rest of the day. A future writer needs an audited
+        market-calendar-aware daily baseline, not this check alone.
         """
-        if day_start_utc.tzinfo is None:
-            raise TradeBlocked("Trading day start must be timezone-aware")
+        from datetime import timedelta
+        if (day_start_utc.tzinfo is None or as_of_utc.tzinfo is None
+                or as_of_utc < day_start_utc):
+            raise TradeBlocked("Invalid timezone-aware equity window")
         with self._connect() as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     "SELECT equity FROM paper_equity_snapshots "
-                    "WHERE observed_at >= %s ORDER BY observed_at ASC LIMIT 1",
-                    (day_start_utc,))
+                    "WHERE observed_at >= %s AND observed_at < %s "
+                    "AND observed_at <= %s "
+                    "ORDER BY observed_at ASC LIMIT 1",
+                    (day_start_utc, day_start_utc + timedelta(minutes=5),
+                     as_of_utc))
                 start = cur.fetchone()
-                cur.execute("SELECT MAX(equity) FROM paper_equity_snapshots")
+                cur.execute(
+                    "SELECT MAX(equity) FROM paper_equity_snapshots "
+                    "WHERE observed_at <= %s", (as_of_utc,))
                 peak = cur.fetchone()
         return (start[0] if start else None,
                 peak[0] if peak and peak[0] is not None else None)
