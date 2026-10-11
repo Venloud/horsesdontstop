@@ -7,7 +7,7 @@ All entry signals are evaluated on the previous completed session.
 from dataclasses import asdict, dataclass
 from typing import Mapping, Sequence
 
-from .risk import max_shares
+from .risk import max_shares, risk_budget
 from .strategies import DailyBar, SECTOR_ETFS, STRATEGIES, signal_score
 
 
@@ -21,6 +21,9 @@ class ResearchTrade:
     exit: float
     pnl: float
     reason: str
+    entry_cash: float
+    exit_cash: float
+    risk_budget: float
 
 
 def run_portfolio(bars_by_symbol: Mapping[str, Sequence[DailyBar]],
@@ -70,6 +73,7 @@ def run_portfolio(bars_by_symbol: Mapping[str, Sequence[DailyBar]],
     trades = []
     equity_curve = []
     slip = slippage_bps / 10000
+    first_1000_day = None
 
     def close_position(day, price, reason):
         nonlocal cash, held
@@ -79,7 +83,8 @@ def run_portfolio(bars_by_symbol: Mapping[str, Sequence[DailyBar]],
         trades.append(ResearchTrade(
             held["symbol"], held["day"].isoformat(), day.isoformat(),
             held["shares"], round(held["entry"], 4), round(exit_fill, 4),
-            round(pnl, 2), reason))
+            round(pnl, 2), reason, round(held["entry_cash"], 2),
+            round(cash, 2), round(held["risk_budget"], 2)))
         held = None
 
     for day_i in range(start_index, end_index):
@@ -89,6 +94,10 @@ def run_portfolio(bars_by_symbol: Mapping[str, Sequence[DailyBar]],
         if held is not None:
             symbol = held["symbol"]
             current_i = index[symbol].get(day)
+            if current_i is None:
+                # Marking the holding with a stale last close invents a price
+                # path. Stop rather than quietly overstate performance.
+                raise ValueError(f"Missing held-stock daily bar: {symbol} on {day}")
             if current_i is not None:
                 bar = series[symbol][current_i]
                 # Stop levels derive strictly from completed PRIOR bars.
@@ -135,8 +144,11 @@ def run_portfolio(bars_by_symbol: Mapping[str, Sequence[DailyBar]],
                 qty = max_shares(cash, entry, initial_stop, risk_fraction)
                 if qty < 1:
                     continue
+                entry_cash = cash
                 cash -= qty * entry
                 held = {"symbol": symbol, "shares": qty, "entry": entry,
+                        "entry_cash": entry_cash,
+                        "risk_budget": risk_budget(entry_cash, risk_fraction),
                         "initial_stop": initial_stop, "peak_before_today": bar.open,
                         "last_close": bar.close, "day": day}
                 # Open-to-low order is observable only in coarse daily bars;
@@ -152,6 +164,8 @@ def run_portfolio(bars_by_symbol: Mapping[str, Sequence[DailyBar]],
             close_position(day, held["last_close"], "end_of_window")
         equity = cash if held is None else cash + held["shares"] * held["last_close"]
         equity_curve.append(equity)
+        if first_1000_day is None and equity >= 1000:
+            first_1000_day = day.isoformat()
 
     peak = starting_cash
     max_drawdown = 0.0
@@ -170,6 +184,8 @@ def run_portfolio(bars_by_symbol: Mapping[str, Sequence[DailyBar]],
         "last_day": market_days[end_index - 1].isoformat(),
         "sessions": len(equity_curve),
         "initial_cash": starting_cash,
+        "reinvest_realized_profits_from_first_trade": True,
+        "first_1000_equity_day": first_1000_day,
         "final_equity": round(equity_curve[-1], 2),
         "net_pnl": round(equity_curve[-1] - starting_cash, 2),
         "return_pct": round(100 * (equity_curve[-1] / starting_cash - 1), 2),
