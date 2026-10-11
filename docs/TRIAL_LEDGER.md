@@ -1,6 +1,6 @@
 # Phase 0 trial ledger: provenance and operating rules
 
-**Registered 2026-10-11, PR for owner review. No scored Phase 3 run yet.**
+**Registered and merged to `main` on 2026-10-11 in [PR #9](https://github.com/Venloud/horsesdontstop/pull/9). No scored Phase 3 run yet.**
 
 The canonical machine-readable file is [`research/TRIAL_LEDGER.csv`](../research/TRIAL_LEDGER.csv). It contains **80 real historical outcomes** extracted directly from the *public GitHub Actions job log*, not invented placeholders:
 
