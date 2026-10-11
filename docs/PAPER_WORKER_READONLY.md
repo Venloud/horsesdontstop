@@ -1,6 +1,6 @@
 # Next milestone: Neon-connected read-only paper watchdog
 
-**Branch:** `experiment/paper-neon-readonly-worker`  
+**Merged into:** `main`, PR #1, commit `6375d04b749316989e907930d7994f8cbbdef869`.  
 **Trading:** OFF. NO broker write API calls in this worker.
 
 ## What was built
@@ -43,30 +43,37 @@ confirmed `paper_control`, `paper_intents`,
 `paper_audit_events`, and `paper_equity_snapshots`
 exist on production. Kill switch is ON; submissions are OFF.
 The connection used by this ChatGPT Neon tool is **not automatically
-available inside GitHub Actions**.
+available inside GitHub Actions**. The owner subsequently configured the
+GitHub Actions secret, and a real read-only connection test passed.
 
-### One owner-only secret step required
+### Verified GitHub-to-Neon preflight — completed 2026-10-11
 
-1. Open the connected Neon Console project:
-   https://console.neon.tech/ and select **production** / **neondb**.
-2. Get a PostgreSQL connection string for a **dedicated least-privilege
-   monitoring role**, preferred over the powerful database owner role.
-   This initial watchdog needs SELECT on the four `public.paper_*`
-   tables, not INSERT/UPDATE/DELETE permissions. Ask for help creating
-   the monitor role if one is not available.
-3. In the GitHub repo https://github.com/Venloud/horsesdontstop
-   navigate to **Settings > Secrets and variables > Actions >
-   New repository secret**. Name it exactly `PAPER_JOURNAL_DSN`;
-   paste the full Neon PostgreSQL URI there, using `sslmode=require`.
-   Do not paste it in chat, code, workflow YAML or a public issue.
-4. After this branch's code is merged into `main`, use
-   **Actions > Neon + Alpaca Paper Preflight (Read Only) > Run workflow**.
-   It queries broker/Neon without changing any account or database
-   state. The assistant can retrieve its GitHub Action logs directly;
-   do not download an artifact manually unless you want to.
+**Success:** The owner privately configured the restricted monitor role's
+password and GitHub Actions repository secret `PAPER_JOURNAL_DSN`.
+An explicitly read-only GitHub Actions integration run completed
+successfully:
 
-**Security note:** A Neon MCP connection enables ChatGPT's management
-tools; it is NOT a secret-to-GitHub synchronization mechanism.
+https://github.com/Venloud/horsesdontstop/actions/runs/38114132972
+
+- 28 preflight-focused unit tests passed (1 nonfatal warning).
+- Connected to **production** `neondb` and Alpaca **PAPER**, using secret
+  values only from the CI environment.
+- Log: `READ ONLY: paper equity $500.00, positions 0, open orders 0,
+  blocked checks 8; ZERO order submissions.`
+- The worker's `assert_monitor_only()` gate ran first; it refuses a
+  Neon administrator role or a user with table write permissions.
+- A sanitized preflight artifact was uploaded. There were **no** journal
+  table inserts/updates, broker writes, or actual trades.
+- Neon production control was separately rechecked:
+  `kill_switch_active=TRUE`, `submissions_enabled=FALSE`.
+- The temporary workflow push trigger used to run the integration test
+  was removed in commit `47424a37d522df6c7876408362e4156aeffe68b1`.
+  Subsequent integration checks remain manual via workflow_dispatch.
+
+**No further Neon password or GitHub secret setup is needed for this
+read-only test.** Never disclose or paste the DSN. This proves CI can
+read the remote journal, **not** that a worker is deployed continuously
+or that paper execution is ready.
 
 ## Remaining for real automatic paper trading
 
@@ -92,34 +99,21 @@ closed trade, including below $1,000. 1% risk is the baseline;
 2% is an experiment and must not be silently enabled. Backtests
 are not forecast profits.
 
-## October 11 Neon role security finding
+## October 11 Neon role security finding (resolved)
 
-Neon management API's default `create_postgres_role` produced a role
-that inherited `neon_superuser`, which had INSERT/UPDATE/DELETE power.
-**That unsafe test role was deleted before use.** We then created a
-different role through PostgreSQL SQL:
+Neon's default `create_postgres_role` produced an unsafe test role
+inheriting `neon_superuser` and write permissions, which was **deleted
+before use**. A different role `hds_paper_monitor` was created in
+PostgreSQL without inherited administration privileges, and with **SELECT
+only** on the four `paper_*` journal tables.
 
-- Role name: `hds_paper_monitor`.
-- Granted `CONNECT`, `USAGE` on `public`, and **SELECT only** on the
-  four `paper_*` journal tables.
-- Verified no INSERT/UPDATE/DELETE/TRUNCATE privileges; no
-  `neon_superuser` membership, table-creation privilege, database-creation
-  privilege, or role-management attribute.
-- Created WITHOUT a password. `pg_authid.rolpassword IS NULL` and
-  Neon reports `authentication_method = no_login`, so **it cannot
-  connect yet**. This is intentional until a secret is configured.
+Role introspection verified no INSERT/UPDATE/DELETE/TRUNCATE privileges
+and no Neon admin membership or CREATE rights. The owner privately set
+a password for this restricted role. The successful GitHub integration
+test above confirms authentication and read access now work.
 
-The Python watcher now calls `assert_monitor_only()` before any broker
-query and **rejects owner/admin/write-enabled DSNs even if supplied**.
-
-**Owner-only next step:** In Neon SQL Editor, set a unique generated
-password on `hds_paper_monitor` using
-`ALTER ROLE hds_paper_monitor PASSWORD 'YOUR_SECRET';` with the
-placeholder replaced. Do not send the real password in chat or code.
-In Neon's Connection Details select `production`, `neondb`, and the
-restricted role, then copy the generated PostgreSQL URI to the
-`PAPER_JOURNAL_DSN` GitHub repository secret. Never commit the URI.
-
-This is a restricted READ-ONLY monitoring credential. Later journal
-writes and live paper order reservations require a **separate, narrowly
-scoped writer role**, a supervised deployment, and separate approval.
+The Python watcher calls `assert_monitor_only()` before broker queries
+and refuses an owner/admin/write-enabled DSN even if someone adds one
+by mistake. Keep this role read-only. Any future journal writer must
+use a separate, narrowly scoped service role and complete a separate
+review.
