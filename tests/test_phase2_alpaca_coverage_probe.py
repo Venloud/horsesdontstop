@@ -167,5 +167,6 @@ def test_probe_has_no_broker_or_database_writes():
     assert "TradingClient(" not in text
     assert ".submit_order(" not in text
     assert ".execute(" not in text
-    assert "Neon" not in text.split("def main()")[1]
+    assert "psycopg" not in text
+    assert "run_sql(" not in text
     assert "save_price" not in text
