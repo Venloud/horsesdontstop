@@ -47,7 +47,7 @@ def read_only_tick(trading_client, journal, *, now=None) -> dict:
         # Cannot rely on a partial durable ledger of outstanding orders.
         raise RuntimeError("Durable order intent list exceeds inspection limit")
     day_open_equity, peak_equity = journal.read_equity_references(
-        new_york_regular_open_utc(now))
+        new_york_regular_open_utc(now), now)
     account = trading_client.get_account()
     clock = trading_client.get_clock()
     positions = trading_client.get_all_positions()
