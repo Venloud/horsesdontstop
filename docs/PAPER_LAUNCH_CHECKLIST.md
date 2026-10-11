@@ -4,8 +4,7 @@
 > verified current status. This document originated as an earlier
 > launch-safety specification and contains historically true but
 > now stale implementation wording. The project now has a staged,
-> hard-disabled submit adapter on
-> `experiment/paper-broker-lifecycle-v1`; it has **never submitted
+> hard-disabled submit adapter on `main` (merged PR #7); it has **never submitted
 > a production PAPER order**. Neon production kill remains ON and
 > submissions OFF. Do not treat the existence of adapter code or
 > passing mocks as permission to trade.
