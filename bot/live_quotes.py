@@ -7,7 +7,7 @@ IEX quotes cover one exchange, not consolidated NBBO/SIP.
 """
 from dataclasses import asdict, dataclass
 from datetime import date, datetime, timezone
-from decimal import Decimal, ROUND_DOWN, ROUND_UP
+from decimal import Decimal, InvalidOperation, ROUND_DOWN, ROUND_UP
 import re
 
 from .paper_safety import TradeBlocked, make_client_order_id, money
@@ -61,7 +61,11 @@ def _size(value, name):
         n = int(value)
     except (TypeError, ValueError, OverflowError) as exc:
         raise TradeBlocked(f"Invalid {name}") from exc
-    if n < 1 or Decimal(str(value)) != n:
+    try:
+        exact = Decimal(str(value))
+    except (InvalidOperation, ValueError, TypeError) as exc:
+        raise TradeBlocked(f"Invalid {name}") from exc
+    if n < 1 or exact != n:
         raise TradeBlocked(f"Invalid {name}")
     return n
 
