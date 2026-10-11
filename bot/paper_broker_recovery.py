@@ -92,6 +92,10 @@ def inspect_nested_oto(plan: PaperOrderPlan, parent, *, position_qty) -> BrokerO
         blockers.append("broker_parent_status_missing")
     if qty > expected_qty:
         blockers.append("broker_position_exceeds_authorized_shares")
+    # Matching symbols alone cannot explain a position larger than the
+    # number of parent shares actually filled into this account.
+    if qty > fill_qty:
+        blockers.append("broker_position_exceeds_parent_filled_shares")
     if parent_status in ENTRY_TERMINAL_UNFILLED and (qty or fill_qty):
         blockers.append("terminal_parent_has_unresolved_position")
     if parent_status in ENTRY_OPEN and fill_qty:
@@ -117,9 +121,18 @@ def inspect_nested_oto(plan: PaperOrderPlan, parent, *, position_qty) -> BrokerO
             trigger = money(getattr(leg, "stop_price", None))
             if trigger <= 0 or abs(trigger - money(plan.protective_stop)) > Decimal(".001"):
                 continue
+            # The child must have its own stable ID. A reported
+            # parent_order_id that is present must agree with the nested
+            # OTO parent. Some broker nested views omit that field, so
+            # actual nesting is the primary linkage evidence.
+            if not getattr(leg, "id", None):
+                continue
+            parent_ref = getattr(leg, "parent_order_id", None)
+            if parent_ref is not None and str(parent_ref) != pid:
+                continue
             leg_qty = quantity(getattr(leg, "qty", None))
             leg_filled = quantity(getattr(leg, "filled_qty", None))
-            if leg_filled > leg_qty:
+            if leg_filled > leg_qty or leg_qty > expected_qty:
                 continue
             if leg_qty - leg_filled >= qty and leg_qty > 0:
                 protective.append(leg)
@@ -146,7 +159,8 @@ def inspect_nested_oto(plan: PaperOrderPlan, parent, *, position_qty) -> BrokerO
         client_order_id=plan.client_order_id,
         parent_order_id=pid,
         status=parent_status,
-        has_verified_protective_stop=(qty > 0 and len(active) == 1
+        has_verified_protective_stop=(not blockers and qty > 0
+                                     and len(active) == 1
                                      and field(active[0], "time_in_force") == "gtc"),
         paper_exposure_shares=float(qty),
         blockers=tuple(dict.fromkeys(blockers)),
