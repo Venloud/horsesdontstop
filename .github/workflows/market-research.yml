@@ -1,0 +1,37 @@
+name: Market Research (No Trades)
+on:
+  workflow_dispatch:
+  schedule:
+    # Weekdays 13:15 UTC, research snapshot (DST shifts local time).
+    - cron: '15 13 * * 1-5'
+permissions:
+  contents: read
+concurrency:
+  group: market-research
+  cancel-in-progress: false
+jobs:
+  research:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      ALPACA_PAPER_API_KEY: ${{ secrets.ALPACA_PAPER_API_KEY }}
+      ALPACA_PAPER_SECRET_KEY: ${{ secrets.ALPACA_PAPER_SECRET_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Check paper account and run read-only daily-bar scanner
+        run: |
+          python -m bot.main --check
+          python -m bot.scan_cli --symbols AAPL,MSFT,NVDA,AMD,TSLA
+      - name: Upload research snapshot
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: market-research-${{ github.run_id }}
+          path: .state/research.sqlite3
+          if-no-files-found: ignore
+          retention-days: 7
