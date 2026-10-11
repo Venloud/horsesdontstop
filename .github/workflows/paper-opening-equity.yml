@@ -1,0 +1,46 @@
+name: PAPER Opening Equity Snapshot (Trading Disabled)
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/paper-opening-equity.yml
+      - bot/paper_equity_open.py
+      - tests/test_paper_equity_open.py
+      - bot/paper_execution_journal.py
+  schedule:
+    # 9:30 a.m. America/New_York in EDT and EST respectively.
+    # A delayed GitHub job may miss the strict 09:30–09:35 window.
+    - cron: '30 13,14 * * 1-5'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: horsesdontstop-paper-opening-equity
+  cancel-in-progress: false
+
+jobs:
+  paper-opening-equity:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Verify opening snapshot and trading-off guarantees
+        run: |
+          python -m pytest -q \
+            tests/test_paper_equity_open.py \
+            tests/test_paper_execution_journal.py \
+            tests/test_paper_supervised_execution.py
+      - name: Capture PAPER baseline only during actual 09:30-09:35 ET opening
+        if: github.event_name != 'push'
+        env:
+          ALPACA_PAPER_API_KEY: ${{ secrets.ALPACA_PAPER_API_KEY }}
+          ALPACA_PAPER_SECRET_KEY: ${{ secrets.ALPACA_PAPER_SECRET_KEY }}
+          PAPER_EXECUTOR_DSN: ${{ secrets.PAPER_EXECUTOR_DSN }}
+        run: python -m bot.paper_equity_open
