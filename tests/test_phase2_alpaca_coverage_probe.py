@@ -90,6 +90,18 @@ def test_multiple_pages_cover_symbols_not_seen_on_first_page():
     assert result["complete_pagination"] is True
 
 
+def test_api_inclusive_end_boundary_is_accepted():
+    result = probe.probe_window(
+        "key", "secret", "bear2022", "2022-06-01",
+        "2022-07-01", ("SPY",),
+        fetch=lambda *_args, **_kw: {
+            "bars": {"SPY": [bar("2022-07-01")]},
+            "next_page_token": None,
+        })
+    assert result["symbols"]["SPY"]["bars"] == 1
+    assert result["to_inclusive"] == "2022-07-01"
+
+
 def test_empty_delisted_symbol_is_unknown_not_false_claim_of_survivorship():
     result = probe.probe_window(
         "key", "secret", "delisted", "2022-06-01",
@@ -103,7 +115,7 @@ def test_empty_delisted_symbol_is_unknown_not_false_claim_of_survivorship():
 
 @pytest.mark.parametrize("payload", [
     {"bars": {"SPY": [bar("2021-12-01")]}},
-    {"bars": {"SPY": [bar("2022-07-01")]}},
+    {"bars": {"SPY": [bar("2022-07-02")]}},
     {"bars": {"SPY": [{"t": "2022-06-xxT00:00:00Z"}]}},
     {"bars": {"HIDDEN": [bar("2022-06-10")]}},
     {"bars": {"SPY": {"t": "2022-06-10"}}},
