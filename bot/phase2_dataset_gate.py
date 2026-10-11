@@ -123,7 +123,13 @@ def validate_manifest(manifest: Any, root: Path) -> list[str]:
         assets = {}
     headers = {
         "bars": {"symbol", "day", "open", "high", "low", "close", "volume"},
-        "universe_membership": {"symbol", "first_eligible_day", "last_eligible_day"},
+        # Do not use retrospective first/last eligibility ranges;
+        # complete dated snapshots with source knowledge clocks are
+        # required for point-in-time research eligibility.
+        "universe_membership": {
+            "snapshot_day", "known_at_utc", "snapshot_id",
+            "security_id", "symbol", "eligible", "source_id", "complete",
+        },
         "benchmark_total_return": {"day", "total_return_index"},
         "contributions": {"day", "amount_usd"},
     }
