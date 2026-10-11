@@ -140,6 +140,43 @@ class PostgresPaperJournal:
                 )
                 return cur.fetchone() is not None
 
+    def read_unresolved_intents(self, limit: int = 501):
+        """Read durable order intents. A saturated result is NOT complete.
+
+        Never assume a previous 'reserved' or 'unknown' order failed simply
+        because it isn't in a recent Alpaca order-list response.
+        """
+        if not 1 <= limit <= 1000:
+            raise TradeBlocked("Invalid reconciliation intent limit")
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT client_order_id, status, symbol, whole_shares "
+                    "FROM paper_intents "
+                    "WHERE status IN ('reserved','submitted','accepted','unknown') "
+                    "ORDER BY created_at ASC LIMIT %s", (limit,))
+                return cur.fetchall()
+
+    def read_equity_references(self, day_start_utc):
+        """Read only. Daily starting equity and historical peak from snapshots.
+
+        Caller supplies the validated New York regular-session opening UTC
+        datetime. Missing values MUST remain a trading blocker.
+        """
+        if day_start_utc.tzinfo is None:
+            raise TradeBlocked("Trading day start must be timezone-aware")
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT equity FROM paper_equity_snapshots "
+                    "WHERE observed_at >= %s ORDER BY observed_at ASC LIMIT 1",
+                    (day_start_utc,))
+                start = cur.fetchone()
+                cur.execute("SELECT MAX(equity) FROM paper_equity_snapshots")
+                peak = cur.fetchone()
+        return (start[0] if start else None,
+                peak[0] if peak and peak[0] is not None else None)
+
     def get_intent(self, client_order_id: str):
         with self._connect() as conn:
             with conn.cursor() as cur:
