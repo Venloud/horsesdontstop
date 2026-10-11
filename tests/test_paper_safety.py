@@ -2,8 +2,6 @@
 from datetime import date
 
 import pytest
-from alpaca.trading.enums import OrderClass, OrderSide
-
 from bot.paper_safety import (
     PAPER_ENDPOINT, PaperSafetyState, TradeBlocked, execution_blockers,
     make_client_order_id, make_protective_alpaca_order, plan_paper_entry,
@@ -106,12 +104,7 @@ def test_risk_cutoffs_and_existing_orders():
         healthy_state(broker_endpoint="https://api.alpaca.markets"))
 
 
-def test_oto_order_contains_broker_side_stop_and_no_target():
+def test_legacy_market_oto_is_retired_to_prevent_unrestricted_buying():
     plan = plan_paper_entry("F", TODAY, 25, 500, 500, .01)
-    order = make_protective_alpaca_order(plan)
-    assert order.order_class == OrderClass.OTO
-    assert order.side == OrderSide.BUY
-    assert order.qty == plan.whole_shares
-    assert order.stop_loss.stop_price == plan.protective_stop
-    assert order.take_profit is None
-    assert order.client_order_id == plan.client_order_id
+    with pytest.raises(TradeBlocked, match="retired"):
+        make_protective_alpaca_order(plan)
