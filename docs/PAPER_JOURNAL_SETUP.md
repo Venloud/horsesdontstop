@@ -1,8 +1,9 @@
 # Durable PAPER journal, production schema deployed (2026-10-11)
 
-**Neon production PostgreSQL has the four schema tables, but the Python bot
-and the GitHub Actions workflow are NOT connected to them yet. No paper
-order submissions are enabled.**
+**Neon production PostgreSQL has the four schema tables, and the
+read-only Python preflight successfully connected to them from GitHub
+Actions on 2026-10-11. Actual paper order submissions remain disabled.
+There is NO deployed persistent worker or writer connection.**
 
 ## Verified deployment
 
@@ -21,8 +22,17 @@ order submissions are enabled.**
   `paper_control.submissions_enabled = FALSE`.
 - Verified `paper_intents = 0`, `paper_audit_events = 0`,
   `paper_equity_snapshots = 0`. These tables are intentionally empty.
-- This **proves schema deployment**, not a Python worker connection,
-  end-to-end transaction behavior, or broker order execution.
+- The migration proves schema deployment. A later read-only GitHub
+  workflow proved Python can connect, but **not** live journal write
+  behavior, durable unattended worker hosting, or broker order execution.
+- GitHub Actions read-only Neon + Alpaca paper preflight:
+  https://github.com/Venloud/horsesdontstop/actions/runs/38114132972 .
+  **28 tests passed**, Alpaca paper equity $500, 0 positions,
+  0 open orders, 8 safety blockers, **ZERO order submissions**.
+- The owner configured the protected `PAPER_JOURNAL_DSN` GitHub repository
+  secret for restricted role `hds_paper_monitor`; tested successful
+  authentication and enforced SELECT-only checks. Secret contents were
+  not put in code or logs.
 
 ## How the journal should work
 
@@ -39,13 +49,14 @@ order submissions are enabled.**
 
 ## Still required before paper trading
 
-1. Provision a least-privileged dedicated database role, securely pass
-   credentials as `PAPER_JOURNAL_DSN` to the future worker or GitHub
-   Secrets, **never in a public file, chat, or logs**.
-2. Add read-only health checks plus real PostgreSQL transaction tests,
-   including concurrent duplicate reservations, rollback and outage
-   handling. Never make test reservations in production trading tables
-   unless explicitly authorized.
+1. **Completed for monitoring:** Dedicated SELECT-only database role
+   `hds_paper_monitor` and securely configured GitHub Actions
+   `PAPER_JOURNAL_DSN`. Live CI connectivity verified. Maintain the
+   restricted permissions and never print or commit the DSN.
+2. **Still required for writing:** A separately scoped **writer** credential
+   and real PostgreSQL transaction tests on an isolated test database
+   or branch, including concurrent duplicate reservations, rollback
+   and outage handling. Do not create test order intents in production.
 3. Build and test paper-only broker order reconciliation and a guarded
    adapter for attached stop-loss protection. Ambiguous broker responses
    must fail closed and be reconciled by client order ID before retrying.
