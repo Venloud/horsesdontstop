@@ -14,6 +14,7 @@ from datetime import datetime, timedelta, time as clocktime, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from .monitor_policy import assess_read_only_report
 from .paper_reconcile import reconcile_observation
 from .paper_safety import (
     PAPER_ENDPOINT, PaperSafetyState, execution_blockers, money,
@@ -127,6 +128,8 @@ def run_once(*, output: str) -> dict:
         key, secret, paper=True, url_override=PAPER_ENDPOINT)
     journal = PostgresPaperJournal(dsn)
     report = read_only_tick(trading, journal)
+    incident = assess_read_only_report(report)
+    report["monitor_incident"] = incident.as_dict()
     if output:
         path = Path(output)
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -159,8 +162,15 @@ def main():
                 f"positions {report['reconciliation']['open_broker_positions']}, "
                 f"open orders {report['reconciliation']['open_broker_orders']}, "
                 f"blocked checks {len(report['safety_blockers'])}; "
+                f"monitor level {report['monitor_incident']['level']}; "
                 "ZERO order submissions."
             )
+            if report["monitor_incident"]["level"] == "critical":
+                print("CRITICAL: paper state unsafe or unverified; "
+                      "review Alpaca positions and stop protection.",
+                      file=sys.stderr)
+                if not args.loop:
+                    raise SystemExit(3)
             if not args.loop:
                 break
         if args.loop:
