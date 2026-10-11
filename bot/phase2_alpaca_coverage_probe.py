@@ -48,9 +48,13 @@ def _read_page(key: str, secret: str, symbols, start: str, end: str,
     try:
         with opener(req, timeout=25) as response:
             data = response.read(6_000_001)
-    except (HTTPError, URLError, OSError, ValueError):
-        # Some exception messages may contain URLs, headers or broker tokens.
-        # Never log the original exception or HTTP body.
+    except HTTPError as exc:
+        # HTTP status is public; URL, response body and headers are not.
+        code = exc.code if exc.code in (401, 403, 404, 422, 429,
+                                         500, 502, 503, 504) else 0
+        raise RuntimeError(f"alpaca_marketdata_http_{code}") from None
+    except (URLError, OSError, ValueError):
+        # Never log the underlying response, URL or connection exception.
         raise RuntimeError("alpaca_marketdata_get_failed") from None
     if len(data) > 6_000_000:
         raise RuntimeError("alpaca_marketdata_response_too_large")
@@ -130,8 +134,15 @@ def main() -> int:
     for label, start, end, symbols in WINDOWS:
         try:
             report = probe_window(key, secret, label, start, end, symbols)
-        except Exception:
-            print(f"COVERAGE BLOCKED: {label} failed to retrieve valid data; "
+        except Exception as exc:
+            # Only codes originating from our own finite error namespace
+            # are printed; arbitrary HTTP/JSON/exceptions may contain keys.
+            reason = str(exc)
+            safe = reason if (isinstance(exc, RuntimeError)
+                              and reason.startswith("alpaca_marketdata_")
+                              and reason.replace("_", "").isalnum()
+                              and len(reason) < 72) else "retrieval_invalid"
+            print(f"COVERAGE BLOCKED: {label} ({safe}); "
                   "no broker orders or datasets saved.")
             return 2
         reports.append(report)
