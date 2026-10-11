@@ -158,8 +158,14 @@ def select_historical_universe(
     ):
         raise UniverseBlocked("Decision time must be timezone-aware")
     cutoff = decision_at_utc.astimezone(timezone.utc)
-    if day >= cutoff.astimezone(NY).date():
+    decision_day = cutoff.astimezone(NY).date()
+    if day >= decision_day:
         raise UniverseBlocked("Same-day or future universe snapshot cannot select an entry")
+    # A stale snapshot must not be silently reused after extended
+    # outages. The exact previous market session still comes from a
+    # separately validated NYSE calendar; this is only a max-age gate.
+    if (decision_day - day).days > 4:
+        raise UniverseBlocked("Historical universe snapshot is too stale")
 
     filtered = []
     total = 0
