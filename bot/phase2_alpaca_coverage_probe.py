@@ -139,10 +139,25 @@ def main() -> int:
             # Only codes originating from our own finite error namespace
             # are printed; arbitrary HTTP/JSON/exceptions may contain keys.
             reason = str(exc)
+            allowed_categories = {
+                "alpaca_marketdata_get_failed",
+                "alpaca_marketdata_response_too_large",
+                "alpaca_marketdata_invalid_json",
+                "alpaca_marketdata_unexpected_schema",
+                "alpaca_marketdata_unexpected_bars",
+                "alpaca_marketdata_invalid_bar",
+                "alpaca_marketdata_invalid_timestamp",
+                "alpaca_marketdata_out_of_window",
+                "alpaca_marketdata_invalid_date",
+                "alpaca_marketdata_invalid_pagination",
+                "alpaca_marketdata_incomplete_pagination",
+                "alpaca_marketdata_http_0",
+            } | {
+                f"alpaca_marketdata_http_{code}"
+                for code in (401, 403, 404, 422, 429, 500, 502, 503, 504)
+            }
             safe = reason if (isinstance(exc, RuntimeError)
-                              and reason.startswith("alpaca_marketdata_")
-                              and reason.replace("_", "").isalnum()
-                              and len(reason) < 72) else "retrieval_invalid"
+                              and reason in allowed_categories) else "retrieval_invalid"
             print(f"COVERAGE BLOCKED: {label} ({safe}); "
                   "no broker orders or datasets saved.")
             return 2
