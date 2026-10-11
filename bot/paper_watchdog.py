@@ -14,7 +14,8 @@ from datetime import datetime, timedelta, time as clocktime, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from .monitor_policy import assess_read_only_report
+from .monitor_policy import assess_read_only_report, unverified_incident
+from .monitor_notify import NotificationThrottle, NotificationError
 from .paper_reconcile import reconcile_observation
 from .paper_safety import (
     PAPER_ENDPOINT, PaperSafetyState, execution_blockers, money,
@@ -146,6 +147,20 @@ def main():
     args = parser.parse_args()
     if args.loop and not 30 <= args.interval_seconds <= 3600:
         parser.error("Loop interval must be 30 to 3600 seconds")
+    ntfy_topic = os.getenv("PAPER_MONITOR_NTFY_TOPIC")
+    notifications = NotificationThrottle(cooldown_seconds=3600)
+
+    def attempt_notice(incident):
+        if not ntfy_topic:
+            return
+        try:
+            notifications.maybe_send(
+                incident, topic=ntfy_topic, now_seconds=time.monotonic())
+        except NotificationError:
+            # Topic values and transport error strings are secrets.
+            print("ALERT DELIVERY FAILED (credentials withheld).",
+                  file=sys.stderr)
+
     while True:
         try:
             report = run_once(output=args.output)
@@ -154,6 +169,7 @@ def main():
             # with credentials. Keep all exception details out of logs.
             print("BLOCKED: broker/Neon preflight unavailable; no orders sent.",
                   file=sys.stderr)
+            attempt_notice(unverified_incident())
             if not args.loop:
                 raise SystemExit(2)
         else:
@@ -169,6 +185,7 @@ def main():
                 print("CRITICAL: paper state unsafe or unverified; "
                       "review Alpaca positions and stop protection.",
                       file=sys.stderr)
+                attempt_notice(assess_read_only_report(report))
                 if not args.loop:
                     raise SystemExit(3)
             if not args.loop:
