@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from bot.phase2_dataset_gate import validate_manifest
-from tests.test_phase2_dataset_gate import synthetic_manifest
+from test_phase2_dataset_gate import synthetic_manifest
 
 
 def replace_csv(tmp_path, manifest, key, body):
