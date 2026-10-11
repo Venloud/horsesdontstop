@@ -6,6 +6,9 @@ on:
     paths:
       - bot/paper_safety.py
       - bot/paper_readiness_cli.py
+      - bot/paper_store.py
+      - requirements.txt
+      - tests/test_paper_store.py
       - tests/test_paper_safety.py
       - tests/test_paper_readiness.py
       - .github/workflows/paper-readiness.yml
