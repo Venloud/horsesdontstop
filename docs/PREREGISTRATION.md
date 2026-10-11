@@ -2,7 +2,7 @@
 
 **Prepared:** 2026-10-11 UTC  
 **Owner-approved Phase 0 choices:** seven strategy candidates **including overnight drift**; an index-fund benchmark with **the same actual contribution amounts on the same dates** as the strategy portfolio; **15% maximum historical drawdown** at 1% risk; **300 sufficiently independent trades where applicable, with a long-history exception for low-frequency strategies**.  
-**Status:** **OWNER-APPROVED PHASE 0 RULES, IN PR AWAITING MERGE**. On 2026-10-11 the owner additionally approved the **21 exact parameter variants** below, **30 bps adverse slippage per side** as the primary cost model and **10 calendar years** as the low-frequency exception. These research choices are frozen on merge; any later change requires a dated, pre-test amendment counted as another trial. **No new scored Phase 3 comparisons** may run until this specification is merged AND the still-missing Phase 2 dataset/universe/fold/seed manifest is precommitted (Section 8). Approving research rules never authorizes actual paper orders, real-money orders, deposits, or changing Neon switches.
+**Status:** **OWNER-APPROVED AND MERGED TO `main` IN [PR #9](https://github.com/Venloud/horsesdontstop/pull/9), 2026-10-11**. On 2026-10-11 the owner additionally approved the **21 exact parameter variants** below, **30 bps adverse slippage per side** as the primary cost model and **10 calendar years** as the low-frequency exception. These research choices are now frozen; any later change requires a dated, pre-test amendment counted as another trial. **No new scored Phase 3 comparisons** may run until the still-missing Phase 2 dataset/universe/fold/seed manifest is precommitted (Section 8). Approving research rules never authorizes actual paper orders, real-money orders, deposits, or changing Neon switches.
 
 This is a prospective research evaluation protocol. Historical strategies and windows already examined in 2026 are **exploratory**, not independent confirmatory evidence. Phase 1 trading infrastructure can proceed separately with submissions disabled. This document is not financial advice or a promised path to $10,000.
 
@@ -35,7 +35,7 @@ Use the candidate IDs below as stable keys in every trial. Only the **four exist
 
 ## 3. Owner-approved, frozen parameter grid (21 variants)
 
-The options below define the **owner-approved grid of exactly 21 variants total**, with at most 30 per candidate. No new variants may be introduced into this tournament without a dated preregistration amendment that counts as a new trial. They are specifications for Phase 2 implementation, **not a claim all seven strategies are coded**. No scored test is authorized until the PR is merged and the frozen dataset/fold manifest is committed. All indicators use bars **fully closed before** the proposed entry. An existing implementation default is marked. Any variation, robustness retry, regime filter, data-universe tweak or change in exit logic counts as an additional trial in the ledger.
+The options below define the **owner-approved grid of exactly 21 variants total**, with at most 30 per candidate. No new variants may be introduced into this tournament without a dated preregistration amendment that counts as a new trial. They are specifications for Phase 2 implementation, **not a claim all seven strategies are coded**. No scored test is authorized until the frozen dataset/fold manifest is committed. All indicators use bars **fully closed before** the proposed entry. An existing implementation default is marked. Any variation, robustness retry, regime filter, data-universe tweak or change in exit logic counts as an additional trial in the ledger.
 
 | Candidate | Predeclared variants (cross product only where specified) | Max |
 |---|---|---:|
@@ -107,4 +107,4 @@ The options below define the **owner-approved grid of exactly 21 variants total*
 
 **Research run statuses:** `legacy_exploratory`, `synthetic_harness`, `prospective_discovery`, `scored_holdout`, `paper_execution_validation`. Only a preregistered scored holdout plus the rest of these gates is eligible to claim strategy advancement. Real fills in Phase 4 validate execution behavior, not statistically establish a market edge from a handful of trades.
 
-**Next engineering step after this PR is merged:** build the Phase 2 harness and extend the ledger, while independently completing persistent-worker and stop-coverage safety work. Never claim Phase 0 evidence authorizes trading.
+**Next engineering step after PR #9 merge:** build the Phase 2 harness and extend the ledger, while independently completing persistent-worker and stop-coverage safety work. Never claim Phase 0 evidence authorizes trading.
