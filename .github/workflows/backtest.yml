@@ -1,0 +1,29 @@
+name: Historical Backtest (No Trades)
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  backtest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      ALPACA_PAPER_API_KEY: ${{ secrets.ALPACA_PAPER_API_KEY }}
+      ALPACA_PAPER_SECRET_KEY: ${{ secrets.ALPACA_PAPER_SECRET_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Compare 1% and 2% risk on historical IEX bars
+        run: python -m bot.backtest_cli --days 365
+      - name: Save research report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: historical-backtest-${{ github.run_id }}
+          path: .state/backtest-report.json
+          if-no-files-found: ignore
+          retention-days: 14
