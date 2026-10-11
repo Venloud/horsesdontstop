@@ -16,7 +16,7 @@ CREATE TABLE IF NOT EXISTS public.paper_worker_heartbeat (
 
 -- After review, provision a SEPARATE non-admin SQL role:
 --   hds_paper_heartbeat (LOGIN, no neon_superuser membership, no CREATE)
--- and give it only INSERT, SELECT and column-limited UPDATE on this table.
+-- and give it only SELECT, INSERT and UPDATE on THIS table, never others.
 -- DO NOT give it UPDATE on public.paper_control, or INSERT/UPDATE/DELETE
 -- on public.paper_intents or public.paper_audit_events.
 --
@@ -24,8 +24,7 @@ CREATE TABLE IF NOT EXISTS public.paper_worker_heartbeat (
 --
 -- GRANT USAGE ON SCHEMA public TO hds_paper_heartbeat;
 -- GRANT SELECT, INSERT ON public.paper_worker_heartbeat TO hds_paper_heartbeat;
--- GRANT UPDATE (worker_id, sequence, observed_at, poll_succeeded)
---   ON public.paper_worker_heartbeat TO hds_paper_heartbeat;
+-- GRANT UPDATE ON public.paper_worker_heartbeat TO hds_paper_heartbeat;
 -- GRANT SELECT ON public.paper_worker_heartbeat TO hds_paper_monitor;
 --
 -- DO NOT grant to the database owner or add credentials to this repo.
