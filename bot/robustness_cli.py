@@ -84,6 +84,22 @@ def main():
         if not data.get(symbol):
             raise SystemExit("No data for required symbol " + symbol)
     rows = compare_robustness(data, symbols)
+    # Unlike the separate window experiments, these portfolios retain their
+    # entire compounding history from the first eligible entry to the end.
+    # There is NO reset at $1,000, at year boundaries, or after a profit.
+    continuous = []
+    for strategy in STRATEGIES:
+        for risk in (.01, .02):
+            for slip in (10.0, 30.0):
+                result = run_portfolio(data, strategy, symbols,
+                                       risk_fraction=risk, start_index=260,
+                                       starting_cash=500.0, slippage_bps=slip)
+                result["evaluation"] = "continuous_no_resets"
+                result["slippage_bps"] = slip
+                continuous.append(result)
+                print("CONTINUOUS " + json.dumps(
+                    {k: v for k, v in result.items() if k != "trades"},
+                    sort_keys=True))
     summary = []
     for strategy in STRATEGIES:
         for risk in (0.01, 0.02):
@@ -117,6 +133,8 @@ def main():
         "compounding_starts_at_equity": 500,
         "first_1000_is_not_a_compounding_threshold": True,
         "monthly_deposits_simulated": 0,
+        "continuous_test_from_equity": 500,
+        "continuous_test_compounds_without_resets": True,
         "monthly_optional_contribution_cap_usd": 100,
         "window_design": (
             "Four consecutive, nonoverlapping ~105-session research windows "
@@ -135,12 +153,15 @@ def main():
             "Daily OHLC fills/stop gaps are simplified; short intraday drawdowns can exceed reported daily close drawdown.",
         ],
         "summary": summary,
+        "continuous_portfolios": continuous,
         "runs": rows,
     }
     os.makedirs(os.path.dirname(args.output) or ".", exist_ok=True)
     with open(args.output, "w", encoding="utf-8") as file:
         json.dump(report, file, indent=2)
-    print(f"Saved {len(rows)} simulations, {len(summary)} summary rows. No orders sent.")
+    print(f"Saved {len(rows)} independent window simulations, "
+          f"{len(continuous)} continuously compounded simulations, "
+          f"{len(summary)} summary rows. No orders sent.")
 
 
 if __name__ == "__main__":
