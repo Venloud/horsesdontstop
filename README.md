@@ -27,13 +27,13 @@ an always-on trading supervisor.
 
 ## Phase 0 strategy preregistration
 
-**Owner-approved research design, pending PR review and merge:**
+**Owner-approved research rules, merged in [PR #9](https://github.com/Venloud/horsesdontstop/pull/9):**
 [seven strategy candidates, matching actual-deposit benchmark, 15% historical
 drawdown limit, independent-trade and long-history thresholds](docs/PREREGISTRATION.md).
 
 [Audit the prior 80 research outcomes](research/TRIAL_LEDGER.csv) and read
 [trial-ledger provenance / use rules](docs/TRIAL_LEDGER.md). These are
 historical *backtests*, not realized profits. No scored Phase 3 comparison
-should run before the detailed rules are reviewed and frozen.
+may run until the Phase 2 data/universe/fold/seed manifest is committed. The Phase 0 candidate and pass rules are frozen.
 
 **Research documentation does not enable PAPER or real-money trading.**
