@@ -1,0 +1,37 @@
+name: Robustness Audit (No Trades)
+on:
+  workflow_dispatch:
+  schedule:
+    # First day of each month, 16:10 UTC, research only.
+    - cron: '10 16 1 * *'
+permissions:
+  contents: read
+concurrency:
+  group: horsesdontstop-robustness-audit
+  cancel-in-progress: false
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Test compounding and multiwindow accounting
+        run: python -m pytest -q tests/test_compounding_robustness.py tests/test_strategy_research.py
+      - name: Evaluate fixed strategies under worse execution on extended IEX history
+        env:
+          ALPACA_PAPER_API_KEY: ${{ secrets.ALPACA_PAPER_API_KEY }}
+          ALPACA_PAPER_SECRET_KEY: ${{ secrets.ALPACA_PAPER_SECRET_KEY }}
+        run: python -m bot.robustness_cli --days 1095
+      - name: Save detailed audit report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: robustness-audit-${{ github.run_id }}
+          path: .state/robustness-report.json
+          if-no-files-found: ignore
+          retention-days: 14
