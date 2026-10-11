@@ -15,7 +15,7 @@
   `paper_equity_snapshots`, column-scoped UPDATE only on status,
   broker_order_id and updated_at for `paper_intents`, and sequence
   USAGE for audit/snapshot IDs. **No UPDATE of `paper_control`,
-  no DELETE, no TRUNCATE.** This role currently has **no password**.
+  no DELETE, no TRUNCATE.** This role now has a privately configured password, and its independent GitHub Actions connection has passed.
 - `bot/paper_execution_journal.py`: permission attestation rejects
   owner/admin or incomplete roles, verifies a proposed protected
   intent, locks `paper_control` with `SELECT ... FOR SHARE`,
