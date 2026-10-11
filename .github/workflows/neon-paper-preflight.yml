@@ -1,12 +1,28 @@
 name: Neon + Alpaca Paper Preflight (Read Only)
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/neon-paper-preflight.yml
+      - bot/paper_watchdog.py
+      - bot/paper_reconcile.py
+      - bot/monitor_policy.py
+      - bot/monitor_notify.py
+      - tests/test_monitor_policy.py
+      - tests/test_monitor_notify.py
+  schedule:
+    # 15-minute safety observations during the broader US market day.
+    # GitHub cron is best effort and may be late or skipped.
+    - cron: '*/15 12-23 * * 1-5'
+    # Off-hours and weekends provide infrequent extra checks.
+    - cron: '0 0,4,8 * * 1-5'
+    - cron: '0 0,6,12,18 * * 0,6'
 permissions:
   contents: read
 concurrency:
   group: horsesdontstop-neon-preflight
   cancel-in-progress: false
-
 jobs:
   preflight:
     runs-on: ubuntu-latest
@@ -18,17 +34,26 @@ jobs:
           python-version: '3.11'
           cache: pip
       - run: pip install -r requirements.txt
-      - name: Validate no-trade safety, reconciliation, and Neon interfaces
-        run: python -m pytest -q tests/test_paper_store.py tests/test_paper_safety.py tests/test_paper_reconcile.py tests/test_paper_watchdog.py
+      - name: Validate no-trade safety, reconciliation, and monitoring
+        run: |
+          python -m pytest -q \
+            tests/test_paper_store.py \
+            tests/test_paper_safety.py \
+            tests/test_paper_reconcile.py \
+            tests/test_paper_watchdog.py \
+            tests/test_paper_store_readonly.py \
+            tests/test_monitor_policy.py \
+            tests/test_monitor_notify.py
       - name: Read-only Neon and Alpaca broker preflight
         env:
           ALPACA_PAPER_API_KEY: ${{ secrets.ALPACA_PAPER_API_KEY }}
           ALPACA_PAPER_SECRET_KEY: ${{ secrets.ALPACA_PAPER_SECRET_KEY }}
           PAPER_JOURNAL_DSN: ${{ secrets.PAPER_JOURNAL_DSN }}
+          PAPER_MONITOR_NTFY_TOPIC: ${{ secrets.PAPER_MONITOR_NTFY_TOPIC }}
         run: |
           if [ -z "$PAPER_JOURNAL_DSN" ]; then
             echo "BLOCKED: PAPER_JOURNAL_DSN repository secret is not configured."
-            echo "See docs/PAPER_WORKER_READONLY.md for secure setup. ZERO trades."
+            echo "ZERO trades. Connect a SELECT-only role; do not use an owner/admin DSN."
             exit 2
           fi
           python -m bot.paper_watchdog --output .state/paper-worker-preflight.json
