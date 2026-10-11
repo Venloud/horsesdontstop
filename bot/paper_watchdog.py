@@ -41,6 +41,9 @@ def read_only_tick(trading_client, journal, *, now=None) -> dict:
     from alpaca.trading.requests import GetOrdersRequest
 
     now = now or datetime.now(timezone.utc)
+    # A Neon-managed role can carry inherited admin privileges by default.
+    # Refuse anything other than a properly restricted observer credential.
+    journal.assert_monitor_only()
     control = journal.read_control()
     unresolved = journal.read_unresolved_intents(limit=501)
     if len(unresolved) >= 501:
