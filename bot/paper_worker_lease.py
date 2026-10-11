@@ -125,6 +125,30 @@ class PaperWorkerHeartbeat:
                     )
                 return row[0] is True
 
+    def assert_heartbeat_monitor_only(self):
+        """Independent observer must be SELECT-only, never the heartbeat writer."""
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT current_user, "
+                    "pg_has_role(current_user,'neon_superuser','MEMBER'), "
+                    "(SELECT rolsuper OR rolcreaterole OR rolcreatedb "
+                    "OR rolreplication OR rolbypassrls FROM pg_roles "
+                    "WHERE rolname=current_user), "
+                    "has_table_privilege(current_user,'public.paper_worker_heartbeat','SELECT'), "
+                    "(has_table_privilege(current_user,'public.paper_worker_heartbeat','INSERT') "
+                    "OR has_table_privilege(current_user,'public.paper_worker_heartbeat','UPDATE') "
+                    "OR has_table_privilege(current_user,'public.paper_worker_heartbeat','DELETE')), "
+                    "has_table_privilege(current_user,'public.paper_control','UPDATE'), "
+                    "has_table_privilege(current_user,'public.paper_intents','INSERT')"
+                )
+                row = cur.fetchone()
+        if row != ("hds_paper_monitor", False, False,
+                   True, False, False, False):
+            raise TradeBlocked(
+                "PAPER heartbeat inspector must use narrow SELECT-only monitor"
+            )
+
     def inspect(self, *, expected_worker_id: str) -> LeaseInspection:
         """Read DB-time health; missing table/permission fails closed.
 
@@ -135,6 +159,9 @@ class PaperWorkerHeartbeat:
         if not isinstance(expected_worker_id, str) or not WORKER_ID.fullmatch(
                 expected_worker_id):
             raise TradeBlocked("Expected worker identity not configured")
+        # A heartbeat writer may not certify its own liveness. Use a
+        # separate read-only monitor DSN for the independent inspection.
+        self.assert_heartbeat_monitor_only()
         with self._connect() as conn:
             with conn.cursor() as cur:
                 cur.execute(
