@@ -69,6 +69,7 @@ class FakeBroker:
     def __init__(self, p, *, existing=False, failure=None,
                  clock_open=True, balance=500, positions=()):
         self.p = p
+        self._base_url = PAPER_ENDPOINT
         self.calls = []
         self.existing = existing
         self.failure = failure
@@ -188,6 +189,8 @@ def test_fake_timeout_marked_unknown_never_retried(monkeypatch):
     assert len(broker.sent) == 1
     assert journal.calls[0][0] == "reserve"
     assert journal.calls[-1] == ("unknown", p.client_order_id)
+    # One lookup before submission, one additional lookup after timeout.
+    assert broker.calls.count("get_order_by_client_id") == 2
 
 
 def test_existing_broker_order_id_stops_before_db_reservation(monkeypatch):
@@ -315,3 +318,43 @@ def test_untrusted_broker_exception_not_exposed(monkeypatch):
     with pytest.raises(TradeBlocked) as error:
         execute(p, broker=broker)
     assert "NEON_PRIVATE_PASSWORD" not in str(error.value)
+
+
+def test_ambiguous_accepted_order_lookup_never_submits_twice(monkeypatch):
+    monkeypatch.setattr(entry, "PAPER_ORDER_SUBMISSIONS_RELEASED", True)
+    p = preview()
+    broker = FakeBroker(p, failure=TimeoutError("Accepted but response lost"))
+    calls = {"n": 0}
+    original = broker.get_order_by_client_id
+
+    def get_by_id(cid):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return original(cid)  # first lookup 404 before DB reservation
+        return SimpleNamespace(id="broker-created", client_order_id=cid)
+
+    broker.get_order_by_client_id = get_by_id
+    broker.get_order_by_id = lambda _id, *, filter: SimpleNamespace(
+        id="broker-created", client_order_id=p.client_order_id,
+        symbol=p.symbol, order_class="oto", side="buy",
+        type="limit", time_in_force="day", status="new",
+        qty=str(p.shares), filled_qty="0",
+        limit_price=str(p.buy_limit_usd), legs=[]
+    )
+    journal = FakeJournal()
+    with pytest.raises(TradeBlocked, match="client-ID lookup"):
+        execute(p, broker=broker, journal=journal)
+    assert calls["n"] == 2
+    assert len(broker.sent) == 1
+    assert journal.calls[-1] == ("unknown", p.client_order_id)
+
+
+def test_actual_nonpaper_broker_host_rejected_before_get(monkeypatch):
+    monkeypatch.setattr(entry, "PAPER_ORDER_SUBMISSIONS_RELEASED", True)
+    p = preview()
+    broker = FakeBroker(p)
+    broker._base_url = "https://api.alpaca.markets"
+    with pytest.raises(TradeBlocked, match="Actual broker"):
+        execute(p, broker=broker)
+    assert broker.calls == []
+    assert broker.sent == []
