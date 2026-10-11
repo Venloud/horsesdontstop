@@ -133,13 +133,32 @@ def test_expired_github_cron_blocks_late_backfill(monkeypatch):
     assert db["snapshots"] == []
 
 
-@pytest.mark.parametrize("switches", [(False, True), (False, False),
-                                      (True, True)])
-def test_equity_cannot_be_recorded_if_trading_switches_change(
+@pytest.mark.parametrize("switches", [
+    (True, False), (False, True), (False, False), (True, True),
+])
+def test_equity_baseline_is_independent_of_order_switches(
         monkeypatch, switches):
+    # Synthetic controls ONLY. Production continues kill ON/submit OFF.
     j, db = journal(monkeypatch, switches=switches)
-    with pytest.raises(TradeBlocked, match="submissions OFF"):
-        j.record_opening_equity(session_open_utc=OPEN, equity=500, cash=500)
+    assert j.record_opening_equity(
+        session_open_utc=OPEN, equity=500, cash=500)
+    assert len(db["snapshots"]) == 1
+    assert db["switches"] == switches
+    assert all("UPDATE public.paper_control" not in sql
+               and "INSERT INTO public.paper_intents" not in sql
+               for sql, _ in db["sql"])
+
+
+@pytest.mark.parametrize("invalid", [
+    (None, False), (True, None), ("false", True),
+    (False, "true"), (1, 0), (False, 1),
+])
+def test_equity_writer_rejects_malformed_control_snapshot(
+        monkeypatch, invalid):
+    j, db = journal(monkeypatch, switches=invalid)
+    with pytest.raises(TradeBlocked, match="Unverifiable PAPER control"):
+        j.record_opening_equity(
+            session_open_utc=OPEN, equity=500, cash=500)
     assert db["snapshots"] == []
 
 
