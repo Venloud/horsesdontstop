@@ -42,7 +42,7 @@ class PaperOrderPlan:
     risk_budget_usd: float
     estimated_risk_usd: float
     order_class: str = "oto"
-    instruction: str = "BUY market with broker-side stop-loss; RESEARCH ONLY"
+    instruction: str = "RISK RESEARCH ONLY; LIVE entry uses capped DAY limit OTO preview"
 
     def to_dict(self):
         return asdict(self)
@@ -174,18 +174,13 @@ def plan_paper_entry(symbol: str, day: date, reference_price: float,
 
 
 def make_protective_alpaca_order(plan: PaperOrderPlan):
-    """Build SDK request for an OTO stop-loss attachment WITHOUT submitting.
+    """RETIRED: legacy GTC MARKET entry is prohibited.
 
-    Only whole-share buys, PAPER. Market fills, gaps and stop prices are not
-    guaranteed. Future execution must revalidate on fresh real-time quotes.
+    The only approved order builder for the future supervised PAPER
+    executor is live_quotes.build_live_protected_oto_request, which
+    requires an up-to-date IEX quote and creates a capped DAY LIMIT OTO.
     """
-    from alpaca.trading.enums import OrderClass, OrderSide, TimeInForce
-    from alpaca.trading.requests import MarketOrderRequest, StopLossRequest
-    if plan.strategy not in ALLOWED_STRATEGIES or plan.whole_shares < 1:
-        raise TradeBlocked("Nonconforming planned order")
-    return MarketOrderRequest(
-        symbol=plan.symbol, qty=plan.whole_shares, side=OrderSide.BUY,
-        time_in_force=TimeInForce.GTC, order_class=OrderClass.OTO,
-        stop_loss=StopLossRequest(stop_price=plan.protective_stop),
-        client_order_id=plan.client_order_id, extended_hours=False,
+    raise TradeBlocked(
+        "Legacy MARKET OTO order builder retired; use guarded live "
+        "DAY LIMIT OTO preview only"
     )
