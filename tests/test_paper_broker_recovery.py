@@ -205,3 +205,43 @@ def test_missing_child_time_in_force_is_unverified():
         position_qty=PLAN.whole_shares)
     assert "overnight_protective_stop_gtc_not_verified" in result.blockers
     assert result.has_verified_protective_stop is False
+
+
+def test_valid_stop_cannot_override_mismatched_broker_parent():
+    p = parent(cid="unrelated-id", legs=[stop()])
+    outcome = inspect_nested_oto(PLAN, p, position_qty=PLAN.whole_shares)
+    assert "broker_parent_identity_or_type_mismatch" in outcome.blockers
+    assert outcome.has_verified_protective_stop is False
+
+
+def test_parent_partially_filled_does_not_claim_protection_when_position_exceeds_fills():
+    p = parent(status="partially_filled", fill=1, legs=[stop()])
+    outcome = inspect_nested_oto(PLAN, p, position_qty=PLAN.whole_shares)
+    assert "broker_position_exceeds_parent_filled_shares" in outcome.blockers
+    assert outcome.has_verified_protective_stop is False
+
+
+def test_nested_stop_with_wrong_reported_parent_id_is_rejected():
+    child = stop()
+    child.parent_order_id = "other-oto-parent"
+    outcome = inspect_nested_oto(
+        PLAN, parent(legs=[child]), position_qty=PLAN.whole_shares)
+    assert "unprotected_open_paper_position" in outcome.blockers
+    assert outcome.has_verified_protective_stop is False
+
+
+def test_stop_larger_than_durable_intent_does_not_prove_protection():
+    child = stop(qty=PLAN.whole_shares + 1)
+    outcome = inspect_nested_oto(
+        PLAN, parent(legs=[child]), position_qty=PLAN.whole_shares)
+    assert "unprotected_open_paper_position" in outcome.blockers
+    assert outcome.has_verified_protective_stop is False
+
+
+def test_nested_child_without_broker_order_id_is_not_proof():
+    child = stop()
+    child.id = None
+    outcome = inspect_nested_oto(
+        PLAN, parent(legs=[child]), position_qty=PLAN.whole_shares)
+    assert "unprotected_open_paper_position" in outcome.blockers
+    assert outcome.has_verified_protective_stop is False
