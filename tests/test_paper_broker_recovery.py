@@ -27,11 +27,11 @@ def parent(*, status="filled", fill=None, qty=None, legs=None,
 
 
 def stop(*, status="new", qty=None, filled=0, trigger=None, side="sell",
-         kind="stop"):
+         kind="stop", tif="gtc"):
     return SimpleNamespace(
         id="safe-paper-stop", symbol=PLAN.symbol, side=side, type=kind,
         qty=str(qty if qty is not None else PLAN.whole_shares),
-        filled_qty=str(filled), status=status,
+        filled_qty=str(filled), status=status, time_in_force=tif,
         stop_price=str(trigger if trigger is not None else PLAN.protective_stop),
     )
 
@@ -187,3 +187,21 @@ def test_live_endpoint_refused_before_any_broker_call():
             trading, PLAN, position_qty=0,
             paper_endpoint="https://api.alpaca.markets")
     assert trading.calls == []
+
+
+def test_day_only_stop_never_claimed_overnight_safe():
+    result = inspect_nested_oto(
+        PLAN, parent(legs=[stop(tif="day")]),
+        position_qty=PLAN.whole_shares)
+    assert "overnight_protective_stop_gtc_not_verified" in result.blockers
+    assert result.has_verified_protective_stop is False
+
+
+def test_missing_child_time_in_force_is_unverified():
+    child = stop()
+    delattr(child, "time_in_force")
+    result = inspect_nested_oto(
+        PLAN, parent(legs=[child]),
+        position_qty=PLAN.whole_shares)
+    assert "overnight_protective_stop_gtc_not_verified" in result.blockers
+    assert result.has_verified_protective_stop is False
