@@ -1,0 +1,10 @@
+{
+  "name": "horsesdontstop-neon-config",
+  "private": true,
+  "description": "Neon infrastructure configuration only. The trading bot remains Python and read-only.",
+  "version": "0.0.0",
+  "devDependencies": {
+    "@neon/config": "^1.8.6",
+    "@neon/env": "^1.8.6"
+  }
+}
