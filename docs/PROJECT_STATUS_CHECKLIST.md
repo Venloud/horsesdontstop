@@ -198,6 +198,37 @@ Merged from `experiment/paper-broker-lifecycle-v1` via [PR #7](https://github.co
       outages; a single read-only account-wide stop listing is
       insufficient for full overnight protection.
 
+## Opening equity and loss/drawdown safety work (DRAFT only)
+
+- [x] **Staged** opening-equity writer no longer requires
+      `kill_switch_active=TRUE/submissions_enabled=FALSE` to
+      capture an actual broker PAPER account balance. It verifies
+      boolean control states without changing them, uses Neon
+      server time inside **09:30–09:35 New York**, a durable
+      once-per-session lock and no order API. This will preserve
+      daily baseline collection on **future** separately approved
+      trading days. Broker trading restrictions do not prevent
+      **read-only** equity observation, and an observation finishing
+      at a different day's 09:30 open cannot be backfilled.
+- [x] Added offline `bot/paper_equity_risk.py` computation for
+      3% daily loss / 15% adjusted peak, based only on a fully
+      independently attested snapshot/flow/exchange-calendar history.
+      `tests/test_paper_equity_risk.py` now exercises genuine
+      cash deposits hiding losses, withdrawals, exact cutoffs,
+      missing source evidence, duplicates and stale samples.
+      **Unit-test success is NOT permission to place trades.**
+- [ ] **Still missing in production:** complete independently
+      verified recurring marked-to-market equity sampling, durable
+      broker-verified external cash-flow ledger, accurate periodic
+      peak history and an actual 09:30 baseline row. Do not wire
+      offline helper flags as `True` before independent source
+      validation. Production's existing raw `MAX(equity)` can
+      be distorted by deposits and is **not a trusted adjusted
+      risk reference**.
+- [ ] Actual exchange calendar including NYSE holidays and
+      early closes, integration with live risk gate, persistent
+      monitor and final per-order owner approval.
+
 ## Still to do — in dependency order
 
 - [x] Review and merge the tested lifecycle and docs to `main`:
