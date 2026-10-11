@@ -176,7 +176,7 @@ def validate_manifest(manifest: Any, root: Path) -> list[str]:
     he = _parse_day(folds.get("holdout_end"))
     if not all((ds, de, hs, he)) or not ds < de < hs <= he:
         blockers.append("invalid_chronological_fold_boundaries")
-    elif hs <= LEGACY_EXAMINED_THROUGH:
+    if hs is not None and hs <= LEGACY_EXAMINED_THROUGH:
         blockers.append("holdout_overlaps_previously_inspected_history")
     embargo = folds.get("embargo_sessions")
     if type(embargo) is not int or embargo < 5:
