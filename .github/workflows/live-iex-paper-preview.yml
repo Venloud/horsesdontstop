@@ -1,0 +1,48 @@
+name: Live IEX Paper Entry Preview (No Trades)
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/live-iex-paper-preview.yml
+      - bot/live_quotes.py
+      - bot/live_paper_preview_cli.py
+      - tests/test_live_quotes.py
+      - tests/test_live_paper_preview.py
+  schedule:
+    # Every 30 minutes throughout the US regular market session,
+    # across daylight-saving changes. Alpaca clock gates actual signals.
+    - cron: '0,30 13-20 * * 1-5'
+permissions:
+  contents: read
+concurrency:
+  group: horsesdontstop-live-iex-preview
+  cancel-in-progress: false
+jobs:
+  live-preview:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Test live IEX paper order preview safety
+        run: |
+          python -m pytest -q tests/test_live_quotes.py tests/test_live_paper_preview.py
+      - name: Read IEX latest quotes and prepare NONEXECUTABLE protected order previews
+        env:
+          ALPACA_PAPER_API_KEY: ${{ secrets.ALPACA_PAPER_API_KEY }}
+          ALPACA_PAPER_SECRET_KEY: ${{ secrets.ALPACA_PAPER_SECRET_KEY }}
+          PAPER_JOURNAL_DSN: ${{ secrets.PAPER_JOURNAL_DSN }}
+        run: python -m bot.live_paper_preview_cli
+      - name: Save no-trade candidate previews
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: live-iex-paper-preview-${{ github.run_id }}
+          path: .state/live-iex-paper-preview.json
+          if-no-files-found: ignore
+          retention-days: 7
