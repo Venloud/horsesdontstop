@@ -20,9 +20,11 @@ class FakeClock:
 
 
 class Broker:
-    def __init__(self, *, equity="500", cash="500", open=True):
+    def __init__(self, *, equity="500", cash="500",
+                 open=True, trading_blocked=False):
         self.calls = []
         self.equity, self.cash, self.open = equity, cash, open
+        self.trading_blocked = trading_blocked
 
     def get_clock(self):
         self.calls.append("clock")
@@ -31,7 +33,8 @@ class Broker:
     def get_account(self):
         self.calls.append("account")
         return SimpleNamespace(
-            equity=self.equity, cash=self.cash, trading_blocked=False)
+            equity=self.equity, cash=self.cash,
+            trading_blocked=self.trading_blocked)
 
     def submit_order(self, *_a, **_kw):
         raise AssertionError("An equity snapshot may NEVER submit a trade")
@@ -159,6 +162,31 @@ def test_equity_writer_rejects_malformed_control_snapshot(
     with pytest.raises(TradeBlocked, match="Unverifiable PAPER control"):
         j.record_opening_equity(
             session_open_utc=OPEN, equity=500, cash=500)
+    assert db["snapshots"] == []
+
+
+def test_readonly_baseline_is_allowed_when_paper_account_trading_blocked(monkeypatch):
+    # A trading-disabled account must still record loss-risk evidence.
+    # The execution gateway separately rejects broker.trading_blocked.
+    j, db = journal(monkeypatch)
+    broker = Broker(trading_blocked=True)
+    result = snapshot_one_opening(broker, j, now=NOW, after_read_now=NOW)
+    assert result.wrote_equity_snapshot is True
+    assert len(db["snapshots"]) == 1
+    assert broker.calls == ["clock", "account"]
+    assert all("paper_control SET" not in sql
+               and "INSERT INTO public.paper_intents" not in sql
+               for sql, _ in db["sql"])
+
+
+def test_snapshot_finishing_in_next_days_open_window_must_not_backfill(monkeypatch):
+    # The broker-read window must still refer to the exact same opening,
+    # not just any future 9:30 New York opening.
+    j, db = journal(monkeypatch)
+    tomorrow = NOW + timedelta(days=1)
+    with pytest.raises(TradeBlocked, match="changed"):
+        snapshot_one_opening(
+            Broker(), j, now=NOW, after_read_now=tomorrow)
     assert db["snapshots"] == []
 
 
