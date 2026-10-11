@@ -95,7 +95,8 @@ def probe_window(key: str, secret: str, label: str, start: str, end: str,
                 if not isinstance(ts, str) or len(ts) < 10:
                     raise RuntimeError("alpaca_marketdata_invalid_timestamp")
                 day = ts[:10]
-                if not start <= day < end:
+                # Alpaca documents BOTH start and end as INCLUSIVE.
+                if not start <= day <= end:
                     raise RuntimeError("alpaca_marketdata_out_of_window")
                 try:
                     calendar_day = date.fromisoformat(day)
@@ -113,7 +114,7 @@ def probe_window(key: str, secret: str, label: str, start: str, end: str,
         next_token = payload.get("next_page_token")
         if next_token is None or next_token == "":
             return {
-                "window": label, "from": start, "to_exclusive": end,
+                "window": label, "from_inclusive": start, "to_inclusive": end,
                 "feed": "IEX", "price_adjustment": "raw",
                 "complete_pagination": True, "symbols": summary,
             }
