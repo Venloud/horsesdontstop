@@ -60,6 +60,9 @@ def healthy(**updates):
         kill_switch_active=False,
         order_submissions_explicitly_enabled=True,
         broker_endpoint=PAPER_ENDPOINT,
+        audited_external_flows_complete=True,
+        verified_equity_history_complete=True,
+        exchange_calendar_verified=True,
     )
     args.update(updates)
     return PaperSafetyState(**args)
@@ -356,5 +359,20 @@ def test_actual_nonpaper_broker_host_rejected_before_get(monkeypatch):
     broker._base_url = "https://api.alpaca.markets"
     with pytest.raises(TradeBlocked, match="Actual broker"):
         execute(p, broker=broker)
+    assert broker.calls == []
+    assert broker.sent == []
+
+
+@pytest.mark.parametrize("blocked", [
+    {"audited_external_flows_complete": False},
+    {"verified_equity_history_complete": False},
+    {"exchange_calendar_verified": False},
+])
+def test_synthetic_broker_release_rejects_unverified_risk_evidence(monkeypatch, blocked):
+    monkeypatch.setattr(entry, "PAPER_ORDER_SUBMISSIONS_RELEASED", True)
+    p = preview()
+    broker = FakeBroker(p)
+    with pytest.raises(TradeBlocked):
+        execute(p, broker=broker, state=healthy(**blocked))
     assert broker.calls == []
     assert broker.sent == []
