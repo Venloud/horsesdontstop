@@ -24,8 +24,10 @@ def write_artifacts(root):
                  "symbol,day,open,high,low,close,volume\n"
                  "SPY,2026-10-13,100,105,98,101,10000\n"),
         "universe_membership": ("research/data/universe.csv",
-                 "symbol,first_eligible_day,last_eligible_day\n"
-                 "SPY,2010-01-01,2030-01-01\n"),
+                 "snapshot_day,known_at_utc,snapshot_id,security_id,"
+                 "symbol,eligible,source_id,complete\n"
+                 "2026-10-12,2026-10-12T20:10:00Z,s1,QC:SPY,"
+                 "SPY,true,synthetic_fixture,true\n"),
         "benchmark_total_return": ("research/data/benchmark.csv",
                  "day,total_return_index\n"
                  "2026-10-13,100.001\n"),
@@ -109,6 +111,20 @@ def test_approved_rules_cannot_be_modified(tmp_path, key, value):
     m = synthetic_manifest(tmp_path)
     m["rules"][key] = value
     assert "approved_rule_mismatch:" + key in validate_manifest(m, tmp_path)
+
+
+def test_retroactive_first_last_listing_csv_is_not_a_valid_manifest(tmp_path):
+    m = synthetic_manifest(tmp_path)
+    universe = tmp_path / m["artifacts"]["universe_membership"]["path"]
+    universe.write_text(
+        "symbol,first_eligible_day,last_eligible_day\\n"
+        "FRC,1986-01-01,2023-05-03\\n",
+        encoding="utf-8",
+    )
+    m["artifacts"]["universe_membership"]["sha256"] = hashlib.sha256(
+        universe.read_bytes()).hexdigest()
+    assert "asset_csv_schema_invalid:universe_membership" in (
+        validate_manifest(m, tmp_path))
 
 
 def test_removed_overnight_drift_rejected(tmp_path):
