@@ -1,6 +1,12 @@
 name: Neon + Alpaca Paper Preflight (Read Only)
 on:
   workflow_dispatch:
+  # One-time integration check after the owner added PAPER_JOURNAL_DSN.
+  # Triggered only by changes to this one workflow.
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/neon-paper-preflight.yml
 permissions:
   contents: read
 concurrency:
