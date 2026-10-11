@@ -2,7 +2,7 @@
 
 > **Current engineering checklist:**
 > [PROJECT_STATUS_CHECKLIST.md](PROJECT_STATUS_CHECKLIST.md).
-> Important new work in `experiment/paper-broker-lifecycle-v1`:
+> Important new work merged into `main` through PR #7:
 > 09:30–09:35 NY restricted opening equity snapshot job, retired
 > market-GTC OTO builder, code-disabled supervised DAY LIMIT OTO
 > adapter, client-ID recovery and overnight stop TIF verification.
