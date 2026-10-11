@@ -3,7 +3,7 @@
 NO Alpaca submit_order() calls. This layer only prepares for a
 future supervised worker with independently verified live order safety.
 """
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 
 from .paper_safety import (
     PaperOrderPlan, TradeBlocked, make_client_order_id, money,
@@ -34,6 +34,72 @@ class PaperExecutorJournal(PostgresPaperJournal):
                 row = cur.fetchone()
         if row != (False, False, False, True, True, False, True, True):
             raise TradeBlocked("Unrestricted or improperly granted writer role")
+
+    def record_opening_equity(self, *, session_open_utc: datetime,
+                              equity, cash) -> bool:
+        """Once per NYSE opening, write a broker-observed PAPER baseline.
+
+        Only the restricted executor account can insert. Database time,
+        not runner/client time, MUST be inside [open, open+5m).
+        The kill switch must remain ON and submissions OFF. Missing a
+        delayed GitHub scheduled run does not fabricate a baseline.
+        Returns False for a previously recorded valid opening snapshot.
+        """
+        if (not isinstance(session_open_utc, datetime)
+                or session_open_utc.tzinfo is None):
+            raise TradeBlocked("NYSE opening time must be timezone-aware")
+        start = session_open_utc.astimezone(timezone.utc)
+        if start.second or start.microsecond:
+            raise TradeBlocked("Invalid NYSE opening timestamp")
+        from zoneinfo import ZoneInfo
+        local = start.astimezone(ZoneInfo("America/New_York"))
+        if (local.hour, local.minute) != (9, 30) or local.weekday() > 4:
+            raise TradeBlocked("Not a regular NYSE trading-day opening")
+        end = start + timedelta(minutes=5)
+        amount, available = money(equity), money(cash)
+        if (amount <= 0 or available < 0
+                or available > amount * money("1.1")):
+            raise TradeBlocked("Invalid Alpaca PAPER opening equity/cash")
+        self.assert_executor_permissions()
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SET LOCAL statement_timeout = '3000ms'")
+                cur.execute(
+                    "SELECT pg_advisory_xact_lock("
+                    "hashtext('horsesdontstop-paper-opening-equity'))"
+                )
+                cur.fetchone()
+                cur.execute(
+                    "SELECT clock_timestamp(), kill_switch_active, "
+                    "submissions_enabled FROM public.paper_control "
+                    "WHERE singleton=TRUE FOR SHARE"
+                )
+                row = cur.fetchone()
+                if not row or len(row) != 3:
+                    raise TradeBlocked("Missing Neon paper emergency control row")
+                db_now, kill_switch, submissions_enabled = row
+                if (not isinstance(db_now, datetime)
+                        or db_now.tzinfo is None
+                        or not start <= db_now < end):
+                    raise TradeBlocked("Opening baseline window missed")
+                if kill_switch is not True or submissions_enabled is not False:
+                    raise TradeBlocked("Cannot sample unless paper submissions OFF")
+                cur.execute(
+                    "SELECT snapshot_id FROM public.paper_equity_snapshots "
+                    "WHERE observed_at >= %s AND observed_at < %s "
+                    "ORDER BY observed_at ASC LIMIT 1",
+                    (start, end),
+                )
+                if cur.fetchone() is not None:
+                    return False
+                cur.execute(
+                    "INSERT INTO public.paper_equity_snapshots "
+                    "(observed_at, equity, cash) VALUES (%s, %s, %s) "
+                    "RETURNING snapshot_id", (db_now, amount, available)
+                )
+                if cur.fetchone() is None:
+                    raise TradeBlocked("Neon opening snapshot was not recorded")
+                return True
 
     @staticmethod
     def validate_protected_intent(plan: PaperOrderPlan):

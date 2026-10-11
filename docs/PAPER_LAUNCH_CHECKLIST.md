@@ -1,5 +1,15 @@
 # Paper trading launch gate (October 2026)
 
+> **See [CURRENT DONE/TODO CHECKLIST](PROJECT_STATUS_CHECKLIST.md)** for
+> verified current status. This document originated as an earlier
+> launch-safety specification and contains historically true but
+> now stale implementation wording. The project now has a staged,
+> hard-disabled submit adapter on
+> `experiment/paper-broker-lifecycle-v1`; it has **never submitted
+> a production PAPER order**. Neon production kill remains ON and
+> submissions OFF. Do not treat the existence of adapter code or
+> passing mocks as permission to trade.
+
 **Status: PREVIEW ONLY, ZERO ALPACA ORDERS.** This repo now contains an
 Alpaca PAPER-only order planner, but no `submit_order()`, `cancel_order()`
 or other brokerage write operation in its paper-readiness workflow.

@@ -1,5 +1,14 @@
 # PAPER journal writer is staged, but execution remains OFF
 
+> **Current engineering checklist:**
+> [PROJECT_STATUS_CHECKLIST.md](PROJECT_STATUS_CHECKLIST.md).
+> Important new work in `experiment/paper-broker-lifecycle-v1`:
+> 09:30–09:35 NY restricted opening equity snapshot job, retired
+> market-GTC OTO builder, code-disabled supervised DAY LIMIT OTO
+> adapter, client-ID recovery and overnight stop TIF verification.
+> These are NOT yet proof of paper fill or live stop protection.
+
+
 **Verified on:** 2026-10-11. U.S. equity markets closed (Sunday).
 
 ## Verified completed
