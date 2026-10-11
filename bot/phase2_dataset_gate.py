@@ -14,6 +14,8 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
+from .phase2_semantic_validation import validate_semantic_artifacts
+
 
 APPROVED_STRATEGIES = (
     "momentum_volume", "trend_following", "high_52_week",
@@ -74,14 +76,17 @@ def _sha256(path: Path) -> str:
     return h.hexdigest()
 
 
-def _required_csv_headers(path: Path, required: set[str]) -> bool:
+def _required_csv_headers(path: Path, required: set[str], *,
+                          allow_empty: bool = False) -> bool:
     try:
         with path.open("r", newline="", encoding="utf-8-sig") as handle:
             reader = csv.reader(handle)
             first = next(reader, [])
             if len(first) != len(set(first)):
                 return False
-            return required.issubset(first) and next(reader, None) is not None
+            return required.issubset(first) and (
+                allow_empty or next(reader, None) is not None
+            )
     except (UnicodeError, csv.Error, OSError):
         return False
 
@@ -151,13 +156,19 @@ def validate_manifest(manifest: Any, root: Path) -> list[str]:
             if _sha256(path) != supplied:
                 blockers.append("asset_hash_mismatch:" + key)
                 continue
-            if not _required_csv_headers(path, headers[key]):
+            if not _required_csv_headers(
+                    path, headers[key], allow_empty=(key == "contributions")):
                 blockers.append("asset_csv_schema_invalid:" + key)
                 continue
         except OSError:
             blockers.append("asset_unreadable:" + key)
             continue
         resolved[key] = path
+
+    # Hashes and column names alone cannot detect impossible OHLCV,
+    # duplicated sessions, invalid PIT snapshot records or made-up
+    # contribution precision. No scored runs may bypass these checks.
+    blockers.extend(validate_semantic_artifacts(resolved))
 
     provenance = manifest.get("provenance")
     if not isinstance(provenance, dict):
