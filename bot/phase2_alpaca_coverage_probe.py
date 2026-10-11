@@ -93,7 +93,11 @@ def probe_window(key: str, secret: str, label: str, start: str, end: str,
                 day = ts[:10]
                 if not start <= day < end:
                     raise RuntimeError("alpaca_marketdata_out_of_window")
-                if date.fromisoformat(day).isoformat() != day:
+                try:
+                    calendar_day = date.fromisoformat(day)
+                except ValueError:
+                    raise RuntimeError("alpaca_marketdata_invalid_date") from None
+                if calendar_day.isoformat() != day:
                     raise RuntimeError("alpaca_marketdata_invalid_date")
                 summary[symbol]["bars"] += 1
                 lo = summary[symbol]["first_day"]
