@@ -58,3 +58,30 @@ def send_critical_ntfy(incident: MonitorIncident, *, topic: str,
     if not 200 <= status < 300:
         raise NotificationError("NTFY declined the notification")
     return True
+
+
+class NotificationThrottle:
+    """In-process cooldown only, NOT durable across workflow runs.
+
+    For a restart-safe outbox and exactly-once notification receipts we
+    would need an independently scoped database writer and new tables.
+    Duplicates remain possible across process restarts.
+    """
+    def __init__(self, cooldown_seconds: int = 3600):
+        if cooldown_seconds < 60:
+            raise ValueError("Notification cooldown must be >=60 seconds")
+        self.cooldown_seconds = cooldown_seconds
+        self.last_sent = {}
+
+    def maybe_send(self, incident, *, topic, now_seconds, transport=send_critical_ntfy):
+        if not topic or incident.level != "critical":
+            return False
+        previous = self.last_sent.get(incident.fingerprint)
+        if previous is not None and now_seconds - previous < self.cooldown_seconds:
+            return False
+        # Update only after the transport returns success, so failed
+        # notifications remain retryable.
+        delivered = transport(incident, topic=topic)
+        if delivered:
+            self.last_sent[incident.fingerprint] = now_seconds
+        return delivered
