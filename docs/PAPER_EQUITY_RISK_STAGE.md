@@ -67,6 +67,29 @@ cases, exact numeric thresholds, invalid proofs, and stale equity.
 `tests/test_paper_equity_risk.py` uses ONLY synthetic values and never
 connects to Alpaca or Neon.
 
+## Additional mandatory executor fail-closed evidence gates
+
+The draft `bot/paper_safety.py` entry gate now independently rejects any
+`PaperSafetyState` without **all three** exact `True` evidence flags:
+
+- `audited_external_flows_complete`, otherwise
+  `external_cash_flows_unverified`;
+- `verified_equity_history_complete`, otherwise
+  `equity_history_unverified`;
+- `exchange_calendar_verified`, otherwise
+  `nyse_calendar_unverified`.
+
+Defaults are **False**, including after someone manually toggles the
+code-level broker release in synthetic unit tests. An empty raw
+`MAX(equity)` or $500 account balance cannot satisfy these flags.
+The tests construct explicitly fake passing values only to ensure
+the unused order gateway refuses false/missing/string evidence.
+**No authenticated real data collector sets these flags yet.**
+Until real provenance and contribution-adjusted results are wired and
+independently reviewed, all future orders remain blocked even if another
+control is mistakenly changed. This is a source-level tripwire, not a
+working live risk attestation or production migration.
+
 ## Before this can ever be used for an order
 
 - [ ] Capture real broker equity continuously on a genuinely
