@@ -109,6 +109,40 @@ class PostgresPaperJournal:
             with conn.cursor() as cur:
                 cur.execute(SCHEMA, prepare=False)
 
+    def assert_monitor_only(self):
+        """Refuse DBA, writer or role-escalation credentials in a read-only job.
+
+        Neon-managed roles may inherit neon_superuser by default even when
+        they were created with an innocent-sounding name. The watcher MUST
+        never run with such credentials. This is an additional safeguard,
+        not a substitute for private GitHub secrets and least privilege.
+        """
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT "
+                    "bool_and(has_table_privilege(current_user, t.tbl, 'SELECT')), "
+                    "bool_or(has_table_privilege(current_user,t.tbl,'INSERT') "
+                    "OR has_table_privilege(current_user,t.tbl,'UPDATE') "
+                    "OR has_table_privilege(current_user,t.tbl,'DELETE') "
+                    "OR has_table_privilege(current_user,t.tbl,'TRUNCATE')), "
+                    "pg_has_role(current_user,'neon_superuser','MEMBER'), "
+                    "has_schema_privilege(current_user,'public','CREATE'), "
+                    "has_database_privilege(current_user,current_database(),'CREATE'), "
+                    "(SELECT rolsuper OR rolcreaterole OR rolcreatedb "
+                    "OR rolreplication OR rolbypassrls FROM pg_roles "
+                    "WHERE rolname=current_user) "
+                    "FROM (VALUES ('public.paper_control'),"
+                    "('public.paper_intents'),('public.paper_audit_events'),"
+                    "('public.paper_equity_snapshots')) AS t(tbl)"
+                )
+                row = cur.fetchone()
+        if row != (True, False, False, False, False, False):
+            raise TradeBlocked(
+                "Read-only monitor connection must have only SELECT grants "
+                "and no Neon administrator or role-creation privileges"
+            )
+
     def read_control(self) -> JournalControl:
         # Unavailable journal is equivalent to a closed kill switch.
         with self._connect() as conn:
