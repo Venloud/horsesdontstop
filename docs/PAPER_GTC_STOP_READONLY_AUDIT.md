@@ -40,9 +40,13 @@ For any nonzero PAPER position, an observed protective candidate must:
 2. Report **`time_in_force=gtc`** in the actual nested broker
    child-leg response; missing/unknown/DAY is *not verified*.
 3. Have an observed linked parent ID belonging to a BUY LIMIT OTO
-   order in the fetched broker order history.
-4. Cover **remaining unfilled child stop quantity**
-   at least as large as the current positive long position.
+   order in the fetched broker order history. The parent must share
+   the position's symbol, be filled or partially filled, and include
+   the **same child ID in its actually nested broker legs**. Merely
+   claiming a matching `parent_order_id` is insufficient.
+4. Cover **remaining unfilled child stop quantity**, and the observed
+   parent's total order quantity, at least as large as the current
+   positive long position.
 5. Have a strictly positive reported stop trigger.
 
 If any of these checks fails, the inspector sets
