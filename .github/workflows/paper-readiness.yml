@@ -1,0 +1,45 @@
+name: Paper Readiness (No Trades)
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - bot/paper_safety.py
+      - bot/paper_readiness_cli.py
+      - tests/test_paper_safety.py
+      - tests/test_paper_readiness.py
+      - .github/workflows/paper-readiness.yml
+  schedule:
+    # Read-only weekday preview. UTC schedule, NOT a trading trigger.
+    - cron: '15 15 * * 1-5'
+permissions:
+  contents: read
+concurrency:
+  group: horsesdontstop-paper-readiness
+  cancel-in-progress: false
+jobs:
+  paper-preview:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Run all offline tests including fail-closed paper safety
+        run: python -m pytest -q
+      - name: Read paper account and preview research candidates, never submit
+        env:
+          ALPACA_PAPER_API_KEY: ${{ secrets.ALPACA_PAPER_API_KEY }}
+          ALPACA_PAPER_SECRET_KEY: ${{ secrets.ALPACA_PAPER_SECRET_KEY }}
+        run: python -m bot.paper_readiness_cli
+      - name: Upload read-only paper readiness report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: paper-readiness-${{ github.run_id }}
+          path: .state/paper-readiness.json
+          if-no-files-found: ignore
+          retention-days: 7
