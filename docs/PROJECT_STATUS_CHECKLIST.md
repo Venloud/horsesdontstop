@@ -20,8 +20,7 @@ and [full build log](https://github.com/Venloud/claudevandam/blob/main/HORSESDON
   **not consolidated SIP/NBBO**. Scheduled market scanner does **not**
   submit orders.
 - **Execution:** `bot/paper_supervised_execution.py` exists on
-  **`experiment/paper-broker-lifecycle-v1`** while the PR is under
-  review, and contains a `submit_order` call that is **hard-disabled**
+  **`main`** after [PR #7](https://github.com/Venloud/horsesdontstop/pull/7), and contains a `submit_order` call that is **hard-disabled**
   by `PAPER_ORDER_SUBMISSIONS_RELEASED = False`. No production
   workflow invokes it. This is a *staged adapter*, **NOT** a running bot.
 - **Monitoring:** GitHub Actions best-effort cron is running as a
@@ -93,9 +92,9 @@ and [full build log](https://github.com/Venloud/claudevandam/blob/main/HORSESDON
 - [x] Unit tests for live risk sizing, broker/stale quotes, database
       control checks, rejected/duplicate intent IDs, and timeouts.
 
-## Completed **in branch**, not yet verified as launched
+## Completed **in main**, not yet verified as launched
 
-Branch: `experiment/paper-broker-lifecycle-v1`.
+Merged from `experiment/paper-broker-lifecycle-v1` via [PR #7](https://github.com/Venloud/horsesdontstop/pull/7), merge commit `9b4450f9a3a5f0929d2b1c4e857ed012960e84ce`. Source is now on `main`, but **NOT enabled for order submission**.
 
 - [x] Implemented equity-at-open writer:
       `bot/paper_execution_journal.py::record_opening_equity` uses
@@ -149,10 +148,10 @@ Branch: `experiment/paper-broker-lifecycle-v1`.
 
 ## Still to do — in dependency order
 
-- [ ] Review and merge
-      `experiment/paper-broker-lifecycle-v1` to `main` once
-      tests and changed docs are verified. Update the above
-      "in branch" status afterward.
+- [x] Review and merge the tested lifecycle and docs to `main`:
+      [PR #7](https://github.com/Venloud/horsesdontstop/pull/7),
+      merge commit `9b4450f9a3a5f0929d2b1c4e857ed012960e84ce`.
+      Merge **did not** enable any PAPER order submissions.
 - [ ] Test the **real restricted Python executor-role connection
       on the temporary Neon branch**, not just SQL through the
       management account. The Neon management session **could not
@@ -219,7 +218,7 @@ python -m bot.live_paper_preview_cli  # LIVE IEX quotes; ZERO orders
 
 Do not run the opening snapshot CLI with made-up clock/account inputs
 against production. Do not run `submit_order` manually. No order
-execution runner/workflow is deployed by this branch.
+execution runner/workflow is deployed in this repository.
 
 Useful links:
 - Project: https://github.com/Venloud/horsesdontstop
