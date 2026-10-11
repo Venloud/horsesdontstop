@@ -5,3 +5,9 @@ __pycache__/
 *.pyc
 *.sqlite3
 .state/
+
+# Neon CLI workspace and secrets
+.env.local
+.env.*.local
+node_modules/
+.neon
