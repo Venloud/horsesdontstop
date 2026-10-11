@@ -1,0 +1,25 @@
+name: Alpaca Paper Connection
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify-paper:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      ALPACA_PAPER_API_KEY: ${{ secrets.ALPACA_PAPER_API_KEY }}
+      ALPACA_PAPER_SECRET_KEY: ${{ secrets.ALPACA_PAPER_SECRET_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -r requirements.txt
+      - name: Verify paper account (read-only)
+        run: |
+          if [ -z "$ALPACA_PAPER_API_KEY" ] || [ -z "$ALPACA_PAPER_SECRET_KEY" ]; then
+            echo "Missing paper secrets. Add them in repository Settings > Secrets and variables > Actions."
+            exit 1
+          fi
+          python -m bot.main --check
