@@ -1,0 +1,17 @@
+# Future managed background worker. Read-only PAPER supervision only.
+# It never submits broker orders and is NOT deployed by this repository.
+FROM python:3.11-slim-bookworm
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
+WORKDIR /opt/horsesdontstop
+
+COPY requirements.txt .
+RUN pip install --disable-pip-version-check -r requirements.txt
+COPY bot/ bot/
+RUN useradd --system --uid 10001 --create-home hds && \
+    chown -R hds:hds /opt/horsesdontstop
+USER hds
+
+CMD ["python", "-m", "bot.paper_watchdog", "--loop", "--interval-seconds", "60", "--output", ""]
