@@ -37,3 +37,16 @@ historical *backtests*, not realized profits. No scored Phase 3 comparison
 may run until the Phase 2 data/universe/fold/seed manifest is committed. The Phase 0 candidate and pass rules are frozen.
 
 **Research documentation does not enable PAPER or real-money trading.**
+
+
+## Phase 2: research dataset readiness
+
+[Read the Phase 2 data-integrity plan](docs/PHASE2_DATA_INTEGRITY.md).
+A local offline gate (`python -m bot.phase2_dataset_gate`) checks the
+phase-0 frozen research rules, dataset file hashes, source and universe
+provenance, untouched chronological holdout, statistical seeds and
+matching-deposit SPY reference. The checked-in manifest is
+**intentionally incomplete and must fail closed**. No new scored
+trading research is authorized before actual historical datasets,
+point-in-time membership and synthetic harness checks are verified.
+The gate does **not** submit paper orders or real-money orders.
