@@ -51,10 +51,11 @@ def test_registered_seven_candidates_and_approved_pass_gates():
     assert "PAPER_ORDER_SUBMISSIONS_RELEASED=False" in document
     assert "kill_switch_active=TRUE" in document
     assert "submissions_enabled=FALSE" in document
-    assert "not authorize actual paper orders" in document.lower() or (
-        "does not authorize actual paper orders" in document.lower()
-        or "does not authorize actual paper" in document.lower()
-    )
+    assert "never authorizes actual paper orders" in document.lower()
+    assert "owner-approved" in document.lower()
+    assert "30 basis points per side" in document
+    assert "60 bps round-trip slippage" in document
+    assert "21 variants total" in document
     assert GUIDE.exists()
 
 
@@ -134,7 +135,7 @@ def test_docs_make_legacy_bias_and_no_trade_claims_explicit():
     assert "not alpaca-paper account profits" in guide.lower()
     assert "do not" in guide.lower()
     assert "already inspected" in spec.lower()
-    assert "not authorize actual paper orders" in spec.lower() or (
-        "does not authorize actual paper orders" in spec.lower()
-        or "does not authorize actual paper" in spec.lower()
-    )
+    assert "never authorizes actual paper orders" in spec.lower()
+    assert "30bps adverse entry + 30bps adverse exit" in spec.lower()
+    assert "10-calendar-year low-frequency exception" in spec.lower()
+    assert "no agent may invent a tie-break" in spec.lower()
