@@ -122,6 +122,32 @@ def _broker_did_not_find_order(trading, client_id):
     raise TradeBlocked("Broker already has this client order ID")
 
 
+def inspect_uncertain_submit_by_client_id(trading, plan: PaperOrderPlan):
+    """Observe ambiguous POST using broker GETs; NEVER POST a second order.
+
+    Called after a durable reservation is recorded as unknown (or that
+    status update fails). Missing broker client ID is NEVER permission
+    to retry. Returns a fixed sanitized classification without secrets.
+    """
+    try:
+        from .paper_broker_recovery import recover_by_client_id
+        positions = trading.get_all_positions()
+        relevant = [
+            x for x in positions if getattr(x, "symbol", None) == plan.symbol
+        ]
+        if len(relevant) > 1:
+            return "broker_position_state_unverifiable"
+        exposure = getattr(relevant[0], "qty", 0) if relevant else 0
+        audit = recover_by_client_id(trading, plan, position_qty=exposure)
+    except Exception:
+        return "broker_client_id_lookup_unavailable"
+    if audit.status == "not_found_unresolved":
+        return "broker_client_id_not_found_still_uncertain"
+    if audit.blockers:
+        return "broker_order_found_requires_stop_or_state_review"
+    return "broker_order_found_requires_supervisor_reconciliation"
+
+
 def submit_paper_once_supervised(
     *, trading, journal, market_quote, preview, safety_state,
     approval, now: datetime,
@@ -143,6 +169,11 @@ def submit_paper_once_supervised(
         raise TradeBlocked("Execution readiness blocked: " + ",".join(blockers))
     if safety_state.broker_endpoint != PAPER_ENDPOINT:
         raise TradeBlocked("Live-money broker endpoint rejected")
+    # Confirm the *actual* SDK client URL, not only caller-provided
+    # PaperSafetyState. If SDK changes or its endpoint is hidden,
+    # default to refusal instead of guessing.
+    if str(getattr(trading, "_base_url", "")).rstrip("/") != PAPER_ENDPOINT:
+        raise TradeBlocked("Actual broker client endpoint is not Alpaca PAPER")
     if not isinstance(preview, LivePaperEntryPreview):
         raise TradeBlocked("Invalid live IEX preview")
 
@@ -204,8 +235,10 @@ def submit_paper_once_supervised(
             journal.mark_uncertain(plan.client_order_id)
         except Exception:
             pass  # Durable reservation remains; no broker resend.
+        outcome = inspect_uncertain_submit_by_client_id(trading, plan)
         raise TradeBlocked(
-            "Broker submit outcome UNKNOWN: check client order ID before action"
+            "Broker submit outcome UNKNOWN after client-ID lookup: " + outcome
+            + "; NEVER retry this reserved ID"
         ) from None
 
     broker_id = getattr(result, "id", None)
@@ -217,13 +250,21 @@ def submit_paper_once_supervised(
             journal.mark_uncertain(plan.client_order_id)
         except Exception:
             pass
-        raise TradeBlocked("Broker acknowledgement inconsistent; outcome UNKNOWN")
+        outcome = inspect_uncertain_submit_by_client_id(trading, plan)
+        raise TradeBlocked(
+            "Broker acknowledgement inconsistent; outcome UNKNOWN after "
+            "client-ID lookup: " + outcome
+        )
     try:
         journal.record_observed_state(
             plan.client_order_id, "submitted", str(broker_id))
     except Exception:
+        # Broker MAY have accepted order even when Neon status update
+        # fails. Make a best-effort read-only lookup, never re-submit.
+        outcome = inspect_uncertain_submit_by_client_id(trading, plan)
         raise TradeBlocked(
-            "Broker sent but durable journal update failed; do not resubmit"
+            "Broker sent but durable journal update failed; "
+            "client-ID lookup: " + outcome + "; do not resubmit"
         ) from None
     # Success only confirms acceptance of submission, NOT a fill or
     # active stop. Separate round-the-clock stop verifier still needed.
