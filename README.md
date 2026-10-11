@@ -37,3 +37,20 @@ historical *backtests*, not realized profits. No scored Phase 3 comparison
 may run until the Phase 2 data/universe/fold/seed manifest is committed. The Phase 0 candidate and pass rules are frozen.
 
 **Research documentation does not enable PAPER or real-money trading.**
+
+
+## PAPER supervisor readiness: still disabled
+
+[Read strict overnight stop audit](docs/PAPER_GTC_STOP_READONLY_AUDIT.md),
+[staged restricted worker heartbeat / temporary Neon test](docs/PAPER_WORKER_HEARTBEAT_STAGE.md)
+and [free-hosting limitations](docs/PAPER_WORKER_HOSTING_DECISION.md).
+
+This safety branch only adds **read-only verification**, a staged
+restricted heartbeat role/table/lease, offline tests and a
+**non-deployed, read-only** worker loop. The SQL migration has
+**NOT** been applied to Neon production and the heartbeat role/DSN
+is **not configured**. The loop cannot send an order. Running
+a worker somewhere does not prove broker child-stop GTC coverage
+or constitute independent notification monitoring. The code
+release constant stays FALSE and the two Neon production
+submission switches stay **kill ON / submissions OFF**.
