@@ -161,3 +161,67 @@ def test_broker_order_with_terminal_state_not_counted_open():
         order_fetch_complete=True)
     assert report.consistent
     assert report.open_broker_orders == 0
+
+
+def test_other_symbol_oto_parent_cannot_prove_stop_coverage():
+    stop = order("stop-leg", "F", side="sell", kind="stop",
+                 parent="parent-1", tif="gtc", stop_price=24, qty=2)
+    parent = order("parent-1", "Q", side="buy", kind="limit",
+                   klass="oto", qty=2, status="filled",
+                   cid="hds-Q", legs=(stop,))
+    report = reconcile_observation(
+        [position("F", 2)], [parent], [("hds-Q", "filled", "Q", 2)],
+        order_fetch_complete=True)
+    assert "F" in report.uncovered_symbols
+    assert "position_missing_verified_gtc_oto_stop" in report.blockers
+
+
+def test_claimed_parent_id_without_actual_nested_child_is_not_verified():
+    parent = order("parent-1", "F", side="buy", kind="limit",
+                   klass="oto", qty=2, status="filled",
+                   cid="hds-F", legs=())
+    stranger = order("stranger-stop", "F", side="sell", kind="stop",
+                     parent="parent-1", tif="gtc", stop_price=24, qty=2)
+    report = reconcile_observation(
+        [position("F", 2)], [parent, stranger],
+        [("hds-F", "filled", "F", 2)],
+        order_fetch_complete=True)
+    assert "F" in report.uncovered_symbols
+
+
+@pytest.mark.parametrize("parent_status", ["new", "accepted", "canceled", "rejected"])
+def test_unfilled_or_canceled_parent_cannot_prove_live_position_stop(parent_status):
+    stop = order("stop-leg", "F", side="sell", kind="stop",
+                 parent="parent-1", tif="gtc", stop_price=24, qty=2)
+    parent = order("parent-1", "F", side="buy", kind="limit",
+                   klass="oto", qty=2, status=parent_status,
+                   cid="hds-F", legs=(stop,))
+    report = reconcile_observation(
+        [position("F", 2)], [parent], [("hds-F", "filled", "F", 2)],
+        order_fetch_complete=True)
+    assert "F" in report.uncovered_symbols
+
+
+def test_underfilled_parent_allocation_cannot_validate_larger_position():
+    stop = order("stop-leg", "F", side="sell", kind="stop",
+                 parent="parent-1", tif="gtc", stop_price=24, qty=2)
+    parent = order("parent-1", "F", side="buy", kind="limit",
+                   klass="oto", qty=1, status="filled",
+                   cid="hds-F", legs=(stop,))
+    report = reconcile_observation(
+        [position("F", 2)], [parent], [("hds-F", "filled", "F", 1)],
+        order_fetch_complete=True)
+    assert "F" in report.uncovered_symbols
+
+
+def test_nested_same_symbol_filled_parent_remains_candidate_only():
+    stop = order("stop-leg", "F", side="sell", kind="stop",
+                 parent="parent-1", tif="gtc", stop_price=24, qty=2)
+    parent = order("parent-1", "F", side="buy", kind="limit",
+                   klass="oto", qty=2, status="partially_filled",
+                   cid="hds-F", legs=(stop,))
+    report = reconcile_observation(
+        [position("F", 2)], [parent], [("hds-F", "filled", "F", 2)],
+        order_fetch_complete=True)
+    assert not report.uncovered_symbols
+    assert not report.consistent  # Entries remain blocked while exposed.
