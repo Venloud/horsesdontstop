@@ -51,7 +51,14 @@ def test_sector_history_must_align_to_stock_days():
     sector = make_bars(100, base=100, change=.2)
     spy = make_bars(100, base=100, change=.01)
     assert signal_score("sector_leadership", stock, sector, spy) is not None
-    assert signal_score("sector_leadership", stock, sector[1:], spy) is None
+    # The first sector session may be absent without affecting the latest
+    # 64-session comparison window. That is valid, not stale data.
+    assert signal_score("sector_leadership", stock, sector[1:], spy) is not None
+    # Missing the MOST RECENT sector session is actually stale and must fail.
+    assert signal_score("sector_leadership", stock, sector[:-1], spy) is None
+    # A missing day inside the recent comparison window also fails alignment.
+    assert signal_score("sector_leadership", stock, sector[:85] + sector[86:], spy) is None
+    assert signal_score("sector_leadership", stock, sector, spy[:-1]) is None
 
 
 def test_single_shared_cash_and_chronological_windows():
