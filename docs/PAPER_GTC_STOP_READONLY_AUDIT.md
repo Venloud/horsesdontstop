@@ -67,8 +67,8 @@ before autonomous PAPER submissions are considered safe.
 
 The read-only watchdog now requires the actual restricted Neon monitor to
 `SELECT` every potentially accepted/filled `paper_intents` row relevant to
-an observed position. A **500-row-or-more list is incomplete and blocks**
-inspection, rather than trusting a truncated record.
+an observed position. The query requests 501 rows and **blocks at 501**,
+rather than trusting a potentially truncated record.
 
 For each long position, `reconcile_observation` refuses to describe an
 active broker stop as covered unless its observed BUY LIMIT OTO parent
