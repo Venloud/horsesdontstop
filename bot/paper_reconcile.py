@@ -43,7 +43,7 @@ def number(value_):
 def order_legs(orders: Iterable, max_depth: int = 4):
     """Flatten nested Alpaca multi-leg objects without counting child twice."""
     flat = []
-    visited = set()
+    visited = {}
 
     def visit(order, depth):
         if depth > max_depth:
@@ -51,9 +51,15 @@ def order_legs(orders: Iterable, max_depth: int = 4):
         key = value(getattr(order, "id", None))
         if not key:
             raise TradeBlocked("Broker order without id")
+        fingerprint = tuple(value(getattr(order, name, None)) for name in (
+            'symbol', 'side', 'type', 'qty', 'filled_qty', 'status',
+            'time_in_force', 'order_class', 'client_order_id',
+            'parent_order_id', 'stop_price'))
         if key in visited:
+            if visited[key] != fingerprint:
+                raise TradeBlocked('Conflicting broker order ID records')
             return
-        visited.add(key)
+        visited[key] = fingerprint
         flat.append(order)
         for leg in getattr(order, "legs", None) or []:
             visit(leg, depth + 1)
