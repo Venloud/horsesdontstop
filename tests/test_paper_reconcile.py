@@ -324,3 +324,35 @@ def test_only_exactly_one_durable_active_gtc_child_is_candidate():
     assert report.uncovered_symbols == ()
     assert "position_missing_verified_gtc_oto_stop" not in report.blockers
     assert "open_broker_positions" in report.blockers
+
+
+def test_same_broker_order_id_with_changed_fields_is_malformed():
+    first = order("same-id", "F", side="sell", kind="stop", qty=2,
+                  status="new", tif="gtc", stop_price=24)
+    conflicting = order("same-id", "F", side="sell", kind="stop", qty=2,
+                        status="canceled", tif="gtc", stop_price=24)
+    audit = reconcile_observation(
+        [], [first, conflicting], [], order_fetch_complete=True)
+    assert "malformed_broker_order_tree" in audit.blockers
+    assert not audit.consistent
+
+
+def test_same_broker_id_cannot_point_to_different_symbol_or_stop():
+    for changed in ({"symbol": "AAPL"}, {"stop_price": "20"}):
+        first = order("same-id", "F", side="sell", kind="stop",
+                      status="new", stop_price=24)
+        second = order("same-id", changed.get("symbol", "F"),
+                       side="sell", kind="stop", status="new",
+                       stop_price=changed.get("stop_price", 24))
+        audit = reconcile_observation(
+            [], [first, second], [], order_fetch_complete=True)
+        assert "malformed_broker_order_tree" in audit.blockers
+
+
+def test_matching_duplicate_broker_order_snapshot_counts_once():
+    first = order("same-id", "F", side="buy", kind="limit", status="new")
+    same_view = order("same-id", "F", side="buy", kind="limit", status="new")
+    audit = reconcile_observation(
+        [], [first, same_view], [], order_fetch_complete=True)
+    assert audit.open_broker_orders == 1
+    assert "malformed_broker_order_tree" not in audit.blockers
