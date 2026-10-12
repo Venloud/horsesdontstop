@@ -111,6 +111,17 @@ def inspect_nested_oto(plan: PaperOrderPlan, parent, *, position_qty) -> BrokerO
     if not isinstance(legs, (list, tuple)):
         legs = []
         blockers.append("invalid_broker_legs_response")
+    # A valid STOP is not protective when the same parent also has
+    # another active SELL exit. Both children could attempt to liquidate
+    # the shares, so require exactly one active sell exit regardless
+    # of its trigger price or order type.
+    active_sell_exits = [
+        leg for leg in legs
+        if (field(leg, "side") == "sell"
+            and field(leg, "status") in PROTECTIVE_ACTIVE)
+    ]
+    if qty > 0 and len(active_sell_exits) != 1:
+        blockers.append("unexpected_active_sell_exit_count")
     protective = []
     for leg in legs:
         try:
