@@ -146,3 +146,32 @@ def test_consistent_multiple_securities_one_complete_snapshot_is_allowed(tmp_pat
                 "2026-10-12,2026-10-12T20:10:00Z,s1,"
                 "QC:AAPL,AAPL,true,synthetic_fixture,true\n")
     assert validate_manifest(m, tmp_path) == []
+
+
+def test_matching_one_day_does_not_hide_missing_total_return_history(tmp_path):
+    m = synthetic_manifest(tmp_path)
+    replace_csv(tmp_path, m, "bars",
+                "symbol,day,open,high,low,close,volume\n"
+                "SPY,2026-10-13,100,105,98,101,10000\n"
+                "SPY,2026-10-14,101,106,99,102,10000\n")
+    assert "spy_benchmark_sessions_not_aligned" in validate_manifest(m, tmp_path)
+
+
+def test_extra_benchmark_only_date_is_incompatible_with_price_history(tmp_path):
+    m = synthetic_manifest(tmp_path)
+    replace_csv(tmp_path, m, "benchmark_total_return",
+                "day,total_return_index\n"
+                "2026-10-13,100.001\n2026-10-14,100.005\n")
+    assert "spy_benchmark_sessions_not_aligned" in validate_manifest(m, tmp_path)
+
+
+def test_exact_matching_price_and_total_return_days_preserve_structural_pass(tmp_path):
+    m = synthetic_manifest(tmp_path)
+    replace_csv(tmp_path, m, "bars",
+                "symbol,day,open,high,low,close,volume\n"
+                "SPY,2026-10-13,100,105,98,101,10000\n"
+                "SPY,2026-10-14,101,106,99,102,10000\n")
+    replace_csv(tmp_path, m, "benchmark_total_return",
+                "day,total_return_index\n"
+                "2026-10-13,100.001\n2026-10-14,100.005\n")
+    assert validate_manifest(m, tmp_path) == []
