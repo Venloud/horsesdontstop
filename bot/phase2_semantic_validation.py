@@ -86,8 +86,10 @@ def _bars(path: Path) -> set[date]:
 
 
 def _universe(path: Path) -> None:
-    previous: dict[str, date] = {}
-    seen: set[tuple[str, str]] = set()
+    snapshot_signatures: dict[str, tuple[date, datetime, str]] = {}
+    snapshot_by_day: dict[date, str] = {}
+    seen_security: set[tuple[str, str]] = set()
+    seen_ticker: set[tuple[str, str]] = set()
     observed = 0
     for row in _rows(path, {
         "snapshot_day", "known_at_utc", "snapshot_id", "security_id",
@@ -99,23 +101,32 @@ def _universe(path: Path) -> None:
         security = row["security_id"]
         if not snapshot or not security or not row["source_id"]:
             raise ValueError("Missing point-in-time source identity")
-        _symbol(row["symbol"])
+        symbol = _symbol(row["symbol"])
         if row["eligible"] not in {"true", "false"}:
             raise ValueError("Ambiguous membership eligibility")
         if row["complete"] != "true":
             raise ValueError("Incomplete point-in-time snapshot")
-        key = (snapshot, security)
-        if key in seen:
-            raise ValueError("Duplicate security in membership snapshot")
-        seen.add(key)
+        # Rows claiming ONE complete snapshot must share the SAME
+        # knowledge timestamp and source version. A given session must
+        # not be represented by multiple conflicting snapshot versions.
+        signature = (snapshot_day, known_at, row["source_id"])
+        if snapshot in snapshot_signatures and snapshot_signatures[snapshot] != signature:
+            raise ValueError("Conflicting point-in-time snapshot provenance")
+        snapshot_signatures[snapshot] = signature
+        if snapshot_day in snapshot_by_day and snapshot_by_day[snapshot_day] != snapshot:
+            raise ValueError("Mixed membership snapshot versions on one day")
+        snapshot_by_day[snapshot_day] = snapshot
+        identity = (snapshot, security)
+        ticker = (snapshot, symbol)
+        if identity in seen_security or ticker in seen_ticker:
+            raise ValueError("Duplicate security or ticker in membership snapshot")
+        seen_security.add(identity)
+        seen_ticker.add(ticker)
         # A future-dated eligibility row cannot pretend to have been
         # known before the snapshot date. No calendar/timezone guarantees
         # about tradability at the same day's opening are made here.
         if known_at.date() < snapshot_day:
             raise ValueError("Snapshot known timestamp precedes snapshot date")
-        if snapshot in previous and previous[snapshot] != snapshot_day:
-            raise ValueError("Snapshot ID reused for different dates")
-        previous[snapshot] = snapshot_day
         observed += 1
     if observed == 0:
         raise ValueError("Empty point-in-time universe")
