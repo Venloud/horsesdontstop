@@ -1,0 +1,77 @@
+{
+  "schema_version": 1,
+  "status": "draft",
+  "phase0_reference": "PR-9",
+  "git_source_commit": null,
+  "strategies": [
+    "momentum_volume",
+    "trend_following",
+    "high_52_week",
+    "sector_leadership",
+    "short_term_reversal",
+    "etf_dual_momentum",
+    "overnight_drift"
+  ],
+  "rules": {
+    "variants_total": 21,
+    "risk_pct_per_order_max": 1,
+    "historical_drawdown_pct_max": 15,
+    "slippage_bps_per_side": 30,
+    "stress_slippage_bps_per_side": 60,
+    "low_frequency_history_years": 10,
+    "trade_event_minimum": 300
+  },
+  "artifacts": {
+    "bars": {
+      "path": null,
+      "sha256": null
+    },
+    "universe_membership": {
+      "path": null,
+      "sha256": null
+    },
+    "benchmark_total_return": {
+      "path": null,
+      "sha256": null
+    },
+    "contributions": {
+      "path": null,
+      "sha256": null
+    }
+  },
+  "provenance": {
+    "data_vendor": null,
+    "feed": null,
+    "fetch_timestamp_utc": null,
+    "membership_source": null,
+    "delisting_handling": null,
+    "corporate_action_method": null,
+    "dividend_treatment": null,
+    "license_review": null,
+    "membership_verified_point_in_time": false,
+    "survivorship_reviewed": false
+  },
+  "folds": {
+    "discovery_start": null,
+    "discovery_end": null,
+    "embargo_sessions": null,
+    "holdout_start": null,
+    "holdout_end": null,
+    "holdout_inspected": null
+  },
+  "statistics": {
+    "bootstrap_seed": null,
+    "placebo_seed": null,
+    "bootstrap_block_sessions": null,
+    "bootstrap_replicates": 10000,
+    "placebo_trials": 10000
+  },
+  "benchmark": {
+    "symbol": "SPY",
+    "matched_actual_contributions": true,
+    "comparison_contribution_asset": "contributions",
+    "execution_convention": null
+  },
+  "data_integrity_review_passed": false,
+  "harness_synthetic_selftests_passed": false
+}
