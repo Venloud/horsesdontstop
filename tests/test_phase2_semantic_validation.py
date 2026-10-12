@@ -114,3 +114,35 @@ def test_semantics_code_never_calls_broker_or_writes_results():
     assert "psycopg" not in source
     assert "alpaca." not in source
     assert "run_portfolio(" not in source
+
+
+@pytest.mark.parametrize("second_row", [
+    # Different security IDs cannot claim the same ticker at one snapshot.
+    "2026-10-12,2026-10-12T20:10:00Z,s1,QC:ALT,SPY,true,synthetic_fixture,true",
+    # All records in one snapshot must share its original source clock.
+    "2026-10-12,2026-10-12T20:11:00Z,s1,QC:ALT,ALT,true,synthetic_fixture,true",
+    # Nor may an unchanged snapshot ID silently change vendor lineage.
+    "2026-10-12,2026-10-12T20:10:00Z,s1,QC:ALT,ALT,true,another_source,true",
+    # One historical session must have precisely one snapshot version.
+    "2026-10-12,2026-10-12T20:10:00Z,s2,QC:ALT,ALT,true,synthetic_fixture,true",
+    # A snapshot ID must not be reused on a later session.
+    "2026-10-13,2026-10-13T20:10:00Z,s1,QC:ALT,ALT,true,synthetic_fixture,true",
+])
+def test_pit_membership_conflicting_snapshot_or_duplicate_ticker_blocks(
+        tmp_path, second_row):
+    m = synthetic_manifest(tmp_path)
+    filename = tmp_path / m["artifacts"]["universe_membership"]["path"]
+    replace_csv(tmp_path, m, "universe_membership",
+                filename.read_text() + second_row + "\n")
+    assert "asset_semantic_invalid:universe_membership" in (
+        validate_manifest(m, tmp_path))
+
+
+def test_consistent_multiple_securities_one_complete_snapshot_is_allowed(tmp_path):
+    m = synthetic_manifest(tmp_path)
+    filename = tmp_path / m["artifacts"]["universe_membership"]["path"]
+    replace_csv(tmp_path, m, "universe_membership",
+                filename.read_text() +
+                "2026-10-12,2026-10-12T20:10:00Z,s1,"
+                "QC:AAPL,AAPL,true,synthetic_fixture,true\n")
+    assert validate_manifest(m, tmp_path) == []
