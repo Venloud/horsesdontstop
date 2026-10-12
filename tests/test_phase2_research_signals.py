@@ -48,6 +48,7 @@ def ranked(data, **overrides):
         lookback_sessions=63, total_return_source_verified=True,
         point_in_time_universe_verified=True,
         next_session_calendar_verified=True,
+        verified_session_calendar=[MONTH_END, NEXT_MONTH],
     )
     args.update(overrides)
     return etf_dual_momentum_signal(data, **args)
