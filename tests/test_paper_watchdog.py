@@ -194,7 +194,7 @@ def test_read_only_watchdog_compares_original_neon_stop_terms():
     )
     parent = SimpleNamespace(
         id="parent-1", client_order_id="hds-F", status="filled",
-        order_class="oto", symbol="F", qty="2",
+        order_class="oto", symbol="F", qty="2", filled_qty="2",
         side="buy", type="limit", legs=[stop],
     )
     pos = SimpleNamespace(symbol="F", qty="2")
