@@ -276,3 +276,51 @@ def test_unapproved_broker_position_not_accepted_from_unresolved_journal():
         order_fetch_complete=True)
     assert "approved_stop_intents_not_observed" in report.blockers
     assert report.uncovered_symbols == ("F",)
+
+
+@pytest.mark.parametrize("reported_filled", [0, 1, 3])
+def test_claimed_filled_oto_needs_exact_verified_parent_fill(reported_filled):
+    child = order("stop-leg", "F", side="sell", kind="stop", qty=2,
+                  status="new", parent="parent-1", tif="gtc", stop_price=24)
+    parent = order("parent-1", "F", side="buy", kind="limit", qty=2,
+                   filled=reported_filled, status="filled", cid="hds-c",
+                   legs=(child,), klass="oto")
+    report = reconcile_observation(
+        [position("F", 2)], [parent], [],
+        order_fetch_complete=True,
+        approved_stops=[("hds-c", "filled", "F", 2, 24, "parent-1")])
+    assert report.uncovered_symbols == ("F",)
+    assert "position_missing_verified_gtc_oto_stop" in report.blockers
+
+
+def test_second_independent_live_stop_makes_position_coverage_ambiguous():
+    child = order("stop-leg", "F", side="sell", kind="stop", qty=2,
+                  status="new", parent="parent-1", tif="gtc", stop_price=24)
+    parent = order("parent-1", "F", side="buy", kind="limit", qty=2,
+                   filled=2, status="filled", cid="hds-c",
+                   legs=(child,), klass="oto")
+    duplicate = order("duplicate-stop", "F", side="sell", kind="stop",
+                      qty=2, status="accepted", tif="gtc", stop_price=24)
+    report = reconcile_observation(
+        [position("F", 2)], [parent, duplicate], [],
+        order_fetch_complete=True,
+        approved_stops=[("hds-c", "filled", "F", 2, 24, "parent-1")])
+    assert "multiple_active_sell_stops_for_position" in report.blockers
+    assert "position_missing_verified_gtc_oto_stop" in report.blockers
+    assert report.uncovered_symbols == ("F",)
+    assert not report.consistent
+
+
+def test_only_exactly_one_durable_active_gtc_child_is_candidate():
+    child = order("stop-leg", "F", side="sell", kind="stop", qty=2,
+                  status="new", parent="parent-1", tif="gtc", stop_price=24)
+    parent = order("parent-1", "F", side="buy", kind="limit", qty=2,
+                   filled=2, status="filled", cid="hds-c",
+                   legs=(child,), klass="oto")
+    report = reconcile_observation(
+        [position("F", 2)], [parent], [],
+        order_fetch_complete=True,
+        approved_stops=[("hds-c", "filled", "F", 2, 24, "parent-1")])
+    assert report.uncovered_symbols == ()
+    assert "position_missing_verified_gtc_oto_stop" not in report.blockers
+    assert "open_broker_positions" in report.blockers
