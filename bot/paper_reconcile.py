@@ -184,7 +184,20 @@ def reconcile_observation(
         if not symbol or qty <= 0:
             blockers.append("invalid_broker_position")
             continue
-        protection = False
+        # Multiple simultaneously active STOP sells may each execute
+        # against the same shares, potentially creating excess exposure.
+        # Even one legitimate durable child cannot excuse a second stop.
+        all_active_sell_stops = [
+            o for o in open_orders
+            if (getattr(o, "symbol", None) == symbol
+                and value(getattr(o, "side", None)) == "sell"
+                and value(getattr(o, "type", None)) == "stop"
+                and value(getattr(o, "status", None))
+                    in PROTECTIVE_ACTIVE_STATUSES)
+        ]
+        if len(all_active_sell_stops) > 1:
+            blockers.append("multiple_active_sell_stops_for_position")
+        valid_child_count = 0
         for order in open_orders:
             if (getattr(order, "symbol", None) != symbol
                     or value(getattr(order, "side", None)) != "sell"
@@ -201,8 +214,9 @@ def reconcile_observation(
                     or durable[0] != str(getattr(parent, "id", ""))
                     or durable[1] != symbol
                     or getattr(parent, "symbol", None) != symbol
-                    or value(getattr(parent, "status", None))
-                       not in {"filled", "partially_filled"}
+                    # Partial parent fills cannot prove Alpaca has
+                    # activated a stop leg for an unfinished OTO entry.
+                    or value(getattr(parent, "status", None)) != "filled"
                     or not any(
                         str(getattr(leg, "id", "")) == str(getattr(order, "id", ""))
                         for leg in (getattr(parent, "legs", None) or [])
@@ -210,6 +224,7 @@ def reconcile_observation(
                 continue
             try:
                 parent_qty = number(getattr(parent, "qty", None))
+                parent_filled = number(getattr(parent, "filled_qty", None))
                 remaining = (number(getattr(order, "qty", None))
                              - number(getattr(order, "filled_qty", None)))
                 trigger = number(getattr(order, "stop_price", None))
@@ -217,11 +232,11 @@ def reconcile_observation(
                 continue
             # Protective order may not be larger than the durable order,
             # and its trigger must equal the originally stored stop price.
-            if (parent_qty == durable[2] and 0 < remaining <= durable[2]
+            if (parent_qty == durable[2] and parent_filled == parent_qty
+                    and 0 < remaining <= durable[2]
                     and remaining >= qty and trigger == durable[3]):
-                protection = True
-                break
-        if not protection:
+                valid_child_count += 1
+        if not (valid_child_count == 1 and len(all_active_sell_stops) == 1):
             uncovered.append(symbol)
             blockers.append("position_missing_verified_gtc_oto_stop")
 
