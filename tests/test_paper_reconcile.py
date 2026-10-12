@@ -51,7 +51,7 @@ def test_matching_live_stop_diagnoses_coverage_but_blocks_new_entries():
                  status="new", parent="parent-1", tif="gtc",
                  stop_price=24)
     parent = order("parent-1", "F", side="buy", kind="limit", qty=2,
-                   status="filled", cid="hds-c", legs=(stop,),
+                   status="filled", filled=2, cid="hds-c", legs=(stop,),
                    klass="oto")
     report = reconcile_observation(
         [position("F", 2)], [parent], [("hds-c", "filled", "F", 2)],
@@ -225,8 +225,9 @@ def test_nested_same_symbol_filled_parent_remains_candidate_only():
         [position("F", 2)], [parent], [("hds-F", "filled", "F", 2)],
         order_fetch_complete=True,
         approved_stops=[("hds-F", "filled", "F", 2, 24, "parent-1")])
-    assert not report.uncovered_symbols
-    assert not report.consistent  # Entries remain blocked while exposed.
+    assert report.uncovered_symbols == ("F",)
+    assert "position_missing_verified_gtc_oto_stop" in report.blockers
+    assert not report.consistent  # Partial OTO is not proven protected.
 
 
 @pytest.mark.parametrize("approval", [
