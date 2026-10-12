@@ -116,3 +116,12 @@ permission to ignore the alert.**
 
 No scheduled action, API key changes, new paid hosting, broker
 writes or Neon mutations are part of this PR.
+
+## Continuation: competing exits and repeated broker order IDs
+Nested OTO recovery now rejects an otherwise valid active GTC stop
+when a competing active SELL exit also exists, regardless of its price
+or exit type. Canceled exits are not active duplicates.
+The account-wide read-only reconciler compares key fields for repeated
+order IDs across broker views. Identical records are deduplicated;
+contradictory IDs trigger malformed_broker_order_tree, not a silent pass.
+Mocked tests do not prove broker stop lifecycles or authorize trading.
