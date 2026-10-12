@@ -41,12 +41,14 @@ For any nonzero PAPER position, an observed protective candidate must:
    child-leg response; missing/unknown/DAY is *not verified*.
 3. Have an observed linked parent ID belonging to a BUY LIMIT OTO
    order in the fetched broker order history. The parent must share
-   the position's symbol, be filled or partially filled, and include
+   the position's symbol, be **fully filled with its reported filled shares
+   equal to the approved quantity**, and include
    the **same child ID in its actually nested broker legs**. Merely
    claiming a matching `parent_order_id` is insufficient.
-4. Cover **remaining unfilled child stop quantity**, and the observed
-   parent's total order quantity, at least as large as the current
-   positive long position.
+4. Cover **remaining unfilled child stop quantity** and have an observed
+   parent order size and completed fill equal to the durable approved
+   whole-share quantity. There must be **exactly one active SELL STOP**
+   against those shares; a second active stop is an unresolved duplicate.
 5. Have a strictly positive reported stop trigger.
 
 If any of these checks fails, the inspector sets
@@ -58,10 +60,10 @@ in `tests/test_paper_reconcile.py`.
 
 **Remaining unknown:** Observing a child with `gtc` still does
 not guarantee fills during gaps or halted/extended-hours sessions,
-nor prove the child stop price matches the durable original
-approved intent. We must fetch/validate the real paper stop
-lifecycle, exchange order timestamps and durable stop price
-before autonomous PAPER submissions are considered safe.
+even though the checker now compares the reported stop trigger
+to the original durable Neon intent. We must still independently prove
+the real PAPER overnight stop lifecycle, exchange order timestamps,
+and fully authenticated original owner approval before submission.
 
 ## Durable Neon stop-price and parent identity, new read-only audit
 
