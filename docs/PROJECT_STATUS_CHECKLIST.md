@@ -114,8 +114,13 @@ Merged from `experiment/paper-broker-lifecycle-v1` via [PR #7](https://github.co
       `bot/paper_execution_journal.py::record_opening_equity` uses
       executor-role permission attestation, Neon server time, exclusive
       transaction advisory lock, and first existing snapshot check.
-      Only within **09:30:00–09:34:59 New York time** and only if
-      `kill_switch_active=TRUE`, `submissions_enabled=FALSE`.
+      Only within **09:30:00–09:34:59 New York time**.
+      In **DRAFT safety PR #11**, sampling is independent of the
+      existing switch values so it can still record risk baselines
+      after a future authorized PAPER launch, but it **never
+      modifies a switch or sends an order**. The current
+      production switches remain kill TRUE/submissions FALSE;
+      no post-launch real session has been tested.
 - [x] Implemented scheduled equity sampler:
       `bot/paper_equity_open.py` reads Alpaca **PAPER** account/clock,
       `.github/workflows/paper-opening-equity.yml` triggers at
@@ -159,6 +164,74 @@ Merged from `experiment/paper-broker-lifecycle-v1` via [PR #7](https://github.co
       **14:15 UTC** $485 later sample; five-minute window reader
       returned **$500 baseline**, max historical equity **$500**.
       Temp-branch controls remained locked throughout.
+
+## Read-only overnight-stop monitoring hardening (separate draft PR)
+
+- [x] Added strict **synthetic-tested** read-only OTO child stop coverage:
+      active SELL **STOP** (not STOP_LIMIT), observed **GTC** TIF,
+      enough *remaining* quantity, positive trigger, and linked
+      observed BUY LIMIT OTO parent. Missing or unverifiable cases
+      now set `position_missing_verified_gtc_oto_stop`.
+      See [PAPER_GTC_STOP_READONLY_AUDIT.md](PAPER_GTC_STOP_READONLY_AUDIT.md).
+      This work is in a **separate safety PR, not a real Alpaca fill**.
+- [x] Staged **non-deployed** read-only persistent supervisor loop,
+      restricted DB-server-clock lease code, worker/monitor privilege
+      attestation and source-level CI release tripwires. See
+      [PAPER_WORKER_HEARTBEAT_STAGE.md](PAPER_WORKER_HEARTBEAT_STAGE.md).
+- [x] Tested staged lease SQL against the **existing isolated Neon
+      `test-paper-entry-20261011` branch only**: first pulse
+      unhealthy, second sequential pulse healthy, duplicate and
+      competing worker rejected. Both test-branch submission
+      switches remained OFF. This was **management SQL**, NOT
+      a verified restricted-role production/real-host test.
+- [ ] Apply and independently privilege-test the heartbeat migration
+      ONLY after owner approval, select safe always-on host and
+      provision a new restricted heartbeat writer credential; neither
+      the production table nor `PAPER_HEARTBEAT_DSN` exists yet.
+- [ ] Prove a real persistent worker/independent alert path and
+      populate the execution gate's genuine watchdog age from
+      independently observed DB heartbeat. Currently
+      `paper_watchdog` correctly reports **None**.
+
+- [ ] Independently observe **actual PAPER nested child stop TIF**
+      and behavior across a market close before allowing overnight
+      exposure. Official Alpaca examples show DAY LIMIT OTO
+      parent but do NOT prove the child remains GTC.
+- [ ] Persist and reconcile the originally approved stop **price**,
+      order IDs, partial-fill quantities and linked parent across
+      outages; a single read-only account-wide stop listing is
+      insufficient for full overnight protection.
+
+## Opening equity and loss/drawdown safety work (DRAFT only)
+
+- [x] **Staged** opening-equity writer no longer requires
+      `kill_switch_active=TRUE/submissions_enabled=FALSE` to
+      capture an actual broker PAPER account balance. It verifies
+      boolean control states without changing them, uses Neon
+      server time inside **09:30–09:35 New York**, a durable
+      once-per-session lock and no order API. This will preserve
+      daily baseline collection on **future** separately approved
+      trading days. Broker trading restrictions do not prevent
+      **read-only** equity observation, and an observation finishing
+      at a different day's 09:30 open cannot be backfilled.
+- [x] Added offline `bot/paper_equity_risk.py` computation for
+      3% daily loss / 15% adjusted peak, based only on a fully
+      independently attested snapshot/flow/exchange-calendar history.
+      `tests/test_paper_equity_risk.py` now exercises genuine
+      cash deposits hiding losses, withdrawals, exact cutoffs,
+      missing source evidence, duplicates and stale samples.
+      **Unit-test success is NOT permission to place trades.**
+- [ ] **Still missing in production:** complete independently
+      verified recurring marked-to-market equity sampling, durable
+      broker-verified external cash-flow ledger, accurate periodic
+      peak history and an actual 09:30 baseline row. Do not wire
+      offline helper flags as `True` before independent source
+      validation. Production's existing raw `MAX(equity)` can
+      be distorted by deposits and is **not a trusted adjusted
+      risk reference**.
+- [ ] Actual exchange calendar including NYSE holidays and
+      early closes, integration with live risk gate, persistent
+      monitor and final per-order owner approval.
 
 ## Still to do — in dependency order
 

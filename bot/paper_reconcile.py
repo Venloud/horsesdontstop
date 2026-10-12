@@ -15,7 +15,14 @@ OPEN_STATUSES = frozenset({
     "new", "accepted", "pending_new", "accepted_for_bidding",
     "partially_filled", "held", "stopped", "calculated",
 })
-PROTECTIVE_TYPES = frozenset({"stop", "stop_limit"})
+# A stop-limit may fail to exit when an overnight gap skips its limit.
+# DAY stops expire; held, pending-cancel, rejected and stopped states
+# are NOT a proven active overnight protective stop.
+PROTECTIVE_TYPES = frozenset({"stop"})
+PROTECTIVE_ACTIVE_STATUSES = frozenset({
+    "new", "accepted", "pending_new", "accepted_for_bidding",
+    "partially_filled",
+})
 UNRESOLVED_INTENTS = frozenset({"reserved", "submitted", "accepted", "unknown"})
 
 
@@ -36,7 +43,7 @@ def number(value_):
 def order_legs(orders: Iterable, max_depth: int = 4):
     """Flatten nested Alpaca multi-leg objects without counting child twice."""
     flat = []
-    visited = set()
+    visited = {}
 
     def visit(order, depth):
         if depth > max_depth:
@@ -44,9 +51,15 @@ def order_legs(orders: Iterable, max_depth: int = 4):
         key = value(getattr(order, "id", None))
         if not key:
             raise TradeBlocked("Broker order without id")
+        fingerprint = tuple(value(getattr(order, name, None)) for name in (
+            'symbol', 'side', 'type', 'qty', 'filled_qty', 'status',
+            'time_in_force', 'order_class', 'client_order_id',
+            'parent_order_id', 'stop_price'))
         if key in visited:
+            if visited[key] != fingerprint:
+                raise TradeBlocked('Conflicting broker order ID records')
             return
-        visited.add(key)
+        visited[key] = fingerprint
         flat.append(order)
         for leg in getattr(order, "legs", None) or []:
             visit(leg, depth + 1)
@@ -80,6 +93,7 @@ def reconcile_observation(
     positions: Sequence, orders: Sequence,
     journal_intents: Sequence[tuple],
     *, order_fetch_complete: bool,
+    approved_stops: Sequence[tuple] | None = None,
 ) -> Reconciliation:
     """Require a known *flat* account and resolved durable journal.
 
@@ -126,24 +140,112 @@ def reconcile_observation(
         client_id = getattr(order, "client_order_id", None)
         if client_id not in ids and not getattr(order, "parent_order_id", None):
             blockers.append("open_order_not_in_durable_journal")
+    # A complete durable stop record must be read under the restricted
+    # SELECT-only monitor role. Unresolved intents alone omit FILLED orders.
+    # A parent/child with a convincing broker shape is not approved merely
+    # because its broker-side identifiers match.
+    durable_approvals = {}
+    if positions and approved_stops is None:
+        blockers.append("approved_stop_intents_not_observed")
+    for record in approved_stops or ():
+        if not isinstance(record, (tuple, list)) or len(record) != 6:
+            blockers.append("invalid_approved_stop_intent")
+            continue
+        client_id, status, symbol, shares, stop, parent_id = record
+        try:
+            quantity = number(shares)
+            stop_price = number(stop)
+        except TradeBlocked:
+            blockers.append("invalid_approved_stop_intent")
+            continue
+        if (not isinstance(client_id, str) or not client_id
+                or value(status) not in {"accepted", "filled"}
+                or not isinstance(symbol, str) or not symbol
+                or not parent_id or quantity <= 0 or stop_price <= 0
+                or client_id in durable_approvals):
+            blockers.append("invalid_approved_stop_intent")
+            continue
+        durable_approvals[client_id] = (str(parent_id), symbol, quantity, stop_price)
+
+    # Only a genuinely nested child belonging to an observed BUY LIMIT
+    # OTO parent is even a candidate for coverage. An unrelated manual
+    # sell stop must not justify declaring a PAPER position protected.
+    # Even matching durable intent cannot prove fills through market gaps.
+    # A matching parent_order_id field alone is NOT proof of attachment.
+    # Require the child to occur in that parent's actual nested broker legs,
+    # with the same symbol, and a parent that has at least partially filled.
+    # Durable stop-price, parent-ID and approved quantity checks follow.
+    observed_oto_parents = {
+        str(getattr(parent, "id", "")): parent
+        for parent in nested
+        if (value(getattr(parent, "order_class", None)) == "oto"
+            and value(getattr(parent, "side", None)) == "buy"
+            and value(getattr(parent, "type", None)) == "limit"
+            and getattr(parent, "id", None))
+    }
     uncovered = []
     for position in positions:
         symbol = getattr(position, "symbol", None)
         qty = number(getattr(position, "qty", None))
-        if not symbol or qty == 0:
+        if not symbol or qty <= 0:
             blockers.append("invalid_broker_position")
             continue
-        protection = any(
-            getattr(order, "symbol", None) == symbol
-            and value(getattr(order, "side", None)) == "sell"
-            and value(getattr(order, "type", None)) in PROTECTIVE_TYPES
-            and value(getattr(order, "status", None)) in OPEN_STATUSES
-            and number(getattr(order, "qty", None)) >= qty
-            for order in open_orders
-        )
-        if not protection:
+        # Multiple simultaneously active STOP sells may each execute
+        # against the same shares, potentially creating excess exposure.
+        # Even one legitimate durable child cannot excuse a second stop.
+        all_active_sell_stops = [
+            o for o in open_orders
+            if (getattr(o, "symbol", None) == symbol
+                and value(getattr(o, "side", None)) == "sell"
+                and value(getattr(o, "type", None)) == "stop"
+                and value(getattr(o, "status", None))
+                    in PROTECTIVE_ACTIVE_STATUSES)
+        ]
+        if len(all_active_sell_stops) > 1:
+            blockers.append("multiple_active_sell_stops_for_position")
+        valid_child_count = 0
+        for order in open_orders:
+            if (getattr(order, "symbol", None) != symbol
+                    or value(getattr(order, "side", None)) != "sell"
+                    or value(getattr(order, "type", None)) not in PROTECTIVE_TYPES
+                    or value(getattr(order, "status", None))
+                       not in PROTECTIVE_ACTIVE_STATUSES
+                    or value(getattr(order, "time_in_force", None)) != "gtc"):
+                continue
+            parent = observed_oto_parents.get(
+                str(getattr(order, "parent_order_id", "")))
+            durable = durable_approvals.get(
+                str(getattr(parent, "client_order_id", ""))) if parent else None
+            if (parent is None or durable is None
+                    or durable[0] != str(getattr(parent, "id", ""))
+                    or durable[1] != symbol
+                    or getattr(parent, "symbol", None) != symbol
+                    # Partial parent fills cannot prove Alpaca has
+                    # activated a stop leg for an unfinished OTO entry.
+                    or value(getattr(parent, "status", None)) != "filled"
+                    or not any(
+                        str(getattr(leg, "id", "")) == str(getattr(order, "id", ""))
+                        for leg in (getattr(parent, "legs", None) or [])
+                    )):
+                continue
+            try:
+                parent_qty = number(getattr(parent, "qty", None))
+                parent_filled = number(getattr(parent, "filled_qty", None))
+                remaining = (number(getattr(order, "qty", None))
+                             - number(getattr(order, "filled_qty", None)))
+                trigger = number(getattr(order, "stop_price", None))
+            except TradeBlocked:
+                continue
+            # Protective order may not be larger than the durable order,
+            # and its trigger must equal the originally stored stop price.
+            if (parent_qty == durable[2] and parent_filled == parent_qty
+                    and 0 < remaining <= durable[2]
+                    and remaining >= qty and trigger == durable[3]):
+                valid_child_count += 1
+        if not (valid_child_count == 1 and len(all_active_sell_stops) == 1):
             uncovered.append(symbol)
-            blockers.append("position_missing_live_protective_stop")
+            blockers.append("position_missing_verified_gtc_oto_stop")
+
     reasons = tuple(dict.fromkeys(blockers))
     return Reconciliation(
         consistent=not reasons, blockers=reasons,

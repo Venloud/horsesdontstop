@@ -65,6 +65,12 @@ class PaperSafetyState:
     kill_switch_active: bool = True
     order_submissions_explicitly_enabled: bool = False
     broker_endpoint: str = PAPER_ENDPOINT
+    # These are independent evidence gates, not interpretations of a
+    # raw broker account balance or the DB's unadjusted MAX(equity).
+    # No production collector currently attests any of them.
+    audited_external_flows_complete: bool = False
+    verified_equity_history_complete: bool = False
+    exchange_calendar_verified: bool = False
 
 
 def execution_blockers(state: PaperSafetyState) -> list[str]:
@@ -94,6 +100,16 @@ def execution_blockers(state: PaperSafetyState) -> list[str]:
         failures.append("broker_orders_not_reconciled")
     if state.watchdog_heartbeat_seconds is None or not 0 <= state.watchdog_heartbeat_seconds <= 120:
         failures.append("no_healthy_persistent_watchdog")
+    # Deposits cannot hide the 3% daily stop, inflate returns, or
+    # disguise a drawdown relative to the 15% adjusted high-water mark.
+    # The values below are mandatory proof requirements, not a claim
+    # that any collector/owner approval is currently implemented.
+    if state.audited_external_flows_complete is not True:
+        failures.append("external_cash_flows_unverified")
+    if state.verified_equity_history_complete is not True:
+        failures.append("equity_history_unverified")
+    if state.exchange_calendar_verified is not True:
+        failures.append("nyse_calendar_unverified")
     try:
         equity = money(state.equity)
         cash = money(state.available_cash)

@@ -56,6 +56,14 @@ def read_only_tick(trading_client, journal, *, now=None) -> dict:
     account = trading_client.get_account()
     clock = trading_client.get_clock()
     positions = trading_client.get_all_positions()
+    # Filled/accepted durable parent intents are absent from the
+    # unresolved-only ledger. Fetch their immutable original stop terms
+    # through SELECT-only Neon before treating any position as covered.
+    durable_stops = None
+    if positions:
+        durable_stops = journal.read_approved_stop_intents(limit=501)
+        if len(durable_stops) >= 501:
+            raise RuntimeError("Durable protective-intent list is truncated")
     open_orders = trading_client.get_orders(filter=GetOrdersRequest(
         status=QueryOrderStatus.OPEN, limit=500, nested=True))
     # Recent closed orders supplement open orders. Durable unresolved intents
@@ -66,7 +74,7 @@ def read_only_tick(trading_client, journal, *, now=None) -> dict:
     complete = len(open_orders) < 500 and len(recent_closed) < 500
     audit = reconcile_observation(
         positions, [*open_orders, *recent_closed], unresolved,
-        order_fetch_complete=complete)
+        order_fetch_complete=complete, approved_stops=durable_stops)
 
     state = PaperSafetyState(
         equity=float(money(account.equity)),

@@ -1,0 +1,145 @@
+"""STAGED read-only persistent PAPER supervisor loop, NOT DEPLOYED.
+
+This future host runner can poll the existing read-only Alpaca/Neon
+watchdog and write ONLY an attested restricted heartbeat. It can never
+place/cancel/replace orders or change the kill switch. Production has
+no approved heartbeat writer role/secret yet: this CLI fails closed.
+A running loop alone is NOT independent supervision, alert delivery,
+actual GTC stop evidence, or authorization to trade.
+"""
+from __future__ import annotations
+
+import argparse
+import os
+import sys
+import time
+from dataclasses import dataclass
+from uuid import uuid4
+
+from .paper_safety import PAPER_ENDPOINT, TradeBlocked
+from .paper_worker_lease import PaperWorkerHeartbeat
+
+
+@dataclass(frozen=True)
+class SupervisorLoopReport:
+    ticks: int
+    healthy_polls: int
+    blocked_polls: int
+    broker_order_submissions: int = 0
+
+
+def valid_observation(report) -> bool:
+    """A heartbeat records only a broker/Neon read that actually succeeded.
+
+    This intentionally rejects exposure/journal inconsistencies, and
+    never equates a healthy poll with PAPER trade-launch authorization.
+    """
+    if not isinstance(report, dict):
+        return False
+    check = report.get("reconciliation")
+    if not isinstance(check, dict):
+        return False
+    return (
+        report.get("mode") == "ALPACA_PAPER_READ_ONLY_PREFLIGHT"
+        and report.get("broker_paper_url") == PAPER_ENDPOINT
+        and report.get("can_submit_orders") is False
+        and report.get("broker_write_operations") == 0
+        and check.get("consistent") is True
+        and not check.get("blockers")
+        and check.get("uncovered_symbols") == []
+    )
+
+
+def one_supervisor_tick(
+    *, fetch_read_only_report, heartbeat_writer: PaperWorkerHeartbeat,
+    worker_id: str, sequence: int,
+) -> bool:
+    """Never send broker orders. Mark broken observations as failed pulses."""
+    try:
+        observation = fetch_read_only_report()
+        ok = valid_observation(observation)
+    except Exception:
+        # All exceptions may embed account numbers, API keys or DSNs.
+        # Never expose exception text, URLs or broker response bodies.
+        ok = False
+    try:
+        return heartbeat_writer.pulse(
+            worker_id=worker_id, sequence=sequence, poll_succeeded=ok
+        ) is True
+    except Exception:
+        return False
+
+
+def run_supervisor_loop(
+    *, fetch_read_only_report, heartbeat_writer, interval_seconds=30,
+    max_ticks=0, sleeper=time.sleep, worker_id=None,
+) -> SupervisorLoopReport:
+    """Synthetic tests can supply fake report, pulse and sleeper.
+
+    A real host must use a fresh process instance ID on EVERY restart;
+    only the database lease reader can independently verify liveness.
+    """
+    if type(interval_seconds) is not int or not 30 <= interval_seconds <= 90:
+        raise TradeBlocked("Read-only supervisor interval must be 30–90 seconds")
+    if type(max_ticks) is not int or max_ticks < 0 or max_ticks > 500:
+        raise TradeBlocked("Invalid bounded worker test count")
+    if worker_id is None:
+        worker_id = "paper-" + uuid4().hex
+    ticks = healthy = blocked = 0
+    while max_ticks == 0 or ticks < max_ticks:
+        ticks += 1
+        succeeded = one_supervisor_tick(
+            fetch_read_only_report=fetch_read_only_report,
+            heartbeat_writer=heartbeat_writer,
+            worker_id=worker_id, sequence=ticks
+        )
+        if succeeded:
+            healthy += 1
+            print("PAPER READ-ONLY SUPERVISOR: recent broker/Neon poll; "
+                  "ZERO broker orders.")
+        else:
+            blocked += 1
+            print("PAPER READ-ONLY SUPERVISOR: unhealthy/unknown; "
+                  "NO trading permission.", file=sys.stderr)
+        if max_ticks == 0 or ticks < max_ticks:
+            sleeper(interval_seconds)
+    return SupervisorLoopReport(ticks, healthy, blocked)
+
+
+def main() -> int:
+    from dotenv import load_dotenv
+    from .paper_watchdog import run_once
+
+    parser = argparse.ArgumentParser(
+        description="STAGED read-only PAPER watchdog; no broker orders"
+    )
+    parser.add_argument("--interval-seconds", type=int, default=30)
+    parser.add_argument("--max-ticks", type=int, default=0,
+                        help="0 is continuous; 2-5 for synthetic smoke on a host")
+    args = parser.parse_args()
+    load_dotenv()
+
+    if not all(os.environ.get(x) for x in (
+            "ALPACA_PAPER_API_KEY", "ALPACA_PAPER_SECRET_KEY",
+            "PAPER_JOURNAL_DSN", "PAPER_HEARTBEAT_DSN")):
+        print("BLOCKED: separate read-only and restricted heartbeat "
+              "credentials missing. No broker orders.", file=sys.stderr)
+        return 2
+    try:
+        writer = PaperWorkerHeartbeat(os.environ["PAPER_HEARTBEAT_DSN"])
+        writer.assert_heartbeat_writer_only()
+        outcome = run_supervisor_loop(
+            fetch_read_only_report=lambda: run_once(output=""),
+            heartbeat_writer=writer,
+            interval_seconds=args.interval_seconds,
+            max_ticks=args.max_ticks,
+        )
+    except Exception:
+        print("BLOCKED: cannot operate a verified PAPER read-only worker; "
+              "no broker orders.", file=sys.stderr)
+        return 2
+    return 0 if outcome.blocked_polls == 0 else 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

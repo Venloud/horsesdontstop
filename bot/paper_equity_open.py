@@ -54,15 +54,19 @@ def snapshot_one_opening(trading, journal, *, now=None, after_read_now=None):
         raise TradeBlocked("Alpaca PAPER account/clock read failed") from None
     if clock.is_open is not True:
         return OpeningSnapshotResult("broker_market_not_open", local_day, None, False)
-    if getattr(account, "trading_blocked", True) is True:
-        raise TradeBlocked("PAPER account trading is blocked")
+    # Account trading restrictions must block ORDERS, not a read-only
+    # risk baseline. A blocked PAPER account still needs its equity
+    # observed so daily/peak risk reporting cannot go blind.
     amount, cash = money(account.equity), money(account.cash)
     if amount <= 0 or cash < 0 or cash > amount * money("1.1"):
         raise TradeBlocked("Invalid PAPER account cash/equity")
     # External requests can be delayed; never use an old 09:30 quote
     # to backfill a missed five-minute baseline.
-    if opening_window(after_read_now or datetime.now(timezone.utc)) is None:
-        raise TradeBlocked("Opening snapshot window expired during account read")
+    finished_window = opening_window(after_read_now or datetime.now(timezone.utc))
+    if finished_window != started:
+        raise TradeBlocked(
+            "Opening snapshot window expired or changed during account read"
+        )
     inserted = journal.record_opening_equity(
         session_open_utc=started, equity=amount, cash=cash)
     return OpeningSnapshotResult(

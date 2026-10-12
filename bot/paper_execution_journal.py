@@ -41,8 +41,11 @@ class PaperExecutorJournal(PostgresPaperJournal):
 
         Only the restricted executor account can insert. Database time,
         not runner/client time, MUST be inside [open, open+5m).
-        The kill switch must remain ON and submissions OFF. Missing a
-        delayed GitHub scheduled run does not fabricate a baseline.
+        Equity observation is separate from permission to place
+        broker orders. It must remain available even after a future,
+        separately approved PAPER launch; it never changes either
+        submission control. Missing a delayed scheduled run does
+        not fabricate a baseline.
         Returns False for a previously recorded valid opening snapshot.
         """
         if (not isinstance(session_open_utc, datetime)
@@ -82,8 +85,14 @@ class PaperExecutorJournal(PostgresPaperJournal):
                         or db_now.tzinfo is None
                         or not start <= db_now < end):
                     raise TradeBlocked("Opening baseline window missed")
-                if kill_switch is not True or submissions_enabled is not False:
-                    raise TradeBlocked("Cannot sample unless paper submissions OFF")
+                # Baseline recording must work on every future
+                # trading day, even if the user separately approves
+                # enabling PAPER submissions later. The snapshot writer
+                # is NEVER permission to submit orders and never
+                # changes either control state. Only trusted booleans
+                # from the singleton control are accepted.
+                if type(kill_switch) is not bool or type(submissions_enabled) is not bool:
+                    raise TradeBlocked("Unverifiable PAPER control state during snapshot")
                 cur.execute(
                     "SELECT snapshot_id FROM public.paper_equity_snapshots "
                     "WHERE observed_at >= %s AND observed_at < %s "

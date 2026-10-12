@@ -81,7 +81,10 @@ def healthy_state(**overrides):
                 recent_quote_seconds=1, durable_journal_healthy=True,
                 reconciled_with_broker=True, watchdog_heartbeat_seconds=1,
                 kill_switch_active=False, order_submissions_explicitly_enabled=True,
-                broker_endpoint=PAPER_ENDPOINT)
+                broker_endpoint=PAPER_ENDPOINT,
+                audited_external_flows_complete=True,
+                verified_equity_history_complete=True,
+                exchange_calendar_verified=True)
     vals.update(overrides)
     return PaperSafetyState(**vals)
 
@@ -108,3 +111,16 @@ def test_legacy_market_oto_is_retired_to_prevent_unrestricted_buying():
     plan = plan_paper_entry("F", TODAY, 25, 500, 500, .01)
     with pytest.raises(TradeBlocked, match="retired"):
         make_protective_alpaca_order(plan)
+
+
+def test_unverified_flow_peak_or_calendar_evidence_blocks_entry():
+    cases = (
+        ("audited_external_flows_complete", "external_cash_flows_unverified"),
+        ("verified_equity_history_complete", "equity_history_unverified"),
+        ("exchange_calendar_verified", "nyse_calendar_unverified"),
+    )
+    for flag, blocker in cases:
+        assert blocker in execution_blockers(healthy_state(**{flag: False}))
+        assert blocker in execution_blockers(healthy_state(**{flag: None}))
+        assert blocker in execution_blockers(healthy_state(**{flag: "true"}))
+    assert execution_blockers(healthy_state()) == []

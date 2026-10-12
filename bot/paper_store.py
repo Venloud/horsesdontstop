@@ -191,6 +191,25 @@ class PostgresPaperJournal:
                     "ORDER BY created_at ASC LIMIT %s", (limit,))
                 return cur.fetchall()
 
+    def read_approved_stop_intents(self, limit: int = 501):
+        """Read only the durable approved stop terms for broker comparison.
+
+        This is a diagnostic SELECT, never a broker submission approval.
+        Exclude reserved/unknown/canceled/rejected parent intents. A
+        saturated result cannot be considered complete by the caller.
+        """
+        if type(limit) is not int or not 1 <= limit <= 1000:
+            raise TradeBlocked("Invalid stop-intent inspection limit")
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT client_order_id, status, symbol, whole_shares, "
+                    "protective_stop, broker_order_id "
+                    "FROM paper_intents "
+                    "WHERE status IN ('accepted','filled') "
+                    "ORDER BY created_at ASC LIMIT %s", (limit,))
+                return cur.fetchall()
+
     def read_equity_references(self, day_start_utc, as_of_utc):
         """Read only. Require an equity sample very near the NYSE opening.
 
