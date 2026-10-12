@@ -53,9 +53,11 @@ The code reads the *actual pinned local CSV contents*, rejecting:
   share volume and malformed CSV fields.
 - Unsorted or repeated total-return benchmark dates, zero/nonfinite
   total-return indices and lack of a common date with SPY price bars.
-- Missing stable security/source/snapshot identifiers, duplicate security
-  per snapshot, unparseable knowledge timestamps, invalid eligibility
-  states and incomplete membership snapshots.
+- Missing stable security/source/snapshot identifiers, duplicate
+  security IDs **or tickers within one snapshot**, mixed source IDs
+  or knowledge timestamps for the same snapshot, competing snapshot
+  versions for one day, unparseable knowledge timestamps, invalid
+  eligibility states and incomplete membership snapshots.
 - Duplicate/unsorted owner cash-transfer dates, nonfinite transfer values
   and fractions of a U.S. cent. **A header-only contribution CSV is
   valid for zero actual contributions**; do not invent monthly deposits
@@ -175,11 +177,14 @@ changes.
   prospective holdout start/end, embargo, seed values,
   bootstrap block lengths, and actual matching deposit convention
   **BEFORE inspecting any scored candidate result**.
-- [x] Implement pure offline signals for all three research-only candidates:
-  `short_term_reversal`, `etf_dual_momentum`,
-  `overnight_drift`, each with separate strategy-specific
-  cash/entry/exit modeling. Overnight drift requires
-  executable pre-close signals, not after-close clairvoyance.
+- [x] Implement pure offline eligibility signals for all three
+  research-only candidates: `short_term_reversal`,
+  `etf_dual_momentum`, `overnight_drift`. These are **not**
+  executable trades or complete simulation implementations.
+- [ ] Implement **separate strategy-specific cash, entry, exit, stop,
+  dividend and transaction-cost simulation models**; overnight drift
+  must prove executable pre-close signals and auction timing before
+  any scored result, not after-close clairvoyance.
 - [ ] Build the synthetic leak/planted-edge/random-entry
   statistical validation harness and test its calibration.
 - [ ] Once all prerequisites pass and owner reviews the frozen
