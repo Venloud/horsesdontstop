@@ -186,6 +186,12 @@ def validate_semantic_artifacts(paths: dict[str, Path]) -> list[str]:
                 ArithmeticError):
             problems.append("asset_semantic_invalid:" + name)
     if "bars" in checked and "benchmark_total_return" in checked:
-        if not checked["bars"].intersection(checked["benchmark_total_return"]):
+        prices = checked["bars"]
+        benchmark = checked["benchmark_total_return"]
+        if not prices.intersection(benchmark):
             problems.append("spy_benchmark_dates_do_not_overlap")
+        elif prices != benchmark:
+            # A single matching date does not make two otherwise
+            # disjoint performance histories comparable.
+            problems.append("spy_benchmark_sessions_not_aligned")
     return problems
