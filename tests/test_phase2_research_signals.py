@@ -182,3 +182,22 @@ def test_research_signal_module_has_no_network_broker_or_trade_boundary():
         "alpaca.trading", "psycopg", "neon.connect", "requests.get(",
     ):
         assert forbidden not in source
+
+
+def test_etf_monthly_needs_explicit_consecutive_exchange_sessions():
+    data = daily_index()
+    assert ranked(data, verified_session_calendar=None) is None
+    assert ranked(data, verified_session_calendar=[]) is None
+    assert ranked(data, verified_session_calendar=[MONTH_END]) is None
+    assert ranked(data, verified_session_calendar=[NEXT_MONTH, MONTH_END]) is None
+    assert ranked(data, verified_session_calendar=[MONTH_END, NEXT_MONTH]) is not None
+
+
+def test_etf_monthly_rejects_skipping_actual_next_session():
+    data = daily_index()
+    dates = [MONTH_END, NEXT_MONTH, date(2026, 10, 2)]
+    assert ranked(data, next_session=date(2026, 10, 2),
+                  verified_session_calendar=dates) is None
+    assert ranked(data, verified_session_calendar=dates) is not None
+    assert ranked(data, verified_session_calendar=[
+        MONTH_END, NEXT_MONTH, NEXT_MONTH]) is None
