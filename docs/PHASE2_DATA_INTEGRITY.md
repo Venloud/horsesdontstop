@@ -223,3 +223,12 @@ send the existing restricted database credentials or authorize
 broker order execution to a third-party app without asking the
 owner. TradingView/TradersPost are not needed for Phase 2's
 offline dataset hygiene checks.
+
+## Continuation: matched benchmark sessions and verified ETF calendar
+The SPY daily-price session set must now exactly match its passive
+total-return benchmark dates. Partial overlap is not sufficient.
+Monthly ETF dual momentum also requires an ordered, unique sequence
+of externally verified market sessions: next_session must immediately
+follow completed_session. An attestation flag without actual session
+dates is insufficient. These remain synthetic inputs, not verified
+NYSE calendars. The real dataset manifest remains DRAFT and blocked.
