@@ -153,13 +153,16 @@ def etf_dual_momentum_signal(
     total_return_source_verified: bool = False,
     point_in_time_universe_verified: bool = False,
     next_session_calendar_verified: bool = False,
+    verified_session_calendar: Sequence[date] | None = None,
 ) -> DualMomentumSignal | None:
     """Monthly-only ETF absolute/relative ranking of 63, 126 or 252 closes.
 
     An externally verified calendar must prove next_session is the NEXT
-    eligible trading session. Only the PREVIOUS completed month-end
-    close may inform the next session open. Missing / unaligned ETF
-    histories block the entire selection (never pick surviving ETFs).
+    eligible trading session using a supplied ordered, externally
+    verified sequence of actual exchange sessions. An attestation boolean
+    without session dates is insufficient. Only the PREVIOUS completed
+    month-end close may inform the next session open. Missing / unaligned
+    ETF histories block the entire selection (never pick surviving ETFs).
     """
     if type(lookback_sessions) is not int or lookback_sessions not in DUAL_MOMENTUM_LOOKBACKS:
         raise ValueError("Non-preregistered ETF lookback")
@@ -177,6 +180,21 @@ def etf_dual_momentum_signal(
     if not (total_return_source_verified and point_in_time_universe_verified
             and next_session_calendar_verified):
         return None  # No legitimate total-return, universe or calendar proof.
+    # A boolean alone is not a NYSE calendar. Demand the actual
+    # externally verified ordered session sequence, then check the pair
+    # really is consecutive, with a month boundary between them.
+    if (not isinstance(verified_session_calendar, (list, tuple))
+            or len(verified_session_calendar) < 2
+            or any(type(d) is not date for d in verified_session_calendar)
+            or list(verified_session_calendar) != sorted(set(verified_session_calendar))):
+        return None
+    try:
+        calendar_index = verified_session_calendar.index(completed_session)
+    except ValueError:
+        return None
+    if (calendar_index + 1 >= len(verified_session_calendar)
+            or verified_session_calendar[calendar_index + 1] != next_session):
+        return None
     if not isinstance(total_return_series, Mapping):
         raise ValueError("ETF source must be a keyed set of total-return histories")
     if set(total_return_series) != set(SECTOR_ETF_UNIVERSE):
