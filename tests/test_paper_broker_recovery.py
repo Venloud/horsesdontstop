@@ -245,3 +245,36 @@ def test_nested_child_without_broker_order_id_is_not_proof():
         PLAN, parent(legs=[child]), position_qty=PLAN.whole_shares)
     assert "unprotected_open_paper_position" in outcome.blockers
     assert outcome.has_verified_protective_stop is False
+
+
+def test_second_active_sell_child_disqualifies_otherwise_valid_stop():
+    good = stop()
+    duplicate = stop(trigger=PLAN.protective_stop - 2)
+    duplicate.id = "second-sell-child"
+    audit = inspect_nested_oto(
+        PLAN, parent(legs=[good, duplicate]),
+        position_qty=PLAN.whole_shares)
+    assert "unexpected_active_sell_exit_count" in audit.blockers
+    assert audit.has_verified_protective_stop is False
+
+
+def test_different_active_sell_type_also_disqualifies_oto_stop():
+    good = stop()
+    competing = stop(kind="stop_limit")
+    competing.id = "competing-exit"
+    audit = inspect_nested_oto(
+        PLAN, parent(legs=[good, competing]),
+        position_qty=PLAN.whole_shares)
+    assert "unexpected_active_sell_exit_count" in audit.blockers
+    assert audit.has_verified_protective_stop is False
+
+
+def test_terminal_sell_child_does_not_count_as_active_competitor():
+    good = stop()
+    closed = stop(status="canceled")
+    closed.id = "old-canceled-child"
+    audit = inspect_nested_oto(
+        PLAN, parent(legs=[good, closed]),
+        position_qty=PLAN.whole_shares)
+    assert "unexpected_active_sell_exit_count" not in audit.blockers
+    assert audit.has_verified_protective_stop is True
