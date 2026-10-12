@@ -54,3 +54,17 @@ a worker somewhere does not prove broker child-stop GTC coverage
 or constitute independent notification monitoring. The code
 release constant stays FALSE and the two Neon production
 submission switches stay **kill ON / submissions OFF**.
+
+## Phase 2: research dataset readiness
+
+[Read the Phase 2 data-integrity plan](docs/PHASE2_DATA_INTEGRITY.md) and [historical-data source comparison](docs/PHASE2_HISTORICAL_DATA_SOURCES.md).
+A local offline gate (`python -m bot.phase2_dataset_gate`) checks the
+phase-0 frozen research rules, dataset file hashes, source and universe
+provenance, untouched chronological holdout, statistical seeds and
+matching-deposit SPY reference. The checked-in manifest is
+**intentionally incomplete and must fail closed**. No new scored
+trading research is authorized before actual historical datasets,
+point-in-time membership and synthetic harness checks are verified.
+The gate does **not** submit paper orders or real-money orders.
+
+**Read-only source finding:** [Alpaca coverage probe](https://github.com/Venloud/horsesdontstop/actions/runs/38126272354) observed **22 daily IEX bars per sampled ticker in June 2022 and September 2026**, **0 for October 2016** (SPY/AAPL/XLK), and **22 for historical FRC in June 2022**. These short windows do not prove 10-year/delistings/total-return completeness. The data probe is now **manual-only**. The preferred free independent long-horizon option is QuantConnect *cloud* research; local bulk historical downloads require a separate license.

@@ -1,0 +1,32 @@
+name: Phase 2 Historical Data Coverage (GET Only)
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: horsesdontstop-phase2-readonly-coverage
+  cancel-in-progress: false
+
+jobs:
+  historical-coverage:
+    if: github.repository == 'Venloud/horsesdontstop'
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Install existing dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Run only offline marketdata-probe tests
+        run: python -m pytest -q tests/test_phase2_alpaca_coverage_probe.py
+      - name: Observe three historical months and old delisted ticker, no orders
+        env:
+          ALPACA_PAPER_API_KEY: ${{ secrets.ALPACA_PAPER_API_KEY }}
+          ALPACA_PAPER_SECRET_KEY: ${{ secrets.ALPACA_PAPER_SECRET_KEY }}
+        run: |
+          python -m bot.phase2_alpaca_coverage_probe
