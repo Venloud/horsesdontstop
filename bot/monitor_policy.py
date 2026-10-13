@@ -158,7 +158,8 @@ def assess_read_only_report(report: Mapping, *, now=None,
 
     if (report.get("can_submit_orders") is not False
             or report.get("code_submissions_enabled") is not False
-            or report.get("broker_write_operations") != 0):
+            or type(report.get("broker_write_operations")) is not int
+            or report["broker_write_operations"] != 0):
         return make_incident(
             "critical", "unexpected_broker_write",
             ("read_only_contract_broken",), observation=dtstr,
