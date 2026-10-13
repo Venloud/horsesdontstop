@@ -22,6 +22,12 @@ EXPECTED_READ_ONLY_BLOCKERS = frozenset({
     "no_healthy_persistent_watchdog",
     "missing_daily_open_equity",
     "missing_durable_equity_peak",
+    # These independent attestations deliberately remain unavailable
+    # while submissions are hard-disabled. They are expected diagnostic
+    # blockers in observation-only mode, never execution approvals.
+    "external_cash_flows_unverified",
+    "equity_history_unverified",
+    "nyse_calendar_unverified",
     "preflight_has_no_broker_write_capability",
 })
 EXPOSURE_DANGER = frozenset({
