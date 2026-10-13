@@ -15,7 +15,7 @@ optional `score_fn` hook whose default path is tested identical).
 
 ## Legacy replay
 
-- Archived `research/legacy/robustness-audit-38108710763.zip`, SHA-256
+- Archived in the private claudevandam repo (`research-archive/robustness-audit-38108710763.zip`; not in this public repo because it holds Alpaca-derived trade fills). Set `HDS_LEGACY_ZIP` to a local copy to run the checks; they skip when it is absent. SHA-256
   `87d610ee...51cb`, identical to the digest GitHub reports for artifact
   11690790832 (it expires from Actions on 2026-10-25).
 - Verified offline: all 80 `TRIAL_LEDGER.csv` rows equal the artifact, and
