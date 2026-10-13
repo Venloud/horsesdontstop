@@ -184,7 +184,9 @@ def next_open_eligibility(
         decision = short_term_reversal_signal(
             completed_history, entry_session=entry_session,
             rsi_threshold=variant[0], hold_sessions=variant[1])
-        score = decision.score if decision is not None else None
+        # RSI equal to the frozen threshold remains eligible. Give it
+        # a positive eligibility rank without inventing a new variant.
+        score = max(decision.score, 1e-12) if decision is not None else None
         hold = decision.hold_sessions if decision is not None else None
     if score is None or not isfinite(score) or score <= 0:
         return None
