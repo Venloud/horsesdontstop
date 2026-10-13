@@ -8,13 +8,15 @@ arguments using only the existing signal functions. Tests:
 
 | Status | Count | Variants |
 |---|---:|---|
-| implemented | 11 | defaults of the 4 coded strategies; 4 reversal; 3 ETF momentum |
-| not_implemented | 8 | non-default points of the 4 coded strategies |
+| implemented | 19 | all 12 coded-strategy variants; 4 reversal; 3 ETF momentum |
 | research_only | 2 | overnight_drift (no adapter) |
 
-The 8 gaps exist because `bot/strategies.py` hard-codes only the defaults
-(21/1.15, 20/50, 2%, 63). They refuse to run instead of silently using the
-default. Parameterizing them is a separate reviewed change.
+`bot/strategies.py` hard-codes only the defaults (21/1.15, 20/50, 2%, 63).
+The 8 other points use parameterized copies of the same formulas
+(`_generic_score`, first written in PR #18 and kept here after I compared them
+with `signal_score`). A test checks they return identical scores at the
+default parameters; the other points rely on that equivalence plus the
+look-ahead audit, not on an independent source.
 
 ## Exit policies added to `run_portfolio` (defaults keep legacy output)
 

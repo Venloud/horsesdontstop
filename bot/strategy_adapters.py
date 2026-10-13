@@ -1,15 +1,15 @@
 """Simulator adapters for the preregistered candidates. Offline, research only.
 
 Each implemented variant becomes run_portfolio keyword arguments: a score_fn
-built from an EXISTING signal function plus its exit policy. No new signal
-logic lives here. overnight_drift stays research-only (no adapter).
+plus its exit policy. The default of each coded strategy uses the EXISTING
+signal_score; the 8 non-default grid points use parameterized copies of those
+same formulas (_generic_score, formulas first written by ChatGPT in PR #18 and
+checked against signal_score: at the default parameters they return identical
+scores, see tests). overnight_drift stays research-only (no adapter).
 
 Coverage of the frozen 21-variant grid (PREREGISTRATION section 3):
-- implemented (11): the existing default of each of the 4 coded strategies,
-  4 short_term_reversal and 3 etf_dual_momentum variants;
-- not_implemented (8): non-default grid points of the 4 coded strategies.
-  bot/strategies.py hard-codes only the defaults; adding parameters is a
-  separate reviewed change, not done here;
+- implemented (19): 4 + 3 + 3 + 2 coded-strategy variants, 4
+  short_term_reversal and 3 etf_dual_momentum variants;
 - research_only (2): overnight_drift.
 """
 from __future__ import annotations
@@ -45,19 +45,19 @@ def _grid() -> tuple:
         for rv in (1.15, 1.50):
             v.append(Variant(f"momentum_volume:lb{lb}_rv{rv:.2f}", "momentum_volume",
                              (("lookback", lb), ("rel_volume", rv)),
-                             "implemented" if (lb, rv) == (21, 1.15) else "not_implemented"))
+                             "implemented"))
     for short, long in ((20, 50), (20, 100), (50, 200)):
         v.append(Variant(f"trend_following:sma{short}_{long}", "trend_following",
                          (("short", short), ("long", long)),
-                         "implemented" if (short, long) == (20, 50) else "not_implemented"))
+                         "implemented"))
     for pct in (1, 2, 5):
         v.append(Variant(f"high_52_week:within{pct}pct", "high_52_week",
                          (("within_pct", pct),),
-                         "implemented" if pct == 2 else "not_implemented"))
+                         "implemented"))
     for rs in (63, 126):
         v.append(Variant(f"sector_leadership:rs{rs}", "sector_leadership",
                          (("rs_sessions", rs),),
-                         "implemented" if rs == 63 else "not_implemented"))
+                         "implemented"))
     for rsi in REVERSAL_RSI_THRESHOLDS:
         for hold in REVERSAL_HOLD_SESSIONS:
             v.append(Variant(f"short_term_reversal:rsi{rsi}_hold{hold}",
@@ -82,6 +82,78 @@ def _legacy(candidate):
     def score(symbol, history, sector_rows, market_rows):
         return signal_score(candidate, history, sector_rows, market_rows)
     return score
+
+
+DEFAULT_PARAMS = {
+    "momentum_volume": (("lookback", 21), ("rel_volume", 1.15)),
+    "trend_following": (("short", 20), ("long", 50)),
+    "high_52_week": (("within_pct", 2),),
+    "sector_leadership": (("rs_sessions", 63),),
+}
+
+
+def _generic_score(candidate, p):
+    """Parameterized copy of bot.strategies.signal_score for one grid point."""
+    if candidate == "momentum_volume":
+        lb, rv = p["lookback"], p["rel_volume"]
+
+        def score(symbol, h, sector_rows, market_rows):
+            if len(h) < max(lb + 1, 22):
+                return None
+            baseline = sum(b.volume for b in h[-21:-1]) / 20
+            if baseline <= 0:
+                return None
+            relative_volume = h[-1].volume / baseline
+            momentum = h[-1].close / h[-lb - 1].close - 1
+            if momentum <= 0 or relative_volume < rv:
+                return None
+            return momentum * min(relative_volume, 3.0)
+        return score
+    if candidate == "trend_following":
+        short, long = p["short"], p["long"]
+
+        def score(symbol, h, sector_rows, market_rows):
+            if len(h) < long + 1:
+                return None
+            recent_ma = sum(b.close for b in h[-short:]) / short
+            old_ma = sum(b.close for b in h[-long:]) / long
+            prior_ma = sum(b.close for b in h[-short - 1:-1]) / short
+            close = h[-1].close
+            if close <= recent_ma or recent_ma <= old_ma or recent_ma <= prior_ma:
+                return None
+            return close / old_ma - 1
+        return score
+    if candidate == "high_52_week":
+        floor = (100 - p["within_pct"]) / 100
+
+        def score(symbol, h, sector_rows, market_rows):
+            if len(h) < 253:
+                return None
+            previous_high = max(b.high for b in h[-253:-1])
+            close = h[-1].close
+            long_momentum = close / h[-64].close - 1
+            if close < floor * previous_high or long_momentum <= 0:
+                return None
+            return long_momentum + (close / previous_high - 1)
+        return score
+    if candidate == "sector_leadership":
+        n = p["rs_sessions"]
+
+        def score(symbol, h, sector_rows, market_rows):
+            if len(h) < n + 1 or len(sector_rows) < n + 1 or len(market_rows) < n + 1:
+                return None
+            days = [b.day for b in h[-(n + 1):]]
+            if ([b.day for b in sector_rows[-(n + 1):]] != days
+                    or [b.day for b in market_rows[-(n + 1):]] != days):
+                return None
+            stock = h[-1].close / h[-n - 1].close - 1
+            sector = sector_rows[-1].close / sector_rows[-n - 1].close - 1
+            market = market_rows[-1].close / market_rows[-n - 1].close - 1
+            if sector <= market or sector <= 0 or stock <= sector:
+                return None
+            return (stock - sector) + (sector - market)
+        return score
+    raise ValueError("no generic score for " + candidate)
 
 
 def _reversal(rsi, hold):
@@ -154,7 +226,9 @@ def adapter(variant_id: str, *, sessions: Sequence[date] | None = None,
     p = dict(v.params)
     if v.candidate in ("momentum_volume", "trend_following", "high_52_week",
                        "sector_leadership"):
-        return {"strategy": v.candidate, "score_fn": _legacy(v.candidate)}
+        if p == dict(DEFAULT_PARAMS[v.candidate]):
+            return {"strategy": v.candidate, "score_fn": _legacy(v.candidate)}
+        return {"strategy": v.candidate, "score_fn": _generic_score(v.candidate, p)}
     if v.candidate == "short_term_reversal":
         # Exit at the open hold_sessions after entry, earlier on the standard
         # stop (section 3). The exit-at-next-open convention is this

@@ -10,9 +10,10 @@ from bot.phase2_research_signals import SECTOR_ETF_UNIVERSE, TotalReturnPoint
 from bot.portfolio_research import run_portfolio
 from bot.research_harness import lookahead_audit
 from bot.strategies import DailyBar
+from bot.strategies import signal_score
 from bot.strategy_adapters import (
-    GRID, VARIANTS, VariantNotRunnable, adapter, etf_first_eligible_rebalance,
-    month_start_sessions,
+    DEFAULT_PARAMS, GRID, VARIANTS, VariantNotRunnable, _generic_score, adapter,
+    etf_first_eligible_rebalance, month_start_sessions,
 )
 
 STOCKS = ["AAPL", "JPM", "MSFT", "BAC"]
@@ -60,11 +61,11 @@ def test_grid_is_the_frozen_21_variants():
                    "sector_leadership": 2, "short_term_reversal": 4,
                    "etf_dual_momentum": 3, "overnight_drift": 2}
     status = Counter(v.status for v in GRID)
-    assert status == {"implemented": 11, "not_implemented": 8, "research_only": 2}
+    assert status == {"implemented": 19, "research_only": 2}
 
 
 @pytest.mark.parametrize("vid", [v.variant_id for v in GRID if v.status != "implemented"])
-def test_unimplemented_and_research_only_variants_refuse_to_run(vid):
+def test_research_only_variants_refuse_to_run(vid):
     with pytest.raises(VariantNotRunnable):
         adapter(vid)
 
@@ -240,3 +241,51 @@ def test_xlc_listing_caps_usable_etf_history_below_ten_years():
         assert start is not None and start <= latest_start
         years = (asof - start).days / 365.25
         assert years < 10, "all three ETF variants fall short of 10 years"
+
+
+# ------------------------- non-default variants of the 4 coded strategies
+
+CODED = ("momentum_volume", "trend_following", "high_52_week", "sector_leadership")
+
+
+@pytest.mark.parametrize("candidate", CODED)
+def test_generic_score_equals_signal_score_at_default_parameters(candidate):
+    data = bars(["AAPL", "XLK", "SPY"], 400, 21, vol=0.02)
+    stock, sector, market = data["AAPL"], data["XLK"], data["SPY"]
+    generic = _generic_score(candidate, dict(DEFAULT_PARAMS[candidate]))
+    seen = 0
+    for i in range(30, len(stock) + 1):
+        a = signal_score(candidate, stock[:i], sector[:i], market[:i])
+        b = generic("AAPL", stock[:i], sector[:i], market[:i])
+        assert a == b, (candidate, i)
+        seen += a is not None
+    assert seen > 0, "equivalence test never saw an eligible signal"
+
+
+@pytest.mark.parametrize("vid", [v.variant_id for v in GRID
+                                 if v.candidate in CODED])
+def test_every_coded_variant_runs_and_passes_lookahead_audit(vid):
+    data = bars(STOCKS + ["XLK", "XLF", "SPY"], 330, 5, vol=0.02)
+    kw = adapter(vid)
+
+    def run(d):
+        return run_portfolio(d, symbols=STOCKS, start_index=260, **kw)
+    base = run(data)
+    assert base["trade_count"] > 0
+    days = [b.day for b in data["SPY"]]
+    entries = {date.fromisoformat(t["entry_day"]) for t in base["trades"]}
+    cuts = sorted(entries | set(days[265:325:12]))
+    assert lookahead_audit(data, run, cuts, seed=2) == []
+
+
+def test_looser_threshold_never_rejects_what_the_tighter_one_accepts():
+    data = bars(["AAPL"], 400, 8, vol=0.02)["AAPL"]
+    tight = _generic_score("high_52_week", {"within_pct": 1})
+    mid = _generic_score("high_52_week", {"within_pct": 2})
+    loose = _generic_score("high_52_week", {"within_pct": 5})
+    for i in range(260, 400):
+        h = data[:i]
+        if tight("A", h, [], []) is not None:
+            assert mid("A", h, [], []) is not None
+        if mid("A", h, [], []) is not None:
+            assert loose("A", h, [], []) is not None
