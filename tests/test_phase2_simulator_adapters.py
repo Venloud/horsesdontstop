@@ -19,7 +19,7 @@ def bars(*, slope=.25, count=260, volume_surge=False, start=START):
     result = []
     for i in range(count):
         close = 25.0 + slope*i
-        vol = 4000 if volume_surge and (i%30 == 29) else 1000
+        vol = 4000 if volume_surge and (i%30 == 29 or i == count-1) else 1000
         result.append(DailyBar(
             start+timedelta(days=i), close, close+.20,
             close-.20, close, vol))
@@ -94,7 +94,7 @@ def test_short_term_reversal_calls_preregistered_rsi_signal():
 
 
 def test_monthly_etf_signal_enforces_all_twelve_total_return_histories():
-    history = [START+timedelta(days=i) for i in range(251)]
+    history = [START+timedelta(days=i) for i in range(252)]
     # 2025-09-08 is followed by 2025-09-09 in synthetic calendar.
     # Create an explicit completed month-end / next month open pair.
     history += [date(2025,9,30), date(2025,10,1)]
@@ -137,8 +137,10 @@ def test_unapproved_parameter_and_overnight_execution_refused():
     ):
         with pytest.raises(ValueError):
             evaluate(name, variant)
-    assert evaluate("trend_following", (20,50),
-                    pit_membership_verified=False) is None
+    assert next_open_eligibility(
+        "trend_following", (20,50), symbol="F",
+        entry_session=START+timedelta(days=260),
+        completed_history=bars(), pit_membership_verified=False) is None
 
 
 def test_synthetic_cash_portfolio_has_one_position_and_1pct_risk():
@@ -153,6 +155,7 @@ def test_synthetic_cash_portfolio_has_one_position_and_1pct_risk():
     assert result["slippage_bps_per_side"] == 30
     assert result["broker_order_allowed"] is False
     assert result["final_equity"] > 0
+    assert result["trades"]
     assert all(isinstance(t["shares"], int) and t["shares"] > 0
                for t in result["trades"])
     assert all(a["sell_day"] < b["buy_day"]
