@@ -32,7 +32,9 @@ def run_portfolio(bars_by_symbol: Mapping[str, Sequence[DailyBar]],
                   start_index: int = 0, end_index: int | None = None,
                   starting_cash: float = 500.0, slippage_bps: float = 10.0,
                   hard_stop_pct: float = 0.03, trailing_stop_pct: float = 0.05,
-                  score_fn: Callable | None = None) -> dict:
+                  score_fn: Callable | None = None,
+                  cash_flows: Mapping | None = None,
+                  return_equity_curve: bool = False) -> dict:
     """Research using SPY-session dates and next-session open entries.
 
     Intraday stops use the previously known stop; today's high updates a
@@ -45,6 +47,12 @@ def run_portfolio(bars_by_symbol: Mapping[str, Sequence[DailyBar]],
     score_fn (research harness only): optional replacement for the coded
     signal, called as score_fn(symbol, history, sector_rows, market_rows)
     with the same completed-bar slices. None keeps the legacy behavior.
+
+    cash_flows (research harness only): {session date: deposit > 0}, already
+    aligned with research_stats.align_cash_flows so the passive benchmark
+    gets the identical schedule. Each deposit lands before that session's
+    open. Drawdown is then measured on unit NAV, not raw equity, so deposits
+    cannot hide losses. None keeps the legacy behavior and output.
     """
     if score_fn is None and strategy not in STRATEGIES:
         raise ValueError("unsupported strategy")
@@ -56,6 +64,10 @@ def run_portfolio(bars_by_symbol: Mapping[str, Sequence[DailyBar]],
             or not 0 < hard_stop_pct < trailing_stop_pct < 1
             or not 0 <= slippage_bps <= 100):
         raise ValueError("invalid simulation parameters")
+    if cash_flows is not None and any(
+            not isinstance(a, (int, float)) or not a > 0
+            for a in cash_flows.values()):
+        raise ValueError("cash flows must be positive deposits")
     if "SPY" not in bars_by_symbol:
         raise ValueError("SPY benchmark required")
     series = {}
@@ -81,6 +93,11 @@ def run_portfolio(bars_by_symbol: Mapping[str, Sequence[DailyBar]],
     equity_curve = []
     slip = slippage_bps / 10000
     first_1000_day = None
+    units = starting_cash  # unit NAV starts at 1.0 (flows only)
+    nav_curve = []
+    flow_events = []
+    if cash_flows is not None and set(cash_flows) - set(market_days[start_index:end_index]):
+        raise ValueError("cash flows must fall on sessions inside the window")
 
     def close_position(day, price, reason):
         nonlocal cash, held
@@ -98,6 +115,17 @@ def run_portfolio(bars_by_symbol: Mapping[str, Sequence[DailyBar]],
         day = market_days[day_i]
         previous_market_day = market_days[day_i - 1] if day_i else None
         held_at_open = held is not None
+        if cash_flows and cash_flows.get(day):
+            value = cash
+            if held is not None:
+                hi_ = index[held["symbol"]].get(day)
+                if hi_ is None:
+                    raise ValueError(f"Missing held-stock daily bar: {held['symbol']} on {day}")
+                value += held["shares"] * series[held["symbol"]][hi_].open
+            amount = float(cash_flows[day])
+            flow_events.append((day.isoformat(), value, amount))
+            units += amount / (value / units)
+            cash += amount
         if held is not None:
             symbol = held["symbol"]
             current_i = index[symbol].get(day)
@@ -174,12 +202,14 @@ def run_portfolio(bars_by_symbol: Mapping[str, Sequence[DailyBar]],
             close_position(day, held["last_close"], "end_of_window")
         equity = cash if held is None else cash + held["shares"] * held["last_close"]
         equity_curve.append(equity)
+        nav_curve.append(equity / units)
         if first_1000_day is None and equity >= 1000:
             first_1000_day = day.isoformat()
 
     peak = starting_cash
     max_drawdown = 0.0
-    for equity in equity_curve:
+    for equity in (equity_curve if cash_flows is None else
+                   [starting_cash * v for v in nav_curve]):
         peak = max(peak, equity)
         max_drawdown = max(max_drawdown, 100 * (peak - equity) / peak)
     gains = sum(t.pnl for t in trades if t.pnl > 0)
@@ -187,7 +217,16 @@ def run_portfolio(bars_by_symbol: Mapping[str, Sequence[DailyBar]],
     wins = sum(t.pnl > 0 for t in trades)
     first_spy = series["SPY"][start_index].close
     last_spy = series["SPY"][end_index - 1].close
+    extra = {}
+    if cash_flows is not None:
+        extra = {"cash_flow_events": flow_events,
+                 "total_deposits": round(sum(a for _, _, a in flow_events), 2),
+                 "unit_nav_twr_pct": round(100 * (nav_curve[-1] - 1), 4)}
+    if return_equity_curve:
+        extra["equity_curve"] = [(market_days[start_index + k].isoformat(), e)
+                                 for k, e in enumerate(equity_curve)]
     return {
+        **extra,
         "strategy": strategy,
         "risk_pct": 100 * risk_fraction,
         "first_day": market_days[start_index].isoformat(),
