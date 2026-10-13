@@ -5,7 +5,7 @@ No network calls, no Alpaca TradingClient, and no brokerage order code.
 All entry signals are evaluated on the previous completed session.
 """
 from dataclasses import asdict, dataclass
-from typing import Callable, Mapping, Sequence
+from typing import Callable, Collection, Mapping, Sequence
 
 from .risk import max_shares, risk_budget
 from .strategies import DailyBar, SECTOR_ETFS, STRATEGIES, signal_score
@@ -34,7 +34,10 @@ def run_portfolio(bars_by_symbol: Mapping[str, Sequence[DailyBar]],
                   hard_stop_pct: float = 0.03, trailing_stop_pct: float = 0.05,
                   score_fn: Callable | None = None,
                   cash_flows: Mapping | None = None,
-                  return_equity_curve: bool = False) -> dict:
+                  return_equity_curve: bool = False,
+                  max_hold_sessions: int | None = None,
+                  rebalance_days: Collection | None = None,
+                  use_stops: bool = True) -> dict:
     """Research using SPY-session dates and next-session open entries.
 
     Intraday stops use the previously known stop; today's high updates a
@@ -53,6 +56,12 @@ def run_portfolio(bars_by_symbol: Mapping[str, Sequence[DailyBar]],
     gets the identical schedule. Each deposit lands before that session's
     open. Drawdown is then measured on unit NAV, not raw equity, so deposits
     cannot hide losses. None keeps the legacy behavior and output.
+
+    Strategy-specific exit policies (research harness only; defaults keep the
+    legacy behavior): max_hold_sessions=N sells at the open N sessions after
+    entry unless a stop hit first (no re-entry that day). rebalance_days sells
+    any holding at that session's open and allows a new entry the same open.
+    use_stops=False disables the 3%/trailing stops (1R stays the modeled 3%).
     """
     if score_fn is None and strategy not in STRATEGIES:
         raise ValueError("unsupported strategy")
@@ -68,6 +77,11 @@ def run_portfolio(bars_by_symbol: Mapping[str, Sequence[DailyBar]],
             not isinstance(a, (int, float)) or not a > 0
             for a in cash_flows.values()):
         raise ValueError("cash flows must be positive deposits")
+    if max_hold_sessions is not None and (
+            type(max_hold_sessions) is not int or max_hold_sessions < 1):
+        raise ValueError("max_hold_sessions must be a positive int")
+    if type(use_stops) is not bool:
+        raise ValueError("use_stops must be a bool")
     if "SPY" not in bars_by_symbol:
         raise ValueError("SPY benchmark required")
     series = {}
@@ -133,7 +147,22 @@ def run_portfolio(bars_by_symbol: Mapping[str, Sequence[DailyBar]],
                 # Marking the holding with a stale last close invents a price
                 # path. Stop rather than quietly overstate performance.
                 raise ValueError(f"Missing held-stock daily bar: {symbol} on {day}")
-            if current_i is not None:
+            forced = None
+            if (rebalance_days is not None and day in rebalance_days
+                    and day != held["day"]):
+                forced = "rebalance"
+            elif (max_hold_sessions is not None
+                    and day_i - held["day_index"] >= max_hold_sessions):
+                forced = "max_hold"
+            if forced:
+                close_position(day, series[symbol][current_i].open, forced)
+                if forced == "rebalance":
+                    held_at_open = False  # rotation re-enters at this open
+            elif not use_stops:
+                bar = series[symbol][current_i]
+                held["peak_before_today"] = max(held["peak_before_today"], bar.high)
+                held["last_close"] = bar.close
+            else:
                 bar = series[symbol][current_i]
                 # Stop levels derive strictly from completed PRIOR bars.
                 stop = max(held["initial_stop"],
@@ -188,10 +217,11 @@ def run_portfolio(bars_by_symbol: Mapping[str, Sequence[DailyBar]],
                         "entry_cash": entry_cash,
                         "risk_budget": risk_budget(entry_cash, risk_fraction),
                         "initial_stop": initial_stop, "peak_before_today": bar.open,
-                        "last_close": bar.close, "day": day}
+                        "last_close": bar.close, "day": day,
+                        "day_index": day_i}
                 # Open-to-low order is observable only in coarse daily bars;
                 # assume the conservative stop-first outcome on this entry bar.
-                if bar.low <= initial_stop:
+                if use_stops and bar.low <= initial_stop:
                     close_position(day, initial_stop, "entry_day_stop")
                 else:
                     held["peak_before_today"] = max(bar.open, bar.high)
