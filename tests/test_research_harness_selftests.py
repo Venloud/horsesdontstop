@@ -6,6 +6,7 @@ import csv
 import hashlib
 import json
 import math
+import os
 import random
 import zipfile
 from datetime import date
@@ -23,7 +24,12 @@ from bot.research_harness import (
 from bot.strategies import DailyBar, STRATEGIES, signal_score
 
 ROOT = Path(__file__).resolve().parents[1]
-LEGACY_ZIP = ROOT / "research/legacy/robustness-audit-38108710763.zip"
+# The archived report holds Alpaca-derived trade fills, so it is NOT kept in
+# this public repo. It lives in the private claudevandam repo
+# (research-archive/robustness-audit-38108710763.zip). Point HDS_LEGACY_ZIP at
+# a local copy to run the legacy checks; they skip when it is absent.
+LEGACY_ZIP = Path(os.environ.get(
+    "HDS_LEGACY_ZIP", ROOT / "research/legacy/robustness-audit-38108710763.zip"))
 # Digest GitHub reported for artifact 11690790832 of run 38108710763.
 LEGACY_ZIP_SHA256 = "87d610ee15d6990296f3915ca2eed5040a81a106496f2bfafd530b03b39951cb"
 SYMS = ["AAA", "BBB", "CCC", "DDD"]
@@ -207,6 +213,8 @@ def test_planted_edge_interval_is_calibrated():
 # ------------------------------------------- 4. legacy run 38108710763
 
 def legacy_report():
+    if not LEGACY_ZIP.exists():
+        pytest.skip("private legacy archive not available (set HDS_LEGACY_ZIP)")
     raw = LEGACY_ZIP.read_bytes()
     assert hashlib.sha256(raw).hexdigest() == LEGACY_ZIP_SHA256
     with zipfile.ZipFile(LEGACY_ZIP) as z:
