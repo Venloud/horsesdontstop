@@ -1,6 +1,7 @@
 """Section 6 statistics: synthetic/known-answer tests only. No network."""
 import json
 import math
+import os
 import random
 import zipfile
 from datetime import date, timedelta
@@ -198,7 +199,13 @@ def test_trial_count_uses_ledger_plus_new_ids():
 
 
 def test_per_trade_sharpes_available_for_legacy_trials():
-    with zipfile.ZipFile(ROOT / "research/legacy/robustness-audit-38108710763.zip") as z:
+    # Same rule as the harness legacy tests: the archive lives in the private
+    # repo; point HDS_LEGACY_ZIP at a local copy, else skip.
+    legacy_zip = Path(os.environ.get(
+        "HDS_LEGACY_ZIP", ROOT / "research/legacy/robustness-audit-38108710763.zip"))
+    if not legacy_zip.exists():
+        pytest.skip("legacy archive not present (kept in the private repo)")
+    with zipfile.ZipFile(legacy_zip) as z:
         report = json.loads(z.read("robustness-report.json"))
     srs = per_trade_sharpes(legacy_rows(report))
     assert len(srs) == 80
