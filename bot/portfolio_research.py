@@ -5,7 +5,7 @@ No network calls, no Alpaca TradingClient, and no brokerage order code.
 All entry signals are evaluated on the previous completed session.
 """
 from dataclasses import asdict, dataclass
-from typing import Mapping, Sequence
+from typing import Callable, Mapping, Sequence
 
 from .risk import max_shares, risk_budget
 from .strategies import DailyBar, SECTOR_ETFS, STRATEGIES, signal_score
@@ -31,7 +31,8 @@ def run_portfolio(bars_by_symbol: Mapping[str, Sequence[DailyBar]],
                   risk_fraction: float = 0.02,
                   start_index: int = 0, end_index: int | None = None,
                   starting_cash: float = 500.0, slippage_bps: float = 10.0,
-                  hard_stop_pct: float = 0.03, trailing_stop_pct: float = 0.05) -> dict:
+                  hard_stop_pct: float = 0.03, trailing_stop_pct: float = 0.05,
+                  score_fn: Callable | None = None) -> dict:
     """Research using SPY-session dates and next-session open entries.
 
     Intraday stops use the previously known stop; today's high updates a
@@ -40,9 +41,15 @@ def run_portfolio(bars_by_symbol: Mapping[str, Sequence[DailyBar]],
     with adverse slippage. Portfolio drawdown is DAILY close-to-close, not an
     intraday worst-case measure. No leverage, fractional shares, fees,
     tax, dividends, or intraday market impact.
+
+    score_fn (research harness only): optional replacement for the coded
+    signal, called as score_fn(symbol, history, sector_rows, market_rows)
+    with the same completed-bar slices. None keeps the legacy behavior.
     """
-    if strategy not in STRATEGIES:
+    if score_fn is None and strategy not in STRATEGIES:
         raise ValueError("unsupported strategy")
+    if score_fn is not None and (not isinstance(strategy, str) or not strategy):
+        raise ValueError("score_fn runs need a non-empty strategy label")
     if not symbols or len(set(symbols)) != len(symbols):
         raise ValueError("provide unique candidate symbols")
     if (starting_cash <= 0 or not 0 < risk_fraction <= 0.02
@@ -133,7 +140,10 @@ def run_portfolio(bars_by_symbol: Mapping[str, Sequence[DailyBar]],
                         continue
                     sector_rows = series[sector_symbol][:sector_i]
                     market_rows = series["SPY"][:market_i]
-                score = signal_score(strategy, history, sector_rows, market_rows)
+                if score_fn is None:
+                    score = signal_score(strategy, history, sector_rows, market_rows)
+                else:
+                    score = score_fn(symbol, history, sector_rows, market_rows)
                 if score is not None and score > 0:
                     ranked.append((score, symbol))
             # Stable tie breaking and one shared cash balance.
