@@ -112,7 +112,8 @@ def test_original_12_cannot_fake_10yr_but_proposed_10_has_synthetic_overlap():
     assert next(x for x in data if x["kind"] == "limitations")[
         "point_in_time_survivorship_verified"] is False
     assert len([x for x in data if x["kind"] == "pit_universe_sample"]) == 3
-    assert data[-2]["ten_year_strategy_eligible"] is False
+    assert next(x for x in data if x["kind"] == "limitations")[
+        "ten_year_strategy_eligible"] is False
 
 
 def test_failed_total_return_subscription_never_retries_unadjusted():
