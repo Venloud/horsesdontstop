@@ -17,6 +17,22 @@ availability or permission to score from GitHub CI.
    proves point-in-time membership, delisting completeness, data
    normalization authenticity, license rights, or a market edge.
 
+Historical bars now explicitly request `fill_forward=False` both in the
+subscription and the history query. QuantConnect's documented default
+would otherwise forward-fill, potentially disguising missing sessions.
+A verified NYSE trading calendar is still needed to prove SPY itself
+is complete, and normalization is still provider-reported rather than
+independently audited.
+
+The same cloud cell now probes `add_universe` plus
+`universe_history` with a contemporaneous dollar-volume ranking for
+three **short, read-only** historical samples: June 2012, June 2016
+and June 2022. Those records test whether historical membership
+data can be accessed without today's survivor watchlist. A result
+with selected candidates is **not** proof of a full ten-year
+survivorship-aware universe, or verification that every delisting
+is covered. Absent methods or failed queries are recorded explicitly.
+
 No silent fallback to RAW/ADJUSTED if TOTAL_RETURN addition fails.
 The batch freezes `1998-01-01 <= session < 2026-10-01` and treats
 2026 as partial, checks sampled delistings/splits/dividends, and emits
