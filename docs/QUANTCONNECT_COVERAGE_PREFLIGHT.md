@@ -42,3 +42,24 @@ All QC output remains unverified until the actual cloud cell runs.
 Amendment 2 is marked DRAFT and the 12-ETF source constant is
 **unchanged**. This PR is not an amendment approval, no scored Phase 3
 runs, no broker/Neon calls, and no trading enabled.
+
+## Check the captured notebook output locally
+
+After **one real cloud run**, copy the full printed output to a local
+`qc-output.txt` text file (not GitHub until vendor sharing rights are
+confirmed). Run from the repository root:
+
+```sh
+python -m research.quantconnect.check_coverage_report qc-output.txt
+```
+
+The offline checker rejects truncated or contradictory tagged lines,
+missing symbols, duplicate samples, unexpected normalization/fill
+policy, and missing event results. Its SHA-256 identifies the *supplied
+summary text*, **not** QuantConnect's dataset or an authenticated
+market feed. It prints separate common-year coverage and sample PIT
+query counts, and ALWAYS sets
+`full_survivorship_aware_history_verified=false` and
+`scored_phase3_authorized=false`. A complete 10-year point-in-time
+membership and verified vendor licensing/folds are still required
+before research scoring. Offline CI tests use fictional cloud reports.
