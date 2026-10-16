@@ -73,7 +73,7 @@ def _longest_streak(years):
 
 
 def common_etf_coverage(date_sets, symbols):
-    """Necessary 10yr common-session check, NEVER PIT proof."""
+    """Necessary 10yr common-session check, NEVER PIT/calendar proof."""
     if not isinstance(date_sets, dict) or any(
         ticker not in date_sets or not date_sets[ticker]
         for ticker in symbols
@@ -111,6 +111,86 @@ def _event_count(qb, kind, symbol, start, end):
         return {"status": "error", "error_type": type(error).__name__}
 
 
+def _sample_universe_membership(qb, *, emit):
+    """Small PIT-capability probe with no trades or downloaded market bars.
+
+    QuantConnect documents add_universe and universe_history returning
+    dated constituent collections. Three 2-week samples do NOT validate
+    the 10-year PIT universe, and top-liquidity selection does not ensure
+    any particular delisted ticker was in the sample.
+    """
+    windows = (
+        ("2012_sample", datetime(2012, 6, 1), datetime(2012, 6, 15)),
+        ("2016_sample", datetime(2016, 6, 1), datetime(2016, 6, 15)),
+        ("2022_sample", datetime(2022, 6, 1), datetime(2022, 6, 15)),
+    )
+    try:
+        qb.set_start_date(END_EXCLUSIVE)
+        # Select contemporaneous candidates dynamically. No today's
+        # surviving-stock watchlist, ticker-string ranking, or scored PNL.
+        def select_liquid(fundamentals):
+            rows = []
+            for point in fundamentals:
+                try:
+                    volume = float(point.dollar_volume)
+                    if volume > 0 and volume != float("inf"):
+                        rows.append((volume, point.symbol))
+                except (AttributeError, TypeError, ValueError, OverflowError):
+                    continue
+            rows.sort(key=lambda row: row[0], reverse=True)
+            return [symbol for _, symbol in rows[:100]]
+        universe = qb.add_universe(select_liquid)
+    except Exception as error:
+        emit("QC_COVERAGE_V2 " + json.dumps({
+            "kind": "pit_universe_setup",
+            "status": "failed",
+            "error_type": type(error).__name__,
+            "historic_universe_coverage_verified": False,
+        }, sort_keys=True, separators=(",", ":")))
+        return
+    emit("QC_COVERAGE_V2 " + json.dumps({
+        "kind": "pit_universe_setup", "status": "ready",
+        "universe_selection": "daily_top100_by_contemporaneous_dollar_volume",
+        "historic_universe_coverage_verified": False,
+    }, sort_keys=True, separators=(",", ":")))
+    for label, start, end in windows:
+        record = {
+            "kind": "pit_universe_sample", "window": label,
+            "from_inclusive": start.date().isoformat(),
+            "to_exclusive": end.date().isoformat(),
+            "historic_universe_coverage_verified": False,
+            "survivorship_free_strategy_verified": False,
+        }
+        try:
+            history = qb.universe_history(universe, start, end)
+            if history is None or not hasattr(history, "items"):
+                raise ValueError("universe_history_not_series")
+            count_by_day = {}
+            symbols = set()
+            for index, fundamentals in history.items():
+                stamp = index[-1] if isinstance(index, tuple) else index
+                day = stamp.date() if hasattr(stamp, "date") else stamp
+                if not isinstance(day, date) or not start.date() <= day < end.date():
+                    raise ValueError("universe_history_timestamp_invalid")
+                if day in count_by_day:
+                    raise ValueError("duplicate_universe_session")
+                members = tuple(fundamentals)
+                count_by_day[day] = len(members)
+                for fundamental in members:
+                    symbols.add(str(fundamental.symbol.id))
+            record.update({
+                "status": "sample_observed" if count_by_day else "no_samples",
+                "sampled_sessions": len(count_by_day),
+                "min_daily_selected": min(count_by_day.values()) if count_by_day else 0,
+                "max_daily_selected": max(count_by_day.values()) if count_by_day else 0,
+                "distinct_sample_security_ids": len(symbols),
+            })
+        except Exception as error:
+            record.update({"status": "failed", "error_type": type(error).__name__})
+        emit("QC_COVERAGE_V2 " + json.dumps(
+            record, sort_keys=True, separators=(",", ":")))
+
+
 def run_coverage(qb, *, resolution, normalization, split, dividend, delisting,
                  emit=print, start=START, end=END_EXCLUSIVE):
     """One symbol at a time, 25 records plus corporate action metadata."""
@@ -128,6 +208,8 @@ def run_coverage(qb, *, resolution, normalization, split, dividend, delisting,
         "to_exclusive": end.date().isoformat(),
         "normalization_requested": "TOTAL_RETURN",
         "normalization_independently_verified": False,
+        "fill_forward_requested": False,
+        "independent_exchange_calendar_verified": False,
         "full_years_only_through": end.year - 1,
         "preregistration_amendment_2_status": "draft_unapproved",
         "raw_market_prices_exported": False,
@@ -144,7 +226,8 @@ def run_coverage(qb, *, resolution, normalization, split, dividend, delisting,
                 # NEVER silently retry in RAW or ADJUSTED mode.
                 symbol = qb.add_equity(
                     ticker, resolution,
-                    data_normalization_mode=normalization).symbol
+                    data_normalization_mode=normalization,
+                    fill_forward=False).symbol
             except Exception as error:
                 output("symbol", {
                     "group": group, "symbol": ticker,
@@ -154,7 +237,8 @@ def run_coverage(qb, *, resolution, normalization, split, dividend, delisting,
                 })
                 continue
             try:
-                days = historical_dates(qb.history(symbol, start, end, resolution))
+                days = historical_dates(qb.history(
+                    symbol, start, end, resolution, fill_forward=False))
             except Exception as error:
                 output("symbol", {
                     "group": group, "symbol": ticker,
@@ -202,6 +286,9 @@ def run_coverage(qb, *, resolution, normalization, split, dividend, delisting,
         "history_coverage_not_equal_to_market_edge": True,
         "no_data_export_or_broker_orders": True,
     })
+    # One small PIT-universe access check across historical regimes.
+    # These three samples are diagnostics ONLY, not a 10-year certification.
+    _sample_universe_membership(qb, emit=emit)
     output("done", {
         "symbol_records_expected": (
             len(ETFS_ORIGINAL_12) + len(LIQUID_STOCKS)
