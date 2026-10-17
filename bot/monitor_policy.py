@@ -82,6 +82,8 @@ def make_incident(level: str, code: str, reasons, *, observation=None,
         "security_switch": "Unexpected paper trading control state; investigate immediately.",
         "unexpected_broker_write": "Paper monitor reported a broker-write capability; investigate immediately.",
         "stale_observation": "Paper broker observation is stale; verify positions and stops.",
+        "supervisor_heartbeat_missing": "Independent PAPER worker heartbeat is missing or unhealthy; review supervision.",
+        "supervisor_observation_unverified": "Independent PAPER broker/journal check is degraded; review immediately.",
     }
     return MonitorIncident(
         level=level, code=code, fingerprint=fingerprint,
