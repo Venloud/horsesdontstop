@@ -58,3 +58,13 @@ def verified_flat_journal_baseline(report) -> bool:
         and type(reconciliation.get("unresolved_journal_intents")) is int
         and reconciliation["unresolved_journal_intents"] == 0
     )
+
+
+def make_paper_closed_flat_probe(key: str, secret: str):
+    """Create a PAPER-only read-only sentry, never an order executor."""
+    from alpaca.trading.client import TradingClient
+    from .paper_safety import PAPER_ENDPOINT
+
+    trading = TradingClient(
+        key, secret, paper=True, url_override=PAPER_ENDPOINT)
+    return lambda: broker_confirms_closed_flat(trading)
