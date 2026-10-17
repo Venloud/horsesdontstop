@@ -83,3 +83,39 @@ After separate owner approval of a safe host and read-only role:
 test the restricted role on a TEMP database branch, measure actual
 Neon compute usage, and test independent failed-worker alerts before
 any PAPER broker order request.
+
+## October 16 TEMP Neon role preflight, actually executed read-only
+
+A read-only inspection of the existing temporary branch
+`test-paper-entry-20261011`, **NOT production**, checked the
+real PostgreSQL metadata and separately connected as
+`hds_paper_monitor`. The reusable, non-mutating query is
+[`sql/paper_worker_heartbeat_permissions_audit.sql`](../sql/paper_worker_heartbeat_permissions_audit.sql).
+Observed results:
+
+| Temporary database property | Actual result |
+|---|---|
+| `public.paper_worker_heartbeat` table exists | yes |
+| `hds_paper_heartbeat` role exists | **no** |
+| `hds_paper_monitor` login role exists | yes |
+| Monitor has `SELECT` on heartbeat table | **no** |
+| Monitor has `INSERT/UPDATE/DELETE` heartbeat permissions | no, as desired |
+| Monitor can write `paper_control` or insert `paper_intents` | no, as desired |
+| Monitor has `neon_superuser` membership/admin permissions | no |
+
+**These are measured temporary-branch facts, not synthetic CI proof.**
+No SQL writes, role creations, grants, Neon configuration changes or
+broker orders occurred during the inspection.
+
+**Next independent, explicit authorization is needed** before
+provisioning a new database LOGIN role or granting permissions, even
+on the temporary branch. The limited proposed repair is to add
+`hds_paper_heartbeat` with no administrative or inherited
+`neon_superuser` powers, grant it only
+`SELECT/INSERT/UPDATE` on the heartbeat table and schema usage,
+and grant `hds_paper_monitor` only `SELECT` on that table.
+Then rerun the audit under actual restricted credentials and test
+first/second pulse, competing-writer rejection, stale takeover and
+independent monitor inspection using **two separate real sessions**.
+Any future production migration/secret/deployment requires its own
+authorization. No operation on this PR activates that process.
