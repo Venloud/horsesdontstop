@@ -18,7 +18,7 @@ from uuid import uuid4
 
 from .paper_safety import PAPER_ENDPOINT, TradeBlocked
 from .paper_worker_lease import PaperWorkerHeartbeat
-from .paper_neon_idle import broker_confirms_closed_flat, verified_flat_journal_baseline
+from .paper_neon_idle import make_paper_closed_flat_probe, verified_flat_journal_baseline
 
 
 @dataclass(frozen=True)
@@ -163,14 +163,10 @@ def main() -> int:
         writer.assert_heartbeat_writer_only()
         closed_flat_probe = None
         if args.idle_neon_when_broker_closed_flat:
-            from alpaca.trading.client import TradingClient
-            # Exactly the PAPER-only broker endpoint. No trading order code.
-            broker = TradingClient(
+            closed_flat_probe = make_paper_closed_flat_probe(
                 os.environ["ALPACA_PAPER_API_KEY"],
                 os.environ["ALPACA_PAPER_SECRET_KEY"],
-                paper=True, url_override=PAPER_ENDPOINT,
             )
-            closed_flat_probe = lambda: broker_confirms_closed_flat(broker)
         outcome = run_supervisor_loop(
             fetch_read_only_report=lambda: run_once(output=""),
             heartbeat_writer=writer,
