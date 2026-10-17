@@ -46,12 +46,14 @@ class Writer:
 
 class Monitor:
     def __init__(self, *, role_ok=True, forged_healthy=False,
-                 wrong_identity=False):
+                 wrong_identity=False, stale_age=False, wrong_blockers=False):
         self.attested = 0
         self.reads = []
         self.role_ok = role_ok
         self.forged_healthy = forged_healthy
         self.wrong_identity = wrong_identity
+        self.stale_age = stale_age
+        self.wrong_blockers = wrong_blockers
 
     def assert_heartbeat_monitor_only(self):
         self.attested += 1
@@ -66,6 +68,10 @@ class Monitor:
             worker_id=("other-test-worker" if self.wrong_identity
                        else expected_worker_id),
             sequence=min(len(self.reads), 2),
+            age_seconds=121.0 if self.stale_age else 0.0,
+            blockers=("persistent_supervisor_heartbeat_stale_or_future",)
+            if self.wrong_blockers else
+            ("persistent_supervisor_broker_poll_not_proven",),
         )
 
 
@@ -134,6 +140,8 @@ def test_temp_smoke_uses_both_roles_and_leaves_no_health_claim():
     ({"reject_competitor": False}, {}),
     ({}, {"forged_healthy": True}),
     ({}, {"wrong_identity": True}),
+    ({}, {"stale_age": True}),
+    ({}, {"wrong_blockers": True}),
     ({"role_ok": False}, {}),
     ({}, {"role_ok": False}),
 ])
