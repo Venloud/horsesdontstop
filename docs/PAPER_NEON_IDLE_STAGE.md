@@ -84,6 +84,64 @@ test the restricted role on a TEMP database branch, measure actual
 Neon compute usage, and test independent failed-worker alerts before
 any PAPER broker order request.
 
+## October 16 TEMP Neon credentialed-role and lease test, ACTUAL SQL
+
+Following separate owner approval, provisioned **only** the existing
+`test-paper-entry-20261011` temporary Neon branch. The official Neon
+create-role API initially produced an unexpectedly **overprivileged**
+role (including `neon_superuser` membership); the database account
+could not strip those privileged attributes. The new role was
+**immediately deleted and its deletion verified**. We then used
+explicit PostgreSQL `CREATE ROLE ... LOGIN NOINHERIT NOSUPERUSER
+NOCREATEROLE NOCREATEDB NOREPLICATION NOBYPASSRLS` under the temporary
+branch. A high-entropy password was generated inside PostgreSQL,
+rotated through Neon management and **never copied to GitHub or logged**.
+No production credential or database role was created.
+
+Live sessions authenticated as **both actual restricted roles**:
+
+| Test, existing TEMP branch only | Actual result |
+|---|---|
+| Heartbeat writer login as `hds_paper_heartbeat` | passed |
+| Monitor login as `hds_paper_monitor` | passed |
+| Writer heartbeat table SELECT/INSERT/UPDATE | allowed |
+| Writer heartbeat DELETE / control UPDATE / intent INSERT | denied |
+| Monitor heartbeat table SELECT | allowed |
+| Monitor heartbeat INSERT/UPDATE/DELETE | denied |
+| Monitor control UPDATE / intent INSERT | denied |
+| Both roles elevated attributes / `neon_superuser` membership | none |
+| A first pulse taking over a stale older lease | accepted, `poll_succeeded=false` |
+| Same worker with increased sequence 2 | accepted, `poll_succeeded=true` |
+| Duplicate sequence 2 | rejected, zero rows |
+| Competing worker with fresh lease | rejected, zero rows |
+| Cleanup sequence 3 for original worker | accepted, `poll_succeeded=false` |
+| Independent monitor reads first, second and final states | passed |
+| Negative writer control UPDATE / writer heartbeat DELETE / monitor heartbeat INSERT | actual PostgreSQL `permission denied` |
+
+**Important:** These are actual *temporary PostgreSQL role and SQL
+lease* tests, **not** actual broker polling or a running Python
+supervisor. We deliberately set the final TEMP lease state to
+`poll_succeeded=false` to avoid claiming a live healthy watchdog
+from synthetic SQL pulses. Sequential duplicate/competing-writer
+rejection was observed in separate database requests, not an
+independently timed simultaneous race test. A full Python
+`psycopg` restricted-role integration run is still needed before
+runtime credentials/deployment are considered ready.
+
+**Independent read-only production verification:** The
+`production` branch retains exactly one
+`paper_control` row with `kill_switch_active=true` and
+`submissions_enabled=false`; `paper_intents=0`,
+`paper_equity_snapshots=0`. Neither
+`hds_paper_heartbeat` nor `paper_worker_heartbeat` exists there.
+No production SQL, deployments, cloud charges, GitHub secrets, broker
+order submissions, or stop orders were changed by this test.
+
+**Next still blocked:** No production secret, persistent independent
+host, external dead-man/notification validation or real protective
+order proof. Never infer execution readiness from successful ACL
+and synthetic pulse verification.
+
 ## October 16 TEMP Neon role preflight, actually executed read-only
 
 A read-only inspection of the existing temporary branch
