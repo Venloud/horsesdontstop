@@ -222,3 +222,58 @@ The role-based SQL checks previously run through the authenticated
 Neon connector remain valid but do not substitute for this test.
 No CI workflow was given an actual database credential, no production
 SQL/schema or GitHub secret was changed, and no PAPER trade was placed.
+
+
+## October 16 staged independent supervisor-loss checker (NEW, NOT HOSTED)
+
+Added `bot/paper_independent_check.py` and synthetic no-network
+`tests/test_paper_independent_check.py` on draft PR #23.
+
+**Reason:** The opt-in `--idle-neon-when-broker-closed-flat` worker
+intentionally stops refreshing its Neon heartbeat after hours. From an
+independent observer's perspective, this is **indistinguishable from
+a worker crash** using only that database lease. A safe checker must
+never report a healthy 120-second watchdog when that occurs.
+
+The separate read-only checker:
+
+- Requires a **separately configured, exact**
+  `PAPER_EXPECTED_WORKER_ID`, not a worker ID blindly copied from the
+  same possibly spoofed heartbeat row. On host restart, independently
+  authorize/refresh this ID; mismatches FAIL closed.
+- Uses `PAPER_JOURNAL_DSN` restricted SELECT-only monitor credentials
+  (NOT heartbeat writer, PAPER executor or database owner), authenticates
+  `PaperWorkerHeartbeat.assert_heartbeat_monitor_only()`, and
+  `paper_watchdog.run_once(output="")` for a fresh actual Alpaca PAPER
+  + Neon journal **read-only** observation.
+- Independently classifies the report and inspects the recent lease.
+  A missing, unhealthy, expired, mistaken, unproven or inconsistent
+  heartbeat is **CRITICAL** even if Alpaca says the market is closed
+  and positions/orders are empty. A warning from the account
+  observation is also escalated, rather than represented as healthy
+  supervision. There are no writes to Neon or broker.
+- Optionally sends an existing private-topic NTFY alert ONLY when
+  `--send-critical-alert` is passed and
+  `PAPER_MONITOR_NTFY_TOPIC` is configured. Missing topic or failed
+  delivery fails closed and prints sanitized errors, not secrets.
+  Offline tests inject the alert sender; **NO alert was delivered
+  to a real recipient by this change**.
+
+A representative invocation on a **separately hosted** verifier,
+only after storing read-only credentials and an externally verified
+expected worker ID, is:
+
+```bash
+python -m bot.paper_independent_check --send-critical-alert
+```
+
+This CLI is a **single check**, not a background service, and is
+**NOT deployed**. It cannot detect its own host crashing, and running
+it on GitHub Actions' five-minute, best-effort cron does **NOT**
+prove detection within 120 seconds. Safe 120-second enforcement still
+requires an independent host/scheduler with measured uptime, tested
+alerts and credentials; legitimate closed-flat Neon idle would
+currently cause **intentional critical alerts** until a separate
+verified liveness channel is engineered. This is preferable to
+silently treating a crash as healthy. Do not claim autonomous
+overnight monitoring is ready or enable PAPER order submission.
