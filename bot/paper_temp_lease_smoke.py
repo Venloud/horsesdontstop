@@ -12,7 +12,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
-from urllib.parse import unquote, urlsplit
+from urllib.parse import parse_qsl, unquote, urlsplit
 from uuid import uuid4
 
 from .paper_safety import TradeBlocked
@@ -41,8 +41,22 @@ def validate_temp_role_dsn(dsn: str | None, expected_role: str) -> str:
         port = url.port
         host = url.hostname
         database = unquote(url.path)
+        query = parse_qsl(url.query, keep_blank_values=True, strict_parsing=True)
     except (ValueError, TypeError):
         raise TradeBlocked("Malformed temp database connection") from None
+    # Libpq URI query arguments can OVERRIDE an otherwise safe hostname,
+    # database or username. Never accept host, hostaddr, service, user,
+    # dbname, password, options or unrecognized params in this smoke runner.
+    seen = set()
+    for key, value in query:
+        if key in seen or (
+            (key == "sslmode" and value not in ("require", "verify-full"))
+            or (key == "channel_binding" and value != "require")
+            or (key == "connect_timeout" and value not in ("3", "5", "10"))
+            or key not in ("sslmode", "channel_binding", "connect_timeout")
+        ):
+            raise TradeBlocked("Forbidden temp database connection option")
+        seen.add(key)
     if (url.scheme not in ("postgres", "postgresql")
             or host not in TEMP_HOSTS
             or (port is not None and port != 5432)
