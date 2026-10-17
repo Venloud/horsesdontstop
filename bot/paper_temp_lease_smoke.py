@@ -113,8 +113,12 @@ def run_temp_lease_smoke(writer: PaperWorkerHeartbeat,
 
     try:
         writer.pulse(worker_id=worker_id, sequence=2, poll_succeeded=False)
-    except TradeBlocked:
-        duplicate_denied = True
+    except TradeBlocked as exc:
+        # Only the lease-conflict rejection counts. A permissions or
+        # connection error must NOT masquerade as an exclusive lease.
+        duplicate_denied = str(exc) == (
+            "Duplicate or competing PAPER supervisor lease; "
+            "no health accepted")
     else:
         duplicate_denied = False
 
@@ -122,8 +126,10 @@ def run_temp_lease_smoke(writer: PaperWorkerHeartbeat,
         writer.pulse(
             worker_id="paper-test-competitor-"+uuid4().hex[:16],
             sequence=1, poll_succeeded=False)
-    except TradeBlocked:
-        competitor_denied = True
+    except TradeBlocked as exc:
+        competitor_denied = str(exc) == (
+            "Duplicate or competing PAPER supervisor lease; "
+            "no health accepted")
     else:
         competitor_denied = False
 
