@@ -191,7 +191,10 @@ def submit_paper_once_supervised(
                 status=QueryOrderStatus.OPEN, nested=True, limit=500))
     except Exception:
         raise TradeBlocked("Live broker pre-submission verification unavailable") from None
-    if (not clock.is_open or getattr(account, "trading_blocked", True)
+    # SDK fields must be genuine broker booleans, not truthy text or
+    # missing values. In particular, None does not prove trading is allowed.
+    if (getattr(clock, "is_open", None) is not True
+            or getattr(account, "trading_blocked", None) is not False
             or positions or orders):
         raise TradeBlocked("Paper market closed, account blocked or exposure exists")
     if (abs(money(account.equity) - money(safety_state.equity)) > money(".01")

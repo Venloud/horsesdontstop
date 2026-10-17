@@ -376,3 +376,32 @@ def test_synthetic_broker_release_rejects_unverified_risk_evidence(monkeypatch, 
         execute(p, broker=broker, state=healthy(**blocked))
     assert broker.calls == []
     assert broker.sent == []
+
+
+@pytest.mark.parametrize("broker_clock", ["true", "false", 1, None])
+def test_nonboolean_broker_clock_refused_before_reservation(monkeypatch,
+                                                            broker_clock):
+    # Fake objects only. Never contact Alpaca, never enable the source switch.
+    monkeypatch.setattr(entry, "PAPER_ORDER_SUBMISSIONS_RELEASED", True)
+    p = preview()
+    broker = FakeBroker(p, clock_open=broker_clock)
+    journal = FakeJournal()
+    with pytest.raises(TradeBlocked, match="market closed"):
+        execute(p, broker=broker, journal=journal)
+    assert journal.calls == []
+    assert broker.sent == []
+
+
+@pytest.mark.parametrize("broker_blocked", [None, 0, "false", "true"])
+def test_nonboolean_broker_trading_blocked_refused_before_reservation(
+        monkeypatch, broker_blocked):
+    monkeypatch.setattr(entry, "PAPER_ORDER_SUBMISSIONS_RELEASED", True)
+    p = preview()
+    broker = FakeBroker(p)
+    journal = FakeJournal()
+    broker.get_account = lambda: SimpleNamespace(
+        equity="500", cash="500", trading_blocked=broker_blocked)
+    with pytest.raises(TradeBlocked, match="account blocked"):
+        execute(p, broker=broker, journal=journal)
+    assert journal.calls == []
+    assert broker.sent == []
