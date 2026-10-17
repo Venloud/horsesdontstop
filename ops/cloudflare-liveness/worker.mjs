@@ -33,7 +33,7 @@ async function compareAuth(header, secret) {
 }
 
 function response(code, text) {
-  return new Response(text, {
+  return new Response(code === 204 ? null : text, {
     status: code,
     headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" },
   });
