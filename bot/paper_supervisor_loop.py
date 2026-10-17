@@ -14,8 +14,10 @@ import os
 import sys
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from uuid import uuid4
 
+from .monitor_policy import assess_read_only_report
 from .paper_safety import PAPER_ENDPOINT, TradeBlocked
 from .paper_worker_lease import PaperWorkerHeartbeat
 from .paper_neon_idle import make_paper_closed_flat_probe, verified_flat_journal_baseline
@@ -30,27 +32,53 @@ class SupervisorLoopReport:
     neon_idle_ticks: int = 0
 
 
-def valid_observation(report) -> bool:
-    """A heartbeat records only a broker/Neon read that actually succeeded.
+def valid_observation(report, *, now=None) -> bool:
+    """Count only a current, independently rechecked idle safety report.
 
-    This intentionally rejects exposure/journal inconsistencies, and
-    never equates a healthy poll with PAPER trade-launch authorization.
+    A syntactically consistent reconciliation alone is NOT an attestation:
+    the broker may report stale state, an unexpected unlocked Neon
+    control, missing required report fields, or a critical/warning
+    monitor incident. Those states must never renew a healthy lease.
     """
     if not isinstance(report, dict):
         return False
-    check = report.get("reconciliation")
-    if not isinstance(check, dict):
+    # A broker write count of False compares equal to zero in Python;
+    # require the exact integer zero and explicit readonly indicators.
+    if (type(report.get("broker_write_operations")) is not int
+            or report["broker_write_operations"] != 0
+            or report.get("can_submit_orders") is not False
+            or report.get("code_submissions_enabled") is not False
+            or report.get("broker_paper_url") != PAPER_ENDPOINT):
         return False
-    return (
-        report.get("mode") == "ALPACA_PAPER_READ_ONLY_PREFLIGHT"
-        and report.get("broker_paper_url") == PAPER_ENDPOINT
-        and report.get("can_submit_orders") is False
-        and report.get("broker_write_operations") == 0
-        and check.get("consistent") is True
-        and not check.get("blockers")
-        and check.get("uncovered_symbols") == []
-    )
-
+    incident = report.get("monitor_incident")
+    if (not isinstance(incident, dict)
+            or incident.get("level") != "idle"
+            or incident.get("code") != "idle"):
+        return False
+    check = report.get("reconciliation")
+    if (not isinstance(check, dict)
+            or check.get("consistent") is not True
+            or check.get("uncovered_symbols") != []
+            or check.get("blockers") != []):
+        return False
+    try:
+        now = now or datetime.now(timezone.utc)
+        if not isinstance(now, datetime) or now.tzinfo is None:
+            return False
+        observed = datetime.fromisoformat(
+            report["observed_at_utc"].replace("Z", "+00:00"))
+        if observed.tzinfo is None or observed.utcoffset() is None:
+            return False
+        age = (now.astimezone(timezone.utc)
+               - observed.astimezone(timezone.utc)).total_seconds()
+        if not 0 <= age <= 120:
+            return False
+        independent = assess_read_only_report(
+            report, now=now, max_age_seconds=120)
+    except (ValueError, TypeError, AttributeError, KeyError, OverflowError):
+        return False
+    return (independent.level == "idle" and independent.code == "idle"
+            and incident.get("fingerprint") == independent.fingerprint)
 
 def one_supervisor_tick(
     *, fetch_read_only_report, heartbeat_writer: PaperWorkerHeartbeat,
