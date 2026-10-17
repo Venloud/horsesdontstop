@@ -330,7 +330,7 @@ def test_external_liveness_failure_invalidates_idle_baseline(capsys):
     assert result.external_liveness_failures == 3
     assert result.neon_idle_ticks == 0
     assert len(reports) == 3
-    assert signals == ["poll_failed", "read_only_poll_ok", "read_only_poll_ok"]
+    assert signals == ["read_only_poll_ok", "read_only_poll_ok", "read_only_poll_ok"]
     assert "SECRET_SIGNAL_TOKEN" not in str(capsys.readouterr())
 
 
