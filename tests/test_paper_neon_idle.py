@@ -149,6 +149,7 @@ def test_process_must_first_observe_full_healthy_neon_poll():
     result = run_supervisor_loop(
         fetch_read_only_report=full,
         heartbeat_writer=writer,
+        external_liveness_sink=lambda **kw: True,
         closed_flat_broker_probe=lambda: broker_confirms_closed_flat(broker),
         max_ticks=4, sleeper=lambda _: None)
     # Tick 1 always consults Neon. Subsequent idle ticks use ONLY broker GETs.
@@ -173,6 +174,7 @@ def test_open_market_forces_neon_check_and_cannot_be_reported_idle():
     result = run_supervisor_loop(
         fetch_read_only_report=lambda: (polls.append(1), clean_report())[1],
         heartbeat_writer=writer,
+        external_liveness_sink=lambda **kw: True,
         closed_flat_broker_probe=lambda: broker_confirms_closed_flat(broker),
         max_ticks=3, sleeper=lambda _: None)
     assert len(polls) == 3
@@ -191,6 +193,7 @@ def test_failed_heartbeat_does_not_establish_idle_baseline():
     report = run_supervisor_loop(
         fetch_read_only_report=lambda: (reports.append(True), clean_report())[1],
         heartbeat_writer=writer,
+        external_liveness_sink=lambda **kw: True,
         closed_flat_broker_probe=probe, max_ticks=3,
         sleeper=lambda _: None)
     assert len(reports) == 2
@@ -216,6 +219,7 @@ def test_unverified_full_poll_clears_cached_baseline():
         return reports[idx]
     result = run_supervisor_loop(
         fetch_read_only_report=full, heartbeat_writer=writer,
+        external_liveness_sink=lambda **kw: True,
         closed_flat_broker_probe=probe, max_ticks=3,
         sleeper=lambda _: None)
     assert state == {"probe": 1, "full": 3}
@@ -230,7 +234,8 @@ def test_probe_crash_falls_back_to_neon_without_leaking_secret(capsys):
         raise RuntimeError("SECRET_POSTGRES_URL_IN_EXCEPTION")
     r = run_supervisor_loop(
         fetch_read_only_report=lambda: (calls.append(1), clean_report())[1],
-        heartbeat_writer=FakeHeartbeat(), closed_flat_broker_probe=broken_probe,
+        heartbeat_writer=FakeHeartbeat(), external_liveness_sink=lambda **kw: True,
+        closed_flat_broker_probe=broken_probe,
         max_ticks=2, sleeper=lambda _: None)
     assert len(calls) == 2
     assert r.neon_idle_ticks == 0
@@ -241,6 +246,7 @@ def test_idle_logs_do_not_fake_healthy_heartbeats(capsys):
     writer = FakeHeartbeat()
     result = run_supervisor_loop(
         fetch_read_only_report=clean_report, heartbeat_writer=writer,
+        external_liveness_sink=lambda **kw: True,
         closed_flat_broker_probe=lambda: True,
         max_ticks=2, sleeper=lambda _: None)
     log = capsys.readouterr().out
@@ -271,6 +277,7 @@ def test_replayed_idle_report_cannot_unlock_neon_skip():
     result = run_supervisor_loop(
         fetch_read_only_report=lambda: report,
         heartbeat_writer=writer,
+        external_liveness_sink=lambda **kw: True,
         closed_flat_broker_probe=lambda: called.append(True) or True,
         max_ticks=3, sleeper=lambda _: None)
     assert called == []
@@ -286,8 +293,59 @@ def test_forged_idle_incident_fingerprint_never_skips_neon():
     result = run_supervisor_loop(
         fetch_read_only_report=lambda: report,
         heartbeat_writer=writer,
+        external_liveness_sink=lambda **kw: True,
         closed_flat_broker_probe=lambda: True,
         max_ticks=3, sleeper=lambda _: None)
     assert result.healthy_polls == 0
     assert result.blocked_polls == 3
     assert result.neon_idle_ticks == 0
+
+
+def test_closed_flat_idle_requires_external_signal_before_any_observation():
+    from bot.paper_safety import TradeBlocked
+    writer = FakeHeartbeat()
+    calls = []
+    with pytest.raises(TradeBlocked, match="external liveness"):
+        run_supervisor_loop(
+            fetch_read_only_report=lambda: calls.append(True),
+            heartbeat_writer=writer, closed_flat_broker_probe=lambda: True,
+            max_ticks=1, sleeper=lambda _: None)
+    assert writer.pulses == []
+    assert calls == []
+
+
+def test_external_liveness_failure_invalidates_idle_baseline(capsys):
+    writer = FakeHeartbeat()
+    signals = []
+    reports = []
+    def broken_signal(**details):
+        signals.append(details["status"])
+        raise RuntimeError("SECRET_SIGNAL_TOKEN")
+    result = run_supervisor_loop(
+        fetch_read_only_report=lambda: (reports.append(1), clean_report())[1],
+        heartbeat_writer=writer,
+        closed_flat_broker_probe=lambda: True,
+        external_liveness_sink=broken_signal, max_ticks=3,
+        sleeper=lambda _: None)
+    assert result.external_liveness_failures == 3
+    assert result.neon_idle_ticks == 0
+    assert len(reports) == 3
+    assert signals == ["poll_failed", "read_only_poll_ok", "read_only_poll_ok"]
+    assert "SECRET_SIGNAL_TOKEN" not in str(capsys.readouterr())
+
+
+def test_successful_external_idle_signals_are_not_trading_heartbeat():
+    writer = FakeHeartbeat()
+    received = []
+    result = run_supervisor_loop(
+        fetch_read_only_report=clean_report,
+        heartbeat_writer=writer, closed_flat_broker_probe=lambda: True,
+        external_liveness_sink=lambda **details: received.append(
+            details["status"]) or True,
+        max_ticks=3, sleeper=lambda _: None)
+    assert result.neon_idle_ticks == 2
+    assert result.external_liveness_failures == 0
+    assert result.healthy_polls == 1
+    assert received == [
+        "read_only_poll_ok", "closed_flat_idle", "closed_flat_idle"]
+    assert len(writer.pulses) == 1
