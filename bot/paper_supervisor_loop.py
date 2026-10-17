@@ -18,6 +18,7 @@ from uuid import uuid4
 
 from .paper_safety import PAPER_ENDPOINT, TradeBlocked
 from .paper_worker_lease import PaperWorkerHeartbeat
+from .paper_neon_idle import broker_confirms_closed_flat, verified_flat_journal_baseline
 
 
 @dataclass(frozen=True)
@@ -26,6 +27,7 @@ class SupervisorLoopReport:
     healthy_polls: int
     blocked_polls: int
     broker_order_submissions: int = 0
+    neon_idle_ticks: int = 0
 
 
 def valid_observation(report) -> bool:
@@ -73,6 +75,7 @@ def one_supervisor_tick(
 def run_supervisor_loop(
     *, fetch_read_only_report, heartbeat_writer, interval_seconds=30,
     max_ticks=0, sleeper=time.sleep, worker_id=None,
+    closed_flat_broker_probe=None,
 ) -> SupervisorLoopReport:
     """Synthetic tests can supply fake report, pulse and sleeper.
 
@@ -85,25 +88,51 @@ def run_supervisor_loop(
         raise TradeBlocked("Invalid bounded worker test count")
     if worker_id is None:
         worker_id = "paper-" + uuid4().hex
-    ticks = healthy = blocked = 0
+    ticks = healthy = blocked = neon_idle = 0
+    # After a restart, no cached status can replace a fresh broker AND
+    # durable-journal read. Any failed poll invalidates this baseline.
+    previously_verified_flat = False
+
+    def full_read():
+        nonlocal previously_verified_flat
+        report = fetch_read_only_report()
+        previously_verified_flat = verified_flat_journal_baseline(report)
+        return report
+
     while max_ticks == 0 or ticks < max_ticks:
         ticks += 1
-        succeeded = one_supervisor_tick(
-            fetch_read_only_report=fetch_read_only_report,
-            heartbeat_writer=heartbeat_writer,
-            worker_id=worker_id, sequence=ticks
-        )
-        if succeeded:
-            healthy += 1
-            print("PAPER READ-ONLY SUPERVISOR: recent broker/Neon poll; "
-                  "ZERO broker orders.")
+        # Opt-in only. A fresh read-only broker clock, positions and open
+        # orders check is required on EVERY idle tick. No lease pulse and
+        # no Neon call are made here, so idle is NEVER healthy supervision.
+        idle = False
+        if closed_flat_broker_probe is not None and previously_verified_flat:
+            try:
+                idle = closed_flat_broker_probe() is True
+            except Exception:
+                idle = False
+        if idle:
+            neon_idle += 1
+            print("PAPER READ-ONLY SUPERVISOR: broker verified closed/flat; "
+                  "NEON IDLE, NO heartbeat, NO trading permission.")
         else:
-            blocked += 1
-            print("PAPER READ-ONLY SUPERVISOR: unhealthy/unknown; "
-                  "NO trading permission.", file=sys.stderr)
+            succeeded = one_supervisor_tick(
+                fetch_read_only_report=full_read,
+                heartbeat_writer=heartbeat_writer,
+                worker_id=worker_id, sequence=ticks
+            )
+            if succeeded:
+                healthy += 1
+                print("PAPER READ-ONLY SUPERVISOR: recent broker/Neon poll; "
+                      "ZERO broker orders.")
+            else:
+                previously_verified_flat = False
+                blocked += 1
+                print("PAPER READ-ONLY SUPERVISOR: unhealthy/unknown; "
+                      "NO trading permission.", file=sys.stderr)
         if max_ticks == 0 or ticks < max_ticks:
             sleeper(interval_seconds)
-    return SupervisorLoopReport(ticks, healthy, blocked)
+    return SupervisorLoopReport(
+        ticks, healthy, blocked, neon_idle_ticks=neon_idle)
 
 
 def main() -> int:
@@ -116,6 +145,10 @@ def main() -> int:
     parser.add_argument("--interval-seconds", type=int, default=30)
     parser.add_argument("--max-ticks", type=int, default=0,
                         help="0 is continuous; 2-5 for synthetic smoke on a host")
+    parser.add_argument(
+        "--idle-neon-when-broker-closed-flat", action="store_true",
+        help="Opt-in: skip Neon/heartbeat only after verified flat journal "
+             "baseline and a FRESH closed/flat broker check every tick")
     args = parser.parse_args()
     load_dotenv()
 
@@ -128,11 +161,22 @@ def main() -> int:
     try:
         writer = PaperWorkerHeartbeat(os.environ["PAPER_HEARTBEAT_DSN"])
         writer.assert_heartbeat_writer_only()
+        closed_flat_probe = None
+        if args.idle_neon_when_broker_closed_flat:
+            from alpaca.trading.client import TradingClient
+            # Exactly the PAPER-only broker endpoint. No trading order code.
+            broker = TradingClient(
+                os.environ["ALPACA_PAPER_API_KEY"],
+                os.environ["ALPACA_PAPER_SECRET_KEY"],
+                paper=True, url_override=PAPER_ENDPOINT,
+            )
+            closed_flat_probe = lambda: broker_confirms_closed_flat(broker)
         outcome = run_supervisor_loop(
             fetch_read_only_report=lambda: run_once(output=""),
             heartbeat_writer=writer,
             interval_seconds=args.interval_seconds,
             max_ticks=args.max_ticks,
+            closed_flat_broker_probe=closed_flat_probe,
         )
     except Exception:
         print("BLOCKED: cannot operate a verified PAPER read-only worker; "
