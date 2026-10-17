@@ -88,7 +88,11 @@ def run_temp_lease_smoke(writer: PaperWorkerHeartbeat,
     if (first_seen.healthy is not False
             or first_seen.poll_succeeded is not False
             or first_seen.worker_id != worker_id
-            or first_seen.sequence != 1):
+            or first_seen.sequence != 1
+            or first_seen.blockers != (
+                "persistent_supervisor_broker_poll_not_proven",)
+            or type(first_seen.age_seconds) not in (int, float)
+            or not 0 <= first_seen.age_seconds <= 120):
         raise TradeBlocked("Independent monitor rejected first temp pulse")
 
     second = writer.pulse(
@@ -100,7 +104,11 @@ def run_temp_lease_smoke(writer: PaperWorkerHeartbeat,
     if (second_seen.healthy is not False
             or second_seen.poll_succeeded is not False
             or second_seen.worker_id != worker_id
-            or second_seen.sequence != 2):
+            or second_seen.sequence != 2
+            or second_seen.blockers != (
+                "persistent_supervisor_broker_poll_not_proven",)
+            or type(second_seen.age_seconds) not in (int, float)
+            or not 0 <= second_seen.age_seconds <= 120):
         raise TradeBlocked("Independent monitor rejected second temp pulse")
 
     try:
@@ -125,7 +133,11 @@ def run_temp_lease_smoke(writer: PaperWorkerHeartbeat,
     final = monitor.inspect(expected_worker_id=worker_id)
     if (final.healthy is not False
             or final.poll_succeeded is not False
-            or final.sequence != 2):
+            or final.sequence != 2
+            or final.blockers != (
+                "persistent_supervisor_broker_poll_not_proven",)
+            or type(final.age_seconds) not in (int, float)
+            or not 0 <= final.age_seconds <= 120):
         raise TradeBlocked("Temp heartbeat did not remain unhealthy")
 
     return {
