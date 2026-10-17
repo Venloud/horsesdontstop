@@ -13,4 +13,3 @@ crons = ["* * * * *"]
 binding = "DB"
 database_name = "horsesdontstop-liveness"
 database_id = "REPLACE_WITH_REAL_D1_DATABASE_ID"
-migrations_dir = "migrations"
