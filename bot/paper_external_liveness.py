@@ -13,8 +13,8 @@ from urllib.request import Request, urlopen
 
 from .paper_safety import TradeBlocked
 
-ID = re.compile(r"paper-[a-f0-9]{32}\\Z")
-TOKEN = re.compile(r"[A-Za-z0-9_-]{32,128}\\Z")
+ID = re.compile(r"paper-[a-f0-9]{32}")
+TOKEN = re.compile(r"[A-Za-z0-9_-]{32,128}")
 STATES = frozenset(("read_only_poll_ok", "closed_flat_idle", "poll_failed"))
 
 
@@ -33,7 +33,7 @@ def check_liveness_settings(url, token):
     except (TypeError, ValueError):
         raise TradeBlocked("Malformed external liveness endpoint") from None
     if (parsed.scheme != "https" or not host
-            or not re.fullmatch(r"[a-z0-9-]+\\.[a-z0-9-]+\\.workers\\.dev", host)
+            or not re.fullmatch(r"[a-z0-9-]+[.][a-z0-9-]+[.]workers[.]dev", host)
             or parsed.path != "/v1/heartbeat"
             or parsed.query or parsed.fragment or parsed.username
             or parsed.password or port is not None
