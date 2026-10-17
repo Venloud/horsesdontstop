@@ -124,3 +124,41 @@ def test_unverified_flow_peak_or_calendar_evidence_blocks_entry():
         assert blocker in execution_blockers(healthy_state(**{flag: None}))
         assert blocker in execution_blockers(healthy_state(**{flag: "true"}))
     assert execution_blockers(healthy_state()) == []
+
+
+@pytest.mark.parametrize("key, supplied, blocker", [
+    ("kill_switch_active", None, "kill_switch_active"),
+    ("kill_switch_active", 0, "kill_switch_active"),
+    ("kill_switch_active", "false", "kill_switch_active"),
+    ("order_submissions_explicitly_enabled", "true",
+     "paper_order_submission_disabled"),
+    ("order_submissions_explicitly_enabled", 1,
+     "paper_order_submission_disabled"),
+    ("market_open", "false", "market_closed"),
+    ("market_open", 1, "market_closed"),
+    ("market_open", None, "market_closed"),
+    ("trading_blocked", None, "account_trading_blocked"),
+    ("trading_blocked", 0, "account_trading_blocked"),
+    ("trading_blocked", "false", "account_trading_blocked"),
+    ("durable_journal_healthy", "true", "durable_journal_not_ready"),
+    ("durable_journal_healthy", 1, "durable_journal_not_ready"),
+    ("reconciled_with_broker", "true", "broker_orders_not_reconciled"),
+    ("reconciled_with_broker", 1, "broker_orders_not_reconciled"),
+    ("open_positions", False, "existing_position_or_open_order"),
+    ("open_orders", 0.0, "existing_position_or_open_order"),
+    ("open_positions", -1, "existing_position_or_open_order"),
+    ("recent_quote_seconds", True, "no_fresh_realtime_quote"),
+    ("recent_quote_seconds", "1", "no_fresh_realtime_quote"),
+    ("watchdog_heartbeat_seconds", True, "no_healthy_persistent_watchdog"),
+    ("watchdog_heartbeat_seconds", 0.0, "no_healthy_persistent_watchdog"),
+])
+def test_coerced_safety_state_values_never_unlock_broker_gate(
+        key, supplied, blocker):
+    reasons = execution_blockers(healthy_state(**{key: supplied}))
+    assert blocker in reasons
+    assert reasons  # Synthetic account must never appear ready.
+
+
+def test_exact_typed_synthetic_readiness_still_passes_no_order_gate():
+    # Eligibility simulation only. The real release constant stays FALSE.
+    assert execution_blockers(healthy_state()) == []

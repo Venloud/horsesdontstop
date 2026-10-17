@@ -82,23 +82,28 @@ def execution_blockers(state: PaperSafetyState) -> list[str]:
     failures = []
     if state.broker_endpoint != PAPER_ENDPOINT:
         failures.append("not_proven_paper_endpoint")
-    if state.kill_switch_active:
+    # Do not coerce imported broker/database booleans: for example,
+    # bool("false") is True and bool(None) is False. Unknown state blocks.
+    if state.kill_switch_active is not False:
         failures.append("kill_switch_active")
-    if not state.order_submissions_explicitly_enabled:
+    if state.order_submissions_explicitly_enabled is not True:
         failures.append("paper_order_submission_disabled")
-    if not state.market_open:
+    if state.market_open is not True:
         failures.append("market_closed")
-    if state.trading_blocked:
+    if state.trading_blocked is not False:
         failures.append("account_trading_blocked")
-    if state.open_positions != 0 or state.open_orders != 0:
+    if (type(state.open_positions) is not int or state.open_positions != 0
+            or type(state.open_orders) is not int or state.open_orders != 0):
         failures.append("existing_position_or_open_order")
-    if state.recent_quote_seconds is None or not 0 <= state.recent_quote_seconds <= 120:
+    if (type(state.recent_quote_seconds) is not int
+            or not 0 <= state.recent_quote_seconds <= 120):
         failures.append("no_fresh_realtime_quote")
-    if not state.durable_journal_healthy:
+    if state.durable_journal_healthy is not True:
         failures.append("durable_journal_not_ready")
-    if not state.reconciled_with_broker:
+    if state.reconciled_with_broker is not True:
         failures.append("broker_orders_not_reconciled")
-    if state.watchdog_heartbeat_seconds is None or not 0 <= state.watchdog_heartbeat_seconds <= 120:
+    if (type(state.watchdog_heartbeat_seconds) is not int
+            or not 0 <= state.watchdog_heartbeat_seconds <= 120):
         failures.append("no_healthy_persistent_watchdog")
     # Deposits cannot hide the 3% daily stop, inflate returns, or
     # disguise a drawdown relative to the 15% adjusted high-water mark.
