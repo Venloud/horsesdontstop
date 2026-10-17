@@ -37,10 +37,10 @@ class Writer:
             return True
         if sequence == 2 and len(self.calls) > 2:
             if self.reject_duplicate:
-                raise TradeBlocked("duplicate sequence")
+                raise TradeBlocked("Duplicate or competing PAPER supervisor lease; no health accepted")
         if worker_id.startswith("paper-test-competitor-"):
             if self.reject_competitor:
-                raise TradeBlocked("competing worker")
+                raise TradeBlocked("Duplicate or competing PAPER supervisor lease; no health accepted")
         return False
 
 
@@ -152,6 +152,19 @@ def test_missing_safety_guarantees_fail_closed(writer_kwargs,reader_kwargs):
             writer, reader, worker_id="paper-temp-smoke-1234")
     if not writer.role_ok or not reader.role_ok:
         assert writer.calls == []
+
+
+def test_unrelated_db_privilege_error_does_not_count_as_lease_rejection():
+    class PermissionWriter(Writer):
+        def pulse(self, **kwargs):
+            if len(self.calls) >= 2:
+                raise TradeBlocked("PAPER heartbeat role has invalid or excessive DB permissions")
+            return super().pulse(**kwargs)
+
+    with pytest.raises(TradeBlocked, match="exclusivity"):
+        mod.run_temp_lease_smoke(
+            PermissionWriter(), Monitor(),
+            worker_id="paper-temp-smoke-1234")
 
 
 def test_main_requires_acknowledgement_before_instantiating_clients(
