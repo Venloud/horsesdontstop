@@ -1,9 +1,11 @@
 """Unit-only read-only supervisor: never opens a real broker/DB session."""
 import copy
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
 
+from bot.monitor_policy import assess_read_only_report
 from bot.paper_safety import PAPER_ENDPOINT, TradeBlocked
 from bot.paper_supervisor_loop import (
     one_supervisor_tick, run_supervisor_loop, valid_observation,
@@ -14,20 +16,32 @@ WORKER = "paper-worker-2026-test001"
 
 
 def safe_report():
-    return {
+    report = {
         "mode": "ALPACA_PAPER_READ_ONLY_PREFLIGHT",
+        "observed_at_utc": datetime.now(timezone.utc).isoformat(),
         "broker_paper_url": PAPER_ENDPOINT,
         "can_submit_orders": False,
+        "code_submissions_enabled": False,
         "broker_write_operations": 0,
-        "reconciliation": {
-            "consistent": True, "blockers": [],
-            "uncovered_symbols": [],
-        },
         "journal_kill_switch_active": True,
         "journal_submissions_enabled": False,
-        "code_submissions_enabled": False,
+        "safety_blockers": [
+            "kill_switch_active", "paper_order_submission_disabled",
+            "external_cash_flows_unverified", "equity_history_unverified",
+            "nyse_calendar_unverified",
+            "preflight_has_no_broker_write_capability",
+        ],
+        "reconciliation": {
+            "consistent": True, "blockers": [],
+            "open_broker_positions": 0, "open_broker_orders": 0,
+            "unresolved_journal_intents": 0,
+            "uncovered_symbols": [],
+        },
     }
-
+    # Synthetic classifier output from the exact same read-only
+    # policy used by run_once; not an authenticated external report.
+    report["monitor_incident"] = assess_read_only_report(report).as_dict()
+    return report
 
 class FakeWriter:
     def __init__(self):
@@ -67,6 +81,44 @@ def test_unsafe_lookalike_report_cannot_attest_healthy_broker_poll(changes):
     r.update(changes)
     assert valid_observation(r) is False
 
+
+
+
+@pytest.mark.parametrize("change", [
+    lambda p: p.update(journal_kill_switch_active=False),
+    lambda p: p.update(journal_submissions_enabled=True),
+    lambda p: p.update(code_submissions_enabled=True),
+    lambda p: p.update(broker_write_operations=False),
+    lambda p: p.update(monitor_incident={"level": "idle", "code": "idle"}),
+    lambda p: p["reconciliation"].update(open_broker_positions=1),
+    lambda p: p["reconciliation"].update(open_broker_orders=1),
+    lambda p: p["reconciliation"].update(unresolved_journal_intents=1),
+    lambda p: p["safety_blockers"].append("unrecognized_monitor_failure"),
+])
+def test_heartbeat_refuses_reconciled_looking_but_unsafe_report(change):
+    p = safe_report()
+    change(p)
+    assert valid_observation(p) is False
+
+
+def test_heartbeat_refuses_replayed_future_or_missing_timestamp():
+    p = safe_report()
+    observed = datetime.fromisoformat(p["observed_at_utc"])
+    assert valid_observation(p, now=observed + timedelta(seconds=120))
+    assert valid_observation(p, now=observed + timedelta(seconds=121)) is False
+    assert valid_observation(p, now=observed - timedelta(seconds=1)) is False
+    p.pop("observed_at_utc")
+    assert valid_observation(p) is False
+
+
+def test_contradictory_idle_incident_fails_unhealthy_worker_pulse():
+    p = safe_report()
+    p["journal_submissions_enabled"] = True
+    writer = FakeWriter()
+    assert not one_supervisor_tick(
+        fetch_read_only_report=lambda: p, heartbeat_writer=writer,
+        worker_id=WORKER, sequence=2)
+    assert writer.pulses == [(WORKER, 2, False)]
 
 def test_broker_exception_only_sends_unhealthy_heartbeat():
     w = FakeWriter()
