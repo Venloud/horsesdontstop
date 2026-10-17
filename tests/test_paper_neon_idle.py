@@ -8,26 +8,35 @@ import pytest
 from bot.paper_neon_idle import (
     broker_confirms_closed_flat, verified_flat_journal_baseline,
 )
+from bot.monitor_policy import assess_read_only_report
 from bot.paper_safety import PAPER_ENDPOINT
 from bot.paper_supervisor_loop import run_supervisor_loop
 
 
 def clean_report():
-    return {
+    report = {
         "mode": "ALPACA_PAPER_READ_ONLY_PREFLIGHT",
+        "observed_at_utc": datetime.now(timezone.utc).isoformat(),
         "broker_paper_url": PAPER_ENDPOINT,
         "can_submit_orders": False,
         "broker_write_operations": 0,
         "journal_kill_switch_active": True,
         "journal_submissions_enabled": False,
         "code_submissions_enabled": False,
+        "safety_blockers": [
+            "kill_switch_active", "paper_order_submission_disabled",
+            "external_cash_flows_unverified", "equity_history_unverified",
+            "nyse_calendar_unverified",
+            "preflight_has_no_broker_write_capability",
+        ],
         "reconciliation": {
             "consistent": True, "blockers": [], "uncovered_symbols": [],
             "open_broker_positions": 0, "open_broker_orders": 0,
             "unresolved_journal_intents": 0,
         },
     }
-
+    report["monitor_incident"] = assess_read_only_report(report).as_dict()
+    return report
 
 class FakePaperBroker:
     def __init__(self, *, opened=False, positions=(), orders=(), error=None):
@@ -211,8 +220,8 @@ def test_unverified_full_poll_clears_cached_baseline():
         sleeper=lambda _: None)
     assert state == {"probe": 1, "full": 3}
     assert result.neon_idle_ticks == 0
-    assert result.blocked_polls == 0
-    assert result.healthy_polls == 3
+    assert result.blocked_polls == 1
+    assert result.healthy_polls == 2
 
 
 def test_probe_crash_falls_back_to_neon_without_leaking_secret(capsys):
@@ -250,3 +259,35 @@ def test_default_path_unmodified_with_no_idle_probe():
     assert result.healthy_polls == 3
     assert result.neon_idle_ticks == 0
     assert len(writer.pulses) == 3
+
+
+def test_replayed_idle_report_cannot_unlock_neon_skip():
+    from datetime import timedelta
+    report = clean_report()
+    report["observed_at_utc"] = (
+        datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
+    writer = FakeHeartbeat()
+    called = []
+    result = run_supervisor_loop(
+        fetch_read_only_report=lambda: report,
+        heartbeat_writer=writer,
+        closed_flat_broker_probe=lambda: called.append(True) or True,
+        max_ticks=3, sleeper=lambda _: None)
+    assert called == []
+    assert result.blocked_polls == 3
+    assert result.neon_idle_ticks == 0
+    assert all(ok is False for _, ok in writer.pulses)
+
+
+def test_forged_idle_incident_fingerprint_never_skips_neon():
+    report = clean_report()
+    report["monitor_incident"]["fingerprint"] = "0" * 32
+    writer = FakeHeartbeat()
+    result = run_supervisor_loop(
+        fetch_read_only_report=lambda: report,
+        heartbeat_writer=writer,
+        closed_flat_broker_probe=lambda: True,
+        max_ticks=3, sleeper=lambda _: None)
+    assert result.healthy_polls == 0
+    assert result.blocked_polls == 3
+    assert result.neon_idle_ticks == 0
