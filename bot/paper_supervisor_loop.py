@@ -30,6 +30,7 @@ class SupervisorLoopReport:
     blocked_polls: int
     broker_order_submissions: int = 0
     neon_idle_ticks: int = 0
+    external_liveness_failures: int = 0
 
 
 def valid_observation(report, *, now=None) -> bool:
@@ -103,7 +104,7 @@ def one_supervisor_tick(
 def run_supervisor_loop(
     *, fetch_read_only_report, heartbeat_writer, interval_seconds=30,
     max_ticks=0, sleeper=time.sleep, worker_id=None,
-    closed_flat_broker_probe=None,
+    closed_flat_broker_probe=None, external_liveness_sink=None,
 ) -> SupervisorLoopReport:
     """Synthetic tests can supply fake report, pulse and sleeper.
 
@@ -116,7 +117,10 @@ def run_supervisor_loop(
         raise TradeBlocked("Invalid bounded worker test count")
     if worker_id is None:
         worker_id = "paper-" + uuid4().hex
-    ticks = healthy = blocked = neon_idle = 0
+    if closed_flat_broker_probe is not None and external_liveness_sink is None:
+        raise TradeBlocked(
+            "Closed-flat Neon idle needs a separate external liveness sink")
+    ticks = healthy = blocked = neon_idle = liveness_failures = 0
     # After a restart, no cached status can replace a fresh broker AND
     # durable-journal read. Any failed poll invalidates this baseline.
     previously_verified_flat = False
@@ -140,6 +144,7 @@ def run_supervisor_loop(
                 idle = False
         if idle:
             neon_idle += 1
+            external_status = "closed_flat_idle"
             print("PAPER READ-ONLY SUPERVISOR: broker verified closed/flat; "
                   "NEON IDLE, NO heartbeat, NO trading permission.")
         else:
@@ -148,6 +153,7 @@ def run_supervisor_loop(
                 heartbeat_writer=heartbeat_writer,
                 worker_id=worker_id, sequence=ticks
             )
+            external_status = "read_only_poll_ok" if succeeded else "poll_failed"
             if succeeded:
                 healthy += 1
                 print("PAPER READ-ONLY SUPERVISOR: recent broker/Neon poll; "
@@ -157,10 +163,24 @@ def run_supervisor_loop(
                 blocked += 1
                 print("PAPER READ-ONLY SUPERVISOR: unhealthy/unknown; "
                       "NO trading permission.", file=sys.stderr)
+        if external_liveness_sink is not None:
+            try:
+                if external_liveness_sink(
+                    worker_id=worker_id, sequence=ticks,
+                    status=external_status) is not True:
+                    raise TradeBlocked("External liveness not acknowledged")
+            except Exception:
+                # Unauthenticated or missing external heartbeat NEVER proves
+                # safe off-hours idle. No exception details may reach logs.
+                previously_verified_flat = False
+                liveness_failures += 1
+                print("PAPER LIVENESS: EXTERNAL SIGNAL UNVERIFIED; "
+                      "NO trading permission.", file=sys.stderr)
         if max_ticks == 0 or ticks < max_ticks:
             sleeper(interval_seconds)
     return SupervisorLoopReport(
-        ticks, healthy, blocked, neon_idle_ticks=neon_idle)
+        ticks, healthy, blocked, neon_idle_ticks=neon_idle,
+        external_liveness_failures=liveness_failures)
 
 
 def main() -> int:
@@ -177,8 +197,16 @@ def main() -> int:
         "--idle-neon-when-broker-closed-flat", action="store_true",
         help="Opt-in: skip Neon/heartbeat only after verified flat journal "
              "baseline and a FRESH closed/flat broker check every tick")
+    parser.add_argument(
+        "--external-liveness", action="store_true",
+        help="Opt-in separate Cloudflare D1 worker-liveness heartbeat; "
+             "required for Neon idle, never authorizes orders")
     args = parser.parse_args()
     load_dotenv()
+    if args.idle_neon_when_broker_closed_flat and not args.external_liveness:
+        print("BLOCKED: Neon idle requires external liveness signal.",
+              file=sys.stderr)
+        return 2
 
     if not all(os.environ.get(x) for x in (
             "ALPACA_PAPER_API_KEY", "ALPACA_PAPER_SECRET_KEY",
@@ -195,18 +223,29 @@ def main() -> int:
                 os.environ["ALPACA_PAPER_API_KEY"],
                 os.environ["ALPACA_PAPER_SECRET_KEY"],
             )
+        liveness_sink = None
+        if args.external_liveness:
+            from .paper_external_liveness import (
+                check_liveness_settings, send_liveness)
+            external_url, external_token = check_liveness_settings(
+                os.environ.get("PAPER_EXTERNAL_LIVENESS_URL"),
+                os.environ.get("PAPER_EXTERNAL_LIVENESS_TOKEN"))
+            liveness_sink = lambda **details: send_liveness(
+                url=external_url, token=external_token, **details)
         outcome = run_supervisor_loop(
             fetch_read_only_report=lambda: run_once(output=""),
             heartbeat_writer=writer,
             interval_seconds=args.interval_seconds,
             max_ticks=args.max_ticks,
             closed_flat_broker_probe=closed_flat_probe,
+            external_liveness_sink=liveness_sink,
         )
     except Exception:
         print("BLOCKED: cannot operate a verified PAPER read-only worker; "
               "no broker orders.", file=sys.stderr)
         return 2
-    return 0 if outcome.blocked_polls == 0 else 2
+    return 0 if (outcome.blocked_polls == 0
+                 and outcome.external_liveness_failures == 0) else 2
 
 
 if __name__ == "__main__":
