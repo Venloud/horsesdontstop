@@ -40,7 +40,7 @@ def lease(*, healthy=True, succeeded=True, age=0., sequence=2, blockers=()):
         healthy=healthy,
         poll_succeeded=succeeded,
         age_seconds=age,
-        watchdog_heartbeat_seconds=int(age) if healthy else None,
+        watchdog_heartbeat_seconds=int(age) if healthy and type(age) in (int, float) else None,
         blockers=blockers, sequence=sequence)
 
 
