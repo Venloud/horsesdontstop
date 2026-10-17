@@ -177,3 +177,48 @@ first/second pulse, competing-writer rejection, stale takeover and
 independent monitor inspection using **two separate real sessions**.
 Any future production migration/secret/deployment requires its own
 authorization. No operation on this PR activates that process.
+
+
+## October 16 TEMP-only Python/psycopg integration harness (STAGED)
+
+Added `bot/paper_temp_lease_smoke.py` and
+`tests/test_paper_temp_lease_smoke.py` to PR #23.
+
+**Purpose:** exercise the real existing `PaperWorkerHeartbeat.pulse()`
+and `inspect()` Python methods using two separate least-privileged
+connections. Unlike the prior Neon management SQL tests, this invokes
+the same Python `psycopg` connection and role-attestation paths used
+by the future service. It does **not** connect to Alpaca.
+
+**Prerequisites for a REAL run:** a network-enabled Python environment,
+`pip install -r requirements.txt`, and TWO separate ephemeral
+restricted DSNs for the existing temporary Neon branch endpoint:
+`PAPER_TEMP_HEARTBEAT_DSN` (user `hds_paper_heartbeat`) and
+`PAPER_TEMP_MONITOR_DSN` (user `hds_paper_monitor`). Do not paste,
+commit, print, upload, or place DSNs in shell history or GitHub Actions
+logs. Do NOT substitute production, admin or executor credentials.
+The CLI requires:
+
+```bash
+python -m bot.paper_temp_lease_smoke --acknowledge-temp-only-writes
+```
+
+The command **rejects any host except the known temporary Neon branch
+endpoint**, any wrong role, missing password, wrong database, absent
+acknowledgement, or missing credential. It re-attests both PostgreSQL
+roles, writes exactly two synthetic `poll_succeeded=FALSE` pulses,
+tries duplicate/competing-worker pulses (both must be denied), then
+confirms through the independent monitor that the final status is
+**UNHEALTHY**, never fake broker supervision. This modifies only the
+existing **TEMP heartbeat singleton**, not other tables. A fresh
+non-test worker lease prevents an attempted takeover for 120 seconds.
+Any database or Python failure returns exit code 2 with a sanitized
+message. Ordinary CI exercises the harness **only with fake clients**.
+
+**Execution status:** as of this update the runner was NOT executed
+against real Neon from the ChatGPT runtime: it has no configured DSNs,
+no `psycopg` installation and no network resolution for the Neon host.
+The role-based SQL checks previously run through the authenticated
+Neon connector remain valid but do not substitute for this test.
+No CI workflow was given an actual database credential, no production
+SQL/schema or GitHub secret was changed, and no PAPER trade was placed.
