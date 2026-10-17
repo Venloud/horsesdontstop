@@ -76,6 +76,9 @@ def test_valid_temp_roles_match_preexisting_temp_endpoint_only():
     assert mod.validate_temp_role_dsn(
         dsn(host="ep-holy-moon-b5trovxf-pooler.c-7.us-east-2.aws.neon.tech"),
         "hds_paper_heartbeat")
+    assert mod.validate_temp_role_dsn(
+        dsn() + "&channel_binding=require&connect_timeout=5",
+        "hds_paper_heartbeat")
 
 
 @pytest.mark.parametrize("bad", [
@@ -90,6 +93,18 @@ def test_valid_temp_roles_match_preexisting_temp_endpoint_only():
     dsn() + "#production",
     dsn().replace("postgresql://", "postgresql://hds_paper_executor@"),
     dsn().replace("/neondb", ":1234/neondb"),
+    dsn() + "&host=ep-summer-salad-b5btnpj6.c-7.us-east-2.aws.neon.tech",
+    dsn() + "&hostaddr=127.0.0.1",
+    dsn() + "&dbname=production",
+    dsn() + "&user=neondb_owner",
+    dsn() + "&password=admin",
+    dsn() + "&service=production",
+    dsn() + "&options=-c%20search_path%3Dpublic",
+    dsn() + "&sslmode=disable",
+    dsn() + "&sslmode=require",
+    dsn() + "&channel_binding=disable",
+    dsn() + "&connect_timeout=9999",
+    dsn() + "&unknownarg=1",
 ])
 def test_rejects_production_admin_incomplete_and_wrong_branch_credentials(bad):
     with pytest.raises(TradeBlocked) as exc:
