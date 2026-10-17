@@ -277,3 +277,42 @@ currently cause **intentional critical alerts** until a separate
 verified liveness channel is engineered. This is preferable to
 silently treating a crash as healthy. Do not claim autonomous
 overnight monitoring is ready or enable PAPER order submission.
+
+
+## October 16 external off-hours liveness channel, STAGED NOT DEPLOYED
+
+The original closed-flat broker check lets Neon idle, but by design
+stops the Neon heartbeat, so the independent database-only monitor
+treats that as lost supervision. This **has NOT been made safe by
+silencing or relaxing the database heartbeat gate**.
+
+Added a **separate Cloudflare Worker + D1 prototype** in
+[`ops/cloudflare-liveness/`](../ops/cloudflare-liveness/README.md),
+plus `bot/paper_external_liveness.py`. Its authenticated POST
+carries ONLY current process ID, increasing tick sequence and one of
+three explicit read-only observation states:
+`read_only_poll_ok`, `closed_flat_idle` or `poll_failed`.
+A single D1 row rejects replay/competing fresh workers. A separate
+one-minute scheduled Cloudflare check emits fixed critical messages
+to a private NTFY topic if the signal is missing, stale (>120s)
+or says the poll failed; a confirmed 2xx is recorded for one-hour
+alert deduplication. It does **NOT** prove a broker stop is live.
+
+The staged Python supervisor CLI accepts `--external-liveness`
+only with private `PAPER_EXTERNAL_LIVENESS_URL` and
+`PAPER_EXTERNAL_LIVENESS_TOKEN` settings and refuses to use
+`--idle-neon-when-broker-closed-flat` unless this separate
+liveness sink is configured. A delivery failure fails closed and
+invalidates the in-process flat baseline rather than permitting
+indefinite Neon-silent idle. No default-mode behavior or broker
+submission permissions changed.
+
+The repository CI exercises the HTTP/SQL/cron protocol through
+Node built-in offline tests, plus Python synthetic sender/loop tests.
+**No Cloudflare account, D1 database, Worker, cron, ntfy receiver,
+Python host, secrets, paid service or real notification was created,
+configured or deployed.** Cloudflare Free quotas and its scheduled
+check are best-effort, not a strict <=120-second alert guarantee.
+Even once deployed, this would be supplementary process-liveness
+evidence, not proof sufficient to satisfy every execution
+readiness control or change the Neon watchdog gate.
