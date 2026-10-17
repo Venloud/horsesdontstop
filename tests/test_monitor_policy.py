@@ -182,3 +182,26 @@ def test_missing_reconciliation_fields_refuse_idle():
         del p["reconciliation"][missing]
         report = assess_read_only_report(p, now=NOW)
         assert report.level == "critical"
+
+
+def test_unreleased_independent_evidence_is_expected_observer_only():
+    # These default-False executor proof gates are not evidence that the
+    # observer failed; they must NEVER authorize an executor either.
+    report = clean_report()
+    report["safety_blockers"].extend([
+        "external_cash_flows_unverified",
+        "equity_history_unverified",
+        "nyse_calendar_unverified",
+    ])
+    incident = assess_read_only_report(report, now=NOW)
+    assert incident.level == "idle"
+    assert report["can_submit_orders"] is False
+
+
+@pytest.mark.parametrize("bad_writes", [False, True, None, "0", 0.0, -1])
+def test_noninteger_or_nonzero_broker_write_count_is_critical(bad_writes):
+    report = clean_report()
+    report["broker_write_operations"] = bad_writes
+    incident = assess_read_only_report(report, now=NOW)
+    assert incident.level == "critical"
+    assert incident.code == "unexpected_broker_write"

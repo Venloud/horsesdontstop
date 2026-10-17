@@ -18,7 +18,7 @@ from .monitor_policy import assess_read_only_report, unverified_incident
 from .monitor_notify import NotificationThrottle, NotificationError
 from .paper_reconcile import reconcile_observation
 from .paper_safety import (
-    PAPER_ENDPOINT, PaperSafetyState, execution_blockers, money,
+    PAPER_ENDPOINT, PaperSafetyState, TradeBlocked, execution_blockers, money,
 )
 from .paper_store import PostgresPaperJournal
 
@@ -55,6 +55,13 @@ def read_only_tick(trading_client, journal, *, now=None) -> dict:
         new_york_regular_open_utc(now), now)
     account = trading_client.get_account()
     clock = trading_client.get_clock()
+    market_open = getattr(clock, "is_open", None)
+    account_blocked = getattr(account, "trading_blocked", None)
+    if type(market_open) is not bool or type(account_blocked) is not bool:
+        # A read-only health report cannot silently coerce an unknown
+        # broker state to False or True. Propagate a sanitized failure;
+        # the watchdog emits a CRITICAL unverifiable-state incident.
+        raise TradeBlocked("Broker market/account status flags unverified")
     positions = trading_client.get_all_positions()
     # Filled/accepted durable parent intents are absent from the
     # unresolved-only ledger. Fetch their immutable original stop terms
@@ -85,8 +92,8 @@ def read_only_tick(trading_client, journal, *, now=None) -> dict:
         if peak_equity is not None else None,
         open_positions=len(positions),
         open_orders=len(open_orders),
-        market_open=bool(clock.is_open),
-        trading_blocked=bool(getattr(account, "trading_blocked", True)),
+        market_open=market_open,
+        trading_blocked=account_blocked,
         recent_quote_seconds=None,  # no consolidated real-time quote
         durable_journal_healthy=True,
         reconciled_with_broker=audit.consistent,

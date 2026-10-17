@@ -232,3 +232,33 @@ def test_missing_or_saturated_durable_stop_records_never_claim_coverage():
                 for i in range(501)
             ]))
     assert "get_orders_open" not in broker.calls
+
+
+@pytest.mark.parametrize("market, account_blocked", [
+    (None, False), ("false", False), (1, False),
+    (True, None), (True, "false"), (True, 0),
+])
+def test_nonboolean_alpaca_broker_state_fails_entire_readonly_poll(
+        market, account_blocked):
+    from bot.paper_safety import TradeBlocked
+
+    broker = FakeBroker(clock_open=market)
+    original_get = broker.get_account
+
+    def unsafe_account():
+        account = original_get()
+        account.trading_blocked = account_blocked
+        return account
+
+    broker.get_account = unsafe_account
+    with pytest.raises(TradeBlocked, match="flags unverified"):
+        read_only_tick(broker, FakeJournal())
+    assert "get_all_positions" not in broker.calls
+    assert "get_orders_open" not in broker.calls
+
+
+def test_exact_broker_flags_still_emit_readonly_report_only():
+    report = read_only_tick(FakeBroker(clock_open=True), FakeJournal())
+    assert report["market_open"] is True
+    assert report["code_submissions_enabled"] is False
+    assert report["broker_write_operations"] == 0
