@@ -68,3 +68,29 @@ point-in-time membership and synthetic harness checks are verified.
 The gate does **not** submit paper orders or real-money orders.
 
 **Read-only source finding:** [Alpaca coverage probe](https://github.com/Venloud/horsesdontstop/actions/runs/38126272354) observed **22 daily IEX bars per sampled ticker in June 2022 and September 2026**, **0 for October 2016** (SPY/AAPL/XLK), and **22 for historical FRC in June 2022**. These short windows do not prove 10-year/delistings/total-return completeness. The data probe is now **manual-only**. The preferred free independent long-horizon option is QuantConnect *cloud* research; local bulk historical downloads require a separate license.
+
+
+## Additional six Trader Skill research capabilities (staged October 20, 2026)
+
+Six MIT source-pinned Claude/Python capabilities are integrated on the
+`integrations/trader-skill-research-20261020` branch: high-priority
+analyst, screener, news and advisory risk; medium-priority informational
+alerts and whole-share budget sizing. All six are accessible to Claude Code
+via `.claude/skills/hds-trader-*/SKILL.md` and to Python through
+`bot.trader_skill_research`. No generic broker skill or execution
+tool was installed. All outputs are explicitly **research_only**.
+
+See the [complete WHY / HOW / WHEN / WHAT audit and usage examples](
+docs/TRADER_SKILL_INTEGRATION_20261020.md), including reviews of the
+five excluded/deferred upstream skills and all 21 owner repos.
+Original MIT license, source revision, and fixture provenance are
+retained under `third_party/trader_skill/`.
+
+Offline check:
+```bash
+python -m pytest -q tests/test_trader_skill_research.py
+python -m bot.trader_skill_research --help
+```
+
+**This integration does not change PAPER order submission, strategy
+preregistration, ongoing CI schedules, Neon or broker secrets.**
