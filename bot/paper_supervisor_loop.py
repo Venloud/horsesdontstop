@@ -31,6 +31,7 @@ class SupervisorLoopReport:
     broker_order_submissions: int = 0
     neon_idle_ticks: int = 0
     external_liveness_failures: int = 0
+    alert_delivery_failures: int = 0
 
 
 def valid_observation(report, *, now=None) -> bool:
@@ -105,6 +106,7 @@ def run_supervisor_loop(
     *, fetch_read_only_report, heartbeat_writer, interval_seconds=30,
     max_ticks=0, sleeper=time.sleep, worker_id=None,
     closed_flat_broker_probe=None, external_liveness_sink=None,
+    critical_alert_sink=None,
 ) -> SupervisorLoopReport:
     """Synthetic tests can supply fake report, pulse and sleeper.
 
@@ -120,7 +122,19 @@ def run_supervisor_loop(
     if closed_flat_broker_probe is not None and external_liveness_sink is None:
         raise TradeBlocked(
             "Closed-flat Neon idle needs a separate external liveness sink")
-    ticks = healthy = blocked = neon_idle = liveness_failures = 0
+    ticks = healthy = blocked = neon_idle = liveness_failures = alert_failures = 0
+
+    def alarm(code):
+        nonlocal alert_failures
+        if critical_alert_sink is None:
+            return
+        try:
+            if critical_alert_sink(code) is not True:
+                raise TradeBlocked("Critical alert unacknowledged")
+        except Exception:
+            alert_failures += 1
+            print("PAPER CRITICAL ALERT DELIVERY FAILED; manual review needed.",
+                  file=sys.stderr)
     # After a restart, no cached status can replace a fresh broker AND
     # durable-journal read. Any failed poll invalidates this baseline.
     previously_verified_flat = False
@@ -161,6 +175,7 @@ def run_supervisor_loop(
             else:
                 previously_verified_flat = False
                 blocked += 1
+                alarm("supervisor_poll_or_lease_failed")
                 print("PAPER READ-ONLY SUPERVISOR: unhealthy/unknown; "
                       "NO trading permission.", file=sys.stderr)
         if external_liveness_sink is not None:
@@ -174,13 +189,15 @@ def run_supervisor_loop(
                 # safe off-hours idle. No exception details may reach logs.
                 previously_verified_flat = False
                 liveness_failures += 1
+                alarm("external_liveness_unverified")
                 print("PAPER LIVENESS: EXTERNAL SIGNAL UNVERIFIED; "
                       "NO trading permission.", file=sys.stderr)
         if max_ticks == 0 or ticks < max_ticks:
             sleeper(interval_seconds)
     return SupervisorLoopReport(
         ticks, healthy, blocked, neon_idle_ticks=neon_idle,
-        external_liveness_failures=liveness_failures)
+        external_liveness_failures=liveness_failures,
+        alert_delivery_failures=alert_failures)
 
 
 def main() -> int:
@@ -203,6 +220,24 @@ def main() -> int:
              "required for Neon idle, never authorizes orders")
     args = parser.parse_args()
     load_dotenv()
+    from .monitor_notify import NotificationThrottle, validate_topic
+    from .monitor_policy import make_incident
+
+    # Without a private subscribed notification topic, a host must not
+    # masquerade as supervised operation. A dead process needs an additional
+    # independent heartbeat receiver, not just this in-process transport.
+    try:
+        topic = validate_topic(os.getenv("PAPER_MONITOR_NTFY_TOPIC"))
+    except Exception:
+        print("BLOCKED: independent alert topic unavailable.", file=sys.stderr)
+        return 2
+    throttle = NotificationThrottle(cooldown_seconds=3600)
+
+    def send_supervisor_alarm(code):
+        incident = make_incident("critical", "unverifiable", (code,))
+        return throttle.maybe_send(
+            incident, topic=topic, now_seconds=time.monotonic()) or (
+                incident.fingerprint in throttle.last_sent)
     if args.idle_neon_when_broker_closed_flat and not args.external_liveness:
         print("BLOCKED: Neon idle requires external liveness signal.",
               file=sys.stderr)
@@ -239,13 +274,15 @@ def main() -> int:
             max_ticks=args.max_ticks,
             closed_flat_broker_probe=closed_flat_probe,
             external_liveness_sink=liveness_sink,
+            critical_alert_sink=send_supervisor_alarm,
         )
     except Exception:
         print("BLOCKED: cannot operate a verified PAPER read-only worker; "
               "no broker orders.", file=sys.stderr)
         return 2
     return 0 if (outcome.blocked_polls == 0
-                 and outcome.external_liveness_failures == 0) else 2
+                 and outcome.external_liveness_failures == 0
+                 and outcome.alert_delivery_failures == 0) else 2
 
 
 if __name__ == "__main__":
