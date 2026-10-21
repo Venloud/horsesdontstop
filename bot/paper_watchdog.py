@@ -82,6 +82,23 @@ def read_only_tick(trading_client, journal, *, now=None) -> dict:
     audit = reconcile_observation(
         positions, [*open_orders, *recent_closed], unresolved,
         order_fetch_complete=complete, approved_stops=durable_stops)
+    broker_nested_verified = None
+    if positions:
+        # The list-orders response is not enough proof after a fill.
+        # Independently GET each durable parent's CURRENT nested child
+        # by exact client-ID. Missing/unknown broker evidence blocks.
+        from dataclasses import replace
+        from .paper_post_fill_confirmation import confirm_nested_filled_stops
+        unresolved_symbols = confirm_nested_filled_stops(
+            trading_client, positions, durable_stops or [])
+        broker_nested_verified = not unresolved_symbols
+        if unresolved_symbols:
+            audit = replace(
+                audit, consistent=False,
+                blockers=tuple(dict.fromkeys((*audit.blockers,
+                    "broker_client_id_nested_stop_unverified"))),
+                uncovered_symbols=tuple(sorted(set((*audit.uncovered_symbols,
+                                                    *unresolved_symbols)))))
 
     state = PaperSafetyState(
         equity=float(money(account.equity)),
@@ -121,6 +138,7 @@ def read_only_tick(trading_client, journal, *, now=None) -> dict:
         "journal_submissions_enabled": control.submissions_enabled,
         "code_submissions_enabled": False,
         "reconciliation": audit.to_dict(),
+        "broker_nested_stop_verified": broker_nested_verified,
         "safety_blockers": blockers,
         "can_submit_orders": False,
         "broker_write_operations": 0,

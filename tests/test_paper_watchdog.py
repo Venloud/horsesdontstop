@@ -84,6 +84,22 @@ class FakeBroker:
             return self.closed_orders
         raise AssertionError("Unexpected broker request")
 
+    def get_order_by_client_id(self, client_order_id):
+        self.calls.append("get_order_by_client_id")
+        candidates = [*self.closed_orders, *self.open_orders]
+        for item in candidates:
+            if getattr(item, "client_order_id", None) == client_order_id:
+                return item
+        raise RuntimeError("Synthetic broker order not found")
+
+    def get_order_by_id(self, order_id, *, filter):
+        self.calls.append("get_order_by_id")
+        assert filter.nested is True
+        for item in [*self.closed_orders, *self.open_orders]:
+            if str(getattr(item, "id", None)) == str(order_id):
+                return item
+        raise RuntimeError("Synthetic nested order not found")
+
     def submit_order(self, *_args, **_kwargs):
         raise AssertionError("NO broker order may be submitted")
 
@@ -195,6 +211,7 @@ def test_read_only_watchdog_compares_original_neon_stop_terms():
     parent = SimpleNamespace(
         id="parent-1", client_order_id="hds-F", status="filled",
         order_class="oto", symbol="F", qty="2", filled_qty="2",
+        time_in_force="day",
         side="buy", type="limit", legs=[stop],
     )
     pos = SimpleNamespace(symbol="F", qty="2")
@@ -206,6 +223,7 @@ def test_read_only_watchdog_compares_original_neon_stop_terms():
         journal)
     assert "read_approved_stop_intents" in journal.calls
     assert report["reconciliation"]["uncovered_symbols"] == []
+    assert report["broker_nested_stop_verified"] is True
     assert report["can_submit_orders"] is False
 
     altered = FakeJournal(
@@ -262,3 +280,31 @@ def test_exact_broker_flags_still_emit_readonly_report_only():
     assert report["market_open"] is True
     assert report["code_submissions_enabled"] is False
     assert report["broker_write_operations"] == 0
+
+
+def test_broker_nested_stop_must_be_refetched_not_only_in_order_list():
+    stop = SimpleNamespace(id="child-1", status="new", symbol="F", qty="2",
+                           filled_qty="0", side="sell", type="stop",
+                           time_in_force="gtc", parent_order_id="parent-1",
+                           stop_price="24", legs=[])
+    parent = SimpleNamespace(id="parent-1", client_order_id="hds-F",
+                             status="filled", order_class="oto",
+                             time_in_force="day", symbol="F", qty="2",
+                             filled_qty="2", side="buy", type="limit", legs=[stop])
+    pos = SimpleNamespace(symbol="F", qty="2")
+    approval = ("hds-F", "filled", "F", 2, 24, "parent-1")
+    class ChangingBroker(FakeBroker):
+        def get_order_by_id(self, order_id, *, filter):
+            self.calls.append("get_order_by_id")
+            # The previously observed stop was canceled after listing.
+            changed = SimpleNamespace(**vars(stop))
+            changed.status = "canceled"
+            return SimpleNamespace(**{**vars(parent), "legs": [changed]})
+    broker = ChangingBroker(positions=[pos], open_orders=[stop],
+                            closed_orders=[parent])
+    report = read_only_tick(broker, FakeJournal(approved_stops=[approval]))
+    assert report["broker_nested_stop_verified"] is False
+    assert "broker_client_id_nested_stop_unverified" in report["safety_blockers"]
+    assert report["reconciliation"]["uncovered_symbols"] == ["F"]
+    assert "get_order_by_client_id" in broker.calls
+    assert "get_order_by_id" in broker.calls
