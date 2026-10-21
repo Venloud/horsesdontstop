@@ -41,7 +41,10 @@ def inspect_equity_window(*, trading, journal, now, clock):
     if opening_window(now) is not None:
         return snapshot_one_opening(trading, journal, now=now,
                                     after_read_now=clock())
-    if local.weekday() > 4 or not (local.hour == 9 and 35 <= local.minute < 37):
+    # Check for a missed baseline for the ENTIRE open broker session. A
+    # restarted service at noon must not hide the missed opening alert.
+    minutes = local.hour * 60 + local.minute
+    if local.weekday() > 4 or not (9 * 60 + 35 <= minutes < 16 * 60):
         return "outside_opening_window"
     try:
         broker_open = getattr(trading.get_clock(), "is_open", None)
@@ -71,12 +74,19 @@ def run_equity_daemon(*, trading, journal, clock=None, sleeper=time.sleep,
     while max_ticks == 0 or ticks < max_ticks:
         ticks += 1
         current = clock()
-        try:
-            result = inspect_equity_window(
-                trading=trading, journal=journal, now=current, clock=clock)
-        except Exception:
-            result = "unverifiable_opening_equity"
+        if not isinstance(current, datetime) or current.tzinfo is None:
+            # No stable session identity exists without an aware clock.
+            # Do not write a guessed row or suppress a failed collector.
+            raise TradeBlocked("Sampler clock unavailable or naive")
         day = current.astimezone(NY).date().isoformat()
+        if day in confirmed_days:
+            result = "confirmed"  # immutable verified row within this process
+        else:
+            try:
+                result = inspect_equity_window(
+                    trading=trading, journal=journal, now=current, clock=clock)
+            except Exception:
+                result = "unverifiable_opening_equity"
         if getattr(result, "state", None) in ("recorded", "already_recorded") or result == "confirmed":
             confirmed_days.add(day)
             missed_days.discard(day)

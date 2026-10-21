@@ -111,3 +111,35 @@ def test_no_alert_transport_is_not_silent_success():
         clock=lambda: OPEN + timedelta(minutes=5),
         sleeper=lambda _s: None, max_ticks=1)
     assert result.alert_delivery_failures == 1
+
+
+def test_missing_baseline_alert_survives_noon_restarts():
+    noon = OPEN + timedelta(hours=2, minutes=35)
+    b, j = Broker(), Journal()
+    assert inspect_equity_window(trading=b, journal=j, now=noon,
+                                 clock=lambda: noon) == "missing_opening_equity"
+    notified = []
+    result = run_equity_daemon(
+        trading=b, journal=j, clock=lambda: noon, max_ticks=1,
+        critical_alert_sink=lambda code: notified.append(code) or True)
+    assert result.missed_sessions == 1
+    assert notified == ["missing_opening_equity"]
+
+
+def test_verified_baseline_is_cached_after_read_only_proof():
+    at = OPEN + timedelta(minutes=5)
+    later = OPEN + timedelta(minutes=10)
+    b, j = Broker(), Journal(exists=True)
+    dates = iter([at, later])
+    result = run_equity_daemon(
+        trading=b, journal=j, clock=lambda: next(dates),
+        sleeper=lambda _s: None, max_ticks=2,
+        critical_alert_sink=lambda _: True)
+    assert result.confirmed_sessions == 1
+    assert b.calls == ["clock"]
+
+
+def test_naive_sampler_clock_rejected_before_broker_or_db_calls():
+    with pytest.raises(TradeBlocked, match="clock unavailable or naive"):
+        run_equity_daemon(trading=Broker(), journal=Journal(),
+                          max_ticks=1, clock=lambda: datetime(2026,10,20,13,30))

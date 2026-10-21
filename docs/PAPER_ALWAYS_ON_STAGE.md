@@ -46,7 +46,7 @@ and testing a real notification on a private device. Do not enable
 The equity process checks every 15 seconds. It writes at most one actual
 broker-observed row during **09:30 to 09:34:59 New York** on weekdays,
 and the journal rechecks the **database server** time before INSERT.
-Between 09:35 and 09:36:59, if the broker market is open it checks the
+From 09:35 until regular market close, if the broker market is open it checks the
 durable opening row and alerts if missing; there is no late backfill.
 A missing baseline blocks all execution. The daemon cannot alone
 attest complete historical equity or audited external cash flows.
