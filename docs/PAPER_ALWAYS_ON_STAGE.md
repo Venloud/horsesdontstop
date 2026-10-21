@@ -75,3 +75,16 @@ host failure, credentials, or early calendar changes.
 
 CI covers synthetic simulations, not uptime, vendor availability or
 actual broker execution.
+
+## Post-entry broker GETs
+
+During every full broker/journal poll with an open position, the watcher
+now performs a **new** `get_order_by_client_id` followed by
+`get_order_by_id(..., nested=True)` for its exact durable approved
+parent. It compares the CURRENT nested broker child against the fixed
+approved protective stop, including GTC, correct parent ID, fully
+filled parent, stop quantity and price. Any missing/unknown/rejected,
+partial, canceled or changed order creates a critical blocker in
+`reconciliation`. These GETs do not send any broker order. A successful
+paper broker GET still does not demonstrate an actual protective fill or
+promise protection from price gaps. No real filled entry exists yet.

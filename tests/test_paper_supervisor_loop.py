@@ -210,3 +210,59 @@ def test_read_only_worker_imports_no_order_submission_client():
     assert ".cancel_order(" not in source
     assert ".close_all_positions(" not in source
     assert "PAPER_ORDER_SUBMISSIONS_RELEASED = True" not in source
+
+
+def test_broker_failure_pages_and_keeps_order_release_disabled():
+    messages = []
+    writer = FakeWriter()
+    def broken():
+        raise RuntimeError("postgresql://VERY_SECRET")
+    result = run_supervisor_loop(
+        fetch_read_only_report=broken, heartbeat_writer=writer,
+        worker_id=WORKER, interval_seconds=30, max_ticks=2,
+        sleeper=lambda _s: None,
+        critical_alert_sink=lambda code: messages.append(code) or True)
+    assert result.blocked_polls == 2
+    assert result.broker_order_submissions == 0
+    assert result.alert_delivery_failures == 0
+    assert messages == ["supervisor_poll_or_lease_failed"] * 2
+    assert all(pulse[2] is False for pulse in writer.pulses)
+
+
+def test_external_deadman_failure_triggers_critical_alert():
+    observed = []
+    writer = FakeWriter()
+    result = run_supervisor_loop(
+        fetch_read_only_report=safe_report, heartbeat_writer=writer,
+        worker_id=WORKER, max_ticks=2, sleeper=lambda _s: None,
+        external_liveness_sink=lambda **_details: False,
+        critical_alert_sink=lambda code: observed.append(code) or True)
+    assert result.external_liveness_failures == 2
+    assert observed == ["supervisor_poll_or_lease_failed",
+                        "external_liveness_unverified",
+                        "external_liveness_unverified"]
+    assert result.broker_order_submissions == 0
+
+
+def test_alert_exception_is_redacted_and_cannot_claim_success(capsys):
+    def leaking(_code):
+        raise RuntimeError("https://ntfy.sh/SUPER_SECRET_TOPIC")
+    result = run_supervisor_loop(
+        fetch_read_only_report=lambda: None,
+        heartbeat_writer=FakeWriter(), worker_id=WORKER,
+        interval_seconds=30, max_ticks=1,
+        critical_alert_sink=leaking)
+    assert result.blocked_polls == 1
+    assert result.alert_delivery_failures == 1
+    assert "SUPER_SECRET_TOPIC" not in capsys.readouterr().err
+
+
+def test_healthy_second_lease_pulse_never_pages():
+    notices = []
+    result = run_supervisor_loop(
+        fetch_read_only_report=safe_report,
+        heartbeat_writer=FakeWriter(), worker_id=WORKER,
+        max_ticks=3, sleeper=lambda _s: None,
+        critical_alert_sink=lambda code: notices.append(code) or True)
+    assert result.healthy_polls == 2
+    assert notices == ["supervisor_poll_or_lease_failed"]
