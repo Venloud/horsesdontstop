@@ -1,5 +1,6 @@
 """Synthetic independent refetch of broker nested OTO stop."""
 from types import SimpleNamespace
+from datetime import datetime, timedelta, timezone
 
 from bot.paper_post_fill_confirmation import confirm_nested_filled_stops
 
@@ -94,3 +95,29 @@ def test_duplicate_durable_approval_never_passes():
     p, positions = example()
     assert confirm_nested_filled_stops(
         PaperFake(p), positions, [APPROVAL, APPROVAL]) == ("F",)
+
+
+def test_multiple_live_sells_disqualify_covered_stop_even_if_second_is_limit():
+    p, positions = example()
+    p.legs.append(item(id="other-exit", symbol="F", side="sell",
+                       type="limit", status="new", qty="2", filled_qty="0"))
+    assert confirm_nested_filled_stops(PaperFake(p), positions, [APPROVAL]) == ("F",)
+
+
+def test_pending_cancel_sibling_is_not_safe_to_ignore():
+    p, positions = example()
+    p.legs.append(item(id="other-exit", side="sell",
+                       type="stop", status="pending_cancel"))
+    assert confirm_nested_filled_stops(PaperFake(p), positions, [APPROVAL]) == ("F",)
+
+
+def test_broker_confirmed_gtc_stop_already_expired_fails_closed():
+    p, positions = example()
+    p.legs[0].expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+    assert confirm_nested_filled_stops(PaperFake(p), positions, [APPROVAL]) == ("F",)
+
+
+def test_future_broker_gtc_expiry_allows_current_stop_audit():
+    p, positions = example()
+    p.legs[0].expires_at = datetime.now(timezone.utc) + timedelta(days=10)
+    assert confirm_nested_filled_stops(PaperFake(p), positions, [APPROVAL]) == ()

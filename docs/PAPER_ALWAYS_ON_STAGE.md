@@ -88,3 +88,12 @@ partial, canceled or changed order creates a critical blocker in
 `reconciliation`. These GETs do not send any broker order. A successful
 paper broker GET still does not demonstrate an actual protective fill or
 promise protection from price gaps. No real filled entry exists yet.
+
+### GTC expiry and competing sell exits
+
+The fresh broker stop validator now rejects competing nonterminal SELL
+children (including non-stop types or pending-cancel exits) and rejects a
+reported `expires_at` that has already passed. Alpaca documents an
+aged-order policy that can automatically cancel GTC orders after 90 days:
+https://docs.alpaca.markets/us/docs/orders-at-alpaca . Current GTC
+status is *not* a guarantee of lifetime protection or price execution.

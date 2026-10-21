@@ -7,6 +7,8 @@ This is NOT a promise that a stop market fill cannot gap/slip.
 """
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 from .paper_reconcile import reconcile_observation, value
 from .paper_safety import PAPER_ENDPOINT, money
 
@@ -50,6 +52,34 @@ def confirm_nested_filled_stops(trading, positions, approvals):
                     or value(getattr(nested, "type", None)) != "limit"
                     or value(getattr(nested, "status", None)) != "filled"):
                 raise ValueError("Nested entry mismatch")
+            # Refuse a second sell exit even when it is a different
+            # order TYPE, or pending cancellation. Such a sibling may
+            # execute after the protected child and oversell shares.
+            legs = getattr(nested, "legs", None)
+            if not isinstance(legs, (list, tuple)):
+                raise ValueError("No valid nested child-order list")
+            possibly_live_sells = [
+                leg for leg in legs
+                if value(getattr(leg, "side", None)) == "sell"
+                and value(getattr(leg, "status", None))
+                    not in ("canceled", "rejected", "expired", "filled")
+            ]
+            if len(possibly_live_sells) != 1:
+                raise ValueError("Competing or missing sell child")
+            stop_leg = possibly_live_sells[0]
+            if (value(getattr(stop_leg, "type", None)) != "stop"
+                    or value(getattr(stop_leg, "time_in_force", None)) != "gtc"):
+                raise ValueError("Nested stop missing or not GTC")
+            expiry = getattr(stop_leg, "expires_at", None)
+            if expiry is not None:
+                if isinstance(expiry, str):
+                    expiry = datetime.fromisoformat(
+                        expiry.replace("Z", "+00:00"))
+                if (not isinstance(expiry, datetime)
+                        or expiry.tzinfo is None
+                        or expiry.astimezone(timezone.utc)
+                        <= datetime.now(timezone.utc)):
+                    raise ValueError("GTC stop expiration unverified")
             audit = reconcile_observation(
                 [position], [nested], [], order_fetch_complete=True,
                 approved_stops=[approved])
