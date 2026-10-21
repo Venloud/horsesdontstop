@@ -1,0 +1,21 @@
+[Unit]
+Description=HorsesDontStop PAPER observer (read-only)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=hds-observer
+Group=hds-observer
+WorkingDirectory=/opt/horsesdontstop
+EnvironmentFile=/etc/horsesdontstop/observer.env
+ExecStart=/opt/horsesdontstop/.venv/bin/python -m bot.paper_supervisor_loop --interval-seconds 30 --external-liveness
+Restart=always
+RestartSec=10
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

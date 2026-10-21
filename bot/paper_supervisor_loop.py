@@ -235,9 +235,16 @@ def main() -> int:
 
     def send_supervisor_alarm(code):
         incident = make_incident("critical", "unverifiable", (code,))
+        now = time.monotonic()
+        previous = throttle.last_sent.get(incident.fingerprint)
+        if previous is not None and 0 <= now - previous < 3600:
+            return True  # confirmed prior delivery, not a fresh network claim
         return throttle.maybe_send(
-            incident, topic=topic, now_seconds=time.monotonic()) or (
-                incident.fingerprint in throttle.last_sent)
+            incident, topic=topic, now_seconds=now) is True
+    if not args.external_liveness:
+        print("BLOCKED: independent dead-worker alert channel is required.",
+              file=sys.stderr)
+        return 2
     if args.idle_neon_when_broker_closed_flat and not args.external_liveness:
         print("BLOCKED: Neon idle requires external liveness signal.",
               file=sys.stderr)
