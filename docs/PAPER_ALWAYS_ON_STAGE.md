@@ -6,7 +6,7 @@ restricted heartbeat. The latter can only read Alpaca PAPER and insert
 time-gated equity snapshots using the restricted executor role.
 Neither component has a broker submission path or flips any trade switch.
 
-**Current state:** no production heartbeat table/role, no approved always-on
+**Current state:** no production heartbeat table or approved restricted writer role, no approved always-on
 host, no externally deployed Cloudflare receiver or actual notification
 receipt. This repository contains deployable service templates, NOT evidence
 that the services run. The default production kill remains ON and
@@ -97,3 +97,14 @@ reported `expires_at` that has already passed. Alpaca documents an
 aged-order policy that can automatically cancel GTC orders after 90 days:
 https://docs.alpaca.markets/us/docs/orders-at-alpaca . Current GTC
 status is *not* a guarantee of lifetime protection or price execution.
+
+## Production credential cleanup (October 20)
+
+Neon API-created roles automatically inherit `neon_superuser`. The
+accidentally created production role named `hds_paper_heartbeat` was
+found overprivileged on direct inspection; its password was immediately
+rotated. The connector blocked deletion and SQL privilege reductions,
+so **delete that unused role manually in Neon's production branch**.
+It must never be used as the heartbeat writer. Any future least-privileged
+role must be created using SQL and separately verified. Source and
+runtime trading kill switches have not been lifted.
