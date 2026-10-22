@@ -157,6 +157,7 @@ def _verify_paper_market_session(trading, clock, *, now):
     """
     from zoneinfo import ZoneInfo
     from alpaca.trading.requests import GetCalendarRequest
+    from alpaca.trading.models import Calendar
 
     if not isinstance(now, datetime) or now.tzinfo is None:
         raise TradeBlocked("Missing timezone-aware PAPER execution clock")
@@ -174,8 +175,19 @@ def _verify_paper_market_session(trading, clock, *, now):
     opens = getattr(session, "open", None)
     closes = getattr(session, "close", None)
     broker_close = getattr(clock, "next_close", None)
-    if any(not isinstance(d, datetime) or d.tzinfo is None
-           or d.utcoffset() is None for d in (opens, closes, broker_close)):
+    if any(not isinstance(d, datetime) for d in (opens, closes, broker_close)):
+        raise TradeBlocked("Alpaca calendar/clock missing session datetimes")
+    # alpaca-py Calendar creates NAIVE New York wall-time datetimes from
+    # API date + HH:MM strings. Interpret them as NY only for genuine
+    # Calendar models, never as the machine's local timezone or as UTC.
+    ny_zone = ZoneInfo("America/New_York")
+    if isinstance(session, Calendar):
+        if opens.tzinfo is None:
+            opens = opens.replace(tzinfo=ny_zone)
+        if closes.tzinfo is None:
+            closes = closes.replace(tzinfo=ny_zone)
+    if any(d.tzinfo is None or d.utcoffset() is None
+           for d in (opens, closes, broker_close)):
         raise TradeBlocked("Alpaca calendar/clock lacks timezone-aware session times")
     open_utc = opens.astimezone(timezone.utc)
     close_utc = closes.astimezone(timezone.utc)
