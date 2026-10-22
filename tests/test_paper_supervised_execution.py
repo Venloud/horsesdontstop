@@ -506,3 +506,37 @@ def test_calendar_fetch_error_redacts_untrusted_broker_details(monkeypatch):
         execute(p, broker=broker, journal=journal)
     assert "SENSITIVE_BROKER_TOKEN" not in str(exc.value)
     assert broker.sent == [] and journal.calls == []
+
+
+def test_real_alpaca_sdk_calendar_naive_ny_open_close_is_normalized():
+    # alpaca-py Calendar constructs naive datetimes from date + HH:MM.
+    from alpaca.trading.models import Calendar
+    from zoneinfo import ZoneInfo
+    local = ZoneInfo("America/New_York")
+    session = Calendar(date="2026-11-27", open="09:30", close="13:00")
+    assert session.open.tzinfo is None and session.close.tzinfo is None
+    broker = FakeBroker(preview())
+    broker.get_calendar = lambda _filter: [session]
+    clock = SimpleNamespace(
+        is_open=True,
+        next_close=datetime(2026, 11, 27, 13, 0, tzinfo=local)
+    )
+    assert entry._verify_paper_market_session(
+        broker, clock, now=datetime(2026, 11, 27, 12, 29, tzinfo=local))
+    with pytest.raises(TradeBlocked, match="too close"):
+        entry._verify_paper_market_session(
+            broker, clock, now=datetime(2026, 11, 27, 12, 30, tzinfo=local))
+
+
+def test_real_alpaca_sdk_calendar_date_must_match_local_market_day():
+    from alpaca.trading.models import Calendar
+    from zoneinfo import ZoneInfo
+    local = ZoneInfo("America/New_York")
+    session = Calendar(date="2026-11-27", open="09:30", close="13:00")
+    broker = FakeBroker(preview())
+    broker.get_calendar = lambda _filter: [session]
+    with pytest.raises(TradeBlocked, match="date mismatch"):
+        entry._verify_paper_market_session(
+            broker, SimpleNamespace(next_close=datetime(
+                2026, 11, 30, 16, 0, tzinfo=local)),
+            now=datetime(2026, 11, 30, 10, 0, tzinfo=local))
