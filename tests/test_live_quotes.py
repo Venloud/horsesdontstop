@@ -125,3 +125,32 @@ def test_modified_nonpreview_request_denied():
     with pytest.raises(TradeBlocked):
         build_live_protected_oto_request(
             replace(p, order_time_in_force="gtc"))
+
+
+@pytest.mark.parametrize("hour,minute", [
+    (15, 30), (15, 58), (16, 0), (9, 29),
+])
+def test_preview_refuses_last_regular_half_hour_or_premarket(hour, minute):
+    from zoneinfo import ZoneInfo
+    local = datetime(2026, 10, 21, hour, minute,
+                     tzinfo=ZoneInfo("America/New_York"))
+    at = local.astimezone(timezone.utc)
+    q = SimpleNamespace(timestamp=at, bid_price=49.98, ask_price=50.00,
+                        bid_size=5, ask_size=5)
+    with pytest.raises(TradeBlocked, match="safe regular-session window"):
+        preview_live_paper_entry(symbol="DIS", quote=q, equity=500,
+                                 available_cash=500, now=at,
+                                 market_open=True)
+
+
+def test_regular_session_preview_before_cutoff_is_still_read_only():
+    from zoneinfo import ZoneInfo
+    local = datetime(2026, 10, 21, 15, 29,
+                     tzinfo=ZoneInfo("America/New_York"))
+    at = local.astimezone(timezone.utc)
+    q = SimpleNamespace(timestamp=at, bid_price=49.98, ask_price=50.00,
+                        bid_size=5, ask_size=5)
+    result = preview_live_paper_entry(symbol="DIS", quote=q, equity=500,
+                                      available_cash=500, now=at,
+                                      market_open=True)
+    assert result.order_submission_enabled is False

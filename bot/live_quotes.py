@@ -6,9 +6,10 @@ reservation, real-time execution gate and monitored broker reconciliation.
 IEX quotes cover one exchange, not consolidated NBBO/SIP.
 """
 from dataclasses import asdict, dataclass
-from datetime import date, datetime, timezone
+from datetime import date, datetime, time, timezone
 from decimal import Decimal, InvalidOperation, ROUND_DOWN, ROUND_UP
 import re
+from zoneinfo import ZoneInfo
 
 from .paper_safety import TradeBlocked, make_client_order_id, money
 
@@ -86,6 +87,14 @@ def preview_live_paper_entry(
         raise TradeBlocked("Missing timezone-aware clock")
     if market_open is not True:
         raise TradeBlocked("NYSE regular session not confirmed open")
+    # An upstream is_open flag alone is not an entry deadline. DAY entries
+    # must not be previewed at the last moment before regular close.
+    # This conservatively blocks all times outside 09:30-15:30 ET.
+    # Early-close days still require an independently verified NYSE calendar
+    # and a stricter session-specific deadline before ANY order release.
+    ny_clock = now.astimezone(ZoneInfo("America/New_York")).time()
+    if not time(9, 30) <= ny_clock < time(15, 30):
+        raise TradeBlocked("PAPER entry outside safe regular-session window")
     if not isinstance(max_quote_age_seconds, int) or not 1 <= max_quote_age_seconds <= 60:
         raise TradeBlocked("Invalid quote freshness tolerance")
     quote_ts = getattr(quote, "timestamp", None)
@@ -127,7 +136,6 @@ def preview_live_paper_entry(
     if shares < 1:
         raise TradeBlocked("No affordable whole share at 1% risk and current spread")
     # Deterministic symbol/day ID, derived from New York clock, not server UTC.
-    from zoneinfo import ZoneInfo
     session_day = now.astimezone(ZoneInfo("America/New_York")).date()
     cid = make_client_order_id(session_day, symbol)
     return LivePaperEntryPreview(
@@ -150,9 +158,11 @@ def preview_live_paper_entry(
 def build_live_protected_oto_request(preview: LivePaperEntryPreview):
     """Return Alpaca SDK OTO LIMIT BUY request. DO NOT SEND.
 
-    DAY limit buys cannot remain indefinitely pending overnight; the GTC
-    child stop is broker-side protection once the parent is filled.
-    The stop is not guaranteed to fill at its stop price.
+    DAY entry buys expire at close when unfilled, but this request DOES NOT
+    specify a separate child stop time-in-force. Never assume the child
+    is GTC, stays active overnight, or guarantees gap protection.
+    Real broker stop lifecycle evidence and independent supervision
+    are mandatory before any PAPER order release.
     """
     from alpaca.trading.enums import OrderClass, OrderSide, TimeInForce
     from alpaca.trading.requests import LimitOrderRequest, StopLossRequest
