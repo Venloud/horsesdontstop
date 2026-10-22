@@ -90,7 +90,20 @@ class FakeBroker:
 
     def get_clock(self):
         self.calls.append("get_clock")
-        return SimpleNamespace(is_open=self.clock_open)
+        return SimpleNamespace(
+            is_open=self.clock_open,
+            next_close=datetime(2026, 10, 12, 20, tzinfo=timezone.utc)
+        )
+
+    def get_calendar(self, filters):
+        self.calls.append("get_calendar")
+        assert filters.start == NOW.date()
+        assert filters.end == NOW.date()
+        return [SimpleNamespace(
+            date=NOW.date(),
+            open=datetime(2026, 10, 12, 13, 30, tzinfo=timezone.utc),
+            close=datetime(2026, 10, 12, 20, tzinfo=timezone.utc),
+        )]
 
     def get_all_positions(self):
         self.calls.append("get_all_positions")
@@ -405,3 +418,125 @@ def test_nonboolean_broker_trading_blocked_refused_before_reservation(
         execute(p, broker=broker, journal=journal)
     assert journal.calls == []
     assert broker.sent == []
+
+
+def test_calendar_holiday_refuses_without_reservation_or_order(monkeypatch):
+    monkeypatch.setattr(entry, "PAPER_ORDER_SUBMISSIONS_RELEASED", True)
+    p = preview()
+    broker, journal = FakeBroker(p), FakeJournal()
+    broker.get_calendar = lambda _filters: []  # holiday, or unavailable session
+    with pytest.raises(TradeBlocked, match="session not verified"):
+        execute(p, broker=broker, journal=journal)
+    assert broker.sent == [] and journal.calls == []
+
+
+def test_calendar_mismatch_refuses_even_if_clock_claims_open(monkeypatch):
+    monkeypatch.setattr(entry, "PAPER_ORDER_SUBMISSIONS_RELEASED", True)
+    p = preview()
+    broker, journal = FakeBroker(p), FakeJournal()
+    broker.get_calendar = lambda _filters: [SimpleNamespace(
+        date=NOW.date(),
+        open=datetime(2026, 10, 12, 13, 30, tzinfo=timezone.utc),
+        close=datetime(2026, 10, 12, 18, tzinfo=timezone.utc),
+    )]
+    with pytest.raises(TradeBlocked, match="disagree"):
+        execute(p, broker=broker, journal=journal)
+    assert broker.sent == [] and journal.calls == []
+
+
+def test_calendar_missing_or_naive_time_refuses(monkeypatch):
+    monkeypatch.setattr(entry, "PAPER_ORDER_SUBMISSIONS_RELEASED", True)
+    p = preview()
+    broker, journal = FakeBroker(p), FakeJournal()
+    broker.get_calendar = lambda _filters: [SimpleNamespace(
+        date=NOW.date(), open=datetime(2026, 10, 12, 9, 30),
+        close=datetime(2026, 10, 12, 16, 0),
+    )]
+    with pytest.raises(TradeBlocked, match="timezone-aware"):
+        execute(p, broker=broker, journal=journal)
+    assert broker.sent == [] and journal.calls == []
+
+
+def test_calendar_early_close_allows_before_1230_blocks_1230_and_later():
+    # Offline synthetic half-day; exact NY local time is controlled.
+    from zoneinfo import ZoneInfo
+    local = ZoneInfo("America/New_York")
+    day = datetime(2026, 11, 27, 12, 30, tzinfo=local).date()
+    early_open = datetime(2026, 11, 27, 9, 30, tzinfo=local)
+    early_close = datetime(2026, 11, 27, 13, 0, tzinfo=local)
+    broker = FakeBroker(preview())
+    def calendar(filters):
+        assert filters.start == day and filters.end == day
+        return [SimpleNamespace(date=day, open=early_open, close=early_close)]
+    broker.get_calendar = calendar
+    clock = SimpleNamespace(next_close=early_close, is_open=True)
+    before = datetime(2026, 11, 27, 12, 29, tzinfo=local)
+    at = datetime(2026, 11, 27, 12, 30, tzinfo=local)
+    assert entry._verify_paper_market_session(broker, clock, now=before)
+    with pytest.raises(TradeBlocked, match="too close"):
+        entry._verify_paper_market_session(broker, clock, now=at)
+
+
+def test_calendar_post_dst_regular_close_verified_in_local_time():
+    # NY standard time opens 14:30 UTC and closes 21:00 UTC in November.
+    from zoneinfo import ZoneInfo
+    local = ZoneInfo("America/New_York")
+    day = datetime(2026, 11, 2, 10, 0, tzinfo=local).date()
+    opens = datetime(2026, 11, 2, 9, 30, tzinfo=local)
+    closes = datetime(2026, 11, 2, 16, 0, tzinfo=local)
+    broker = FakeBroker(preview())
+    broker.get_calendar = lambda f: [SimpleNamespace(date=day, open=opens, close=closes)]
+    assert entry._verify_paper_market_session(
+        broker, SimpleNamespace(next_close=closes),
+        now=datetime(2026, 11, 2, 10, 0, tzinfo=local))
+    with pytest.raises(TradeBlocked, match="too close"):
+        entry._verify_paper_market_session(
+            broker, SimpleNamespace(next_close=closes),
+            now=datetime(2026, 11, 2, 15, 30, tzinfo=local))
+
+
+def test_calendar_fetch_error_redacts_untrusted_broker_details(monkeypatch):
+    monkeypatch.setattr(entry, "PAPER_ORDER_SUBMISSIONS_RELEASED", True)
+    p = preview()
+    broker, journal = FakeBroker(p), FakeJournal()
+    def broken(_filters):
+        raise RuntimeError("SENSITIVE_BROKER_TOKEN")
+    broker.get_calendar = broken
+    with pytest.raises(TradeBlocked) as exc:
+        execute(p, broker=broker, journal=journal)
+    assert "SENSITIVE_BROKER_TOKEN" not in str(exc.value)
+    assert broker.sent == [] and journal.calls == []
+
+
+def test_real_alpaca_sdk_calendar_naive_ny_open_close_is_normalized():
+    # alpaca-py Calendar constructs naive datetimes from date + HH:MM.
+    from alpaca.trading.models import Calendar
+    from zoneinfo import ZoneInfo
+    local = ZoneInfo("America/New_York")
+    session = Calendar(date="2026-11-27", open="09:30", close="13:00")
+    assert session.open.tzinfo is None and session.close.tzinfo is None
+    broker = FakeBroker(preview())
+    broker.get_calendar = lambda _filter: [session]
+    clock = SimpleNamespace(
+        is_open=True,
+        next_close=datetime(2026, 11, 27, 13, 0, tzinfo=local)
+    )
+    assert entry._verify_paper_market_session(
+        broker, clock, now=datetime(2026, 11, 27, 12, 29, tzinfo=local))
+    with pytest.raises(TradeBlocked, match="too close"):
+        entry._verify_paper_market_session(
+            broker, clock, now=datetime(2026, 11, 27, 12, 30, tzinfo=local))
+
+
+def test_real_alpaca_sdk_calendar_date_must_match_local_market_day():
+    from alpaca.trading.models import Calendar
+    from zoneinfo import ZoneInfo
+    local = ZoneInfo("America/New_York")
+    session = Calendar(date="2026-11-27", open="09:30", close="13:00")
+    broker = FakeBroker(preview())
+    broker.get_calendar = lambda _filter: [session]
+    with pytest.raises(TradeBlocked, match="date mismatch"):
+        entry._verify_paper_market_session(
+            broker, SimpleNamespace(next_close=datetime(
+                2026, 11, 30, 16, 0, tzinfo=local)),
+            now=datetime(2026, 11, 30, 10, 0, tzinfo=local))
