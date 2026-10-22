@@ -279,7 +279,7 @@ def diagnose_supervisor():
     """
     from alpaca.trading.client import TradingClient
     from alpaca.trading.enums import QueryOrderStatus
-    from alpaca.trading.requests import GetOrdersRequest
+    from alpaca.trading.requests import GetOrdersRequest, GetCalendarRequest
     from .paper_store import PostgresPaperJournal
     from .paper_watchdog import run_once
     from .paper_external_liveness import check_liveness_settings, send_liveness
@@ -367,11 +367,23 @@ def diagnose_supervisor():
         return True
 
     def liveness():
+        import requests
         url, token = check_liveness_settings(
             os.environ.get("PAPER_EXTERNAL_LIVENESS_URL"),
             os.environ.get("PAPER_EXTERNAL_LIVENESS_TOKEN"))
-        return send_liveness(url=url, token=token, worker_id=worker_id,
-                             sequence=1, status="poll_failed") is True
+        def post(*args, **kwargs):
+            response = requests.post(*args, **kwargs)
+            state["http_status_class"] = str(response.status_code // 100) + "xx"
+            return response
+        try:
+            return send_liveness(url=url, token=token, worker_id=worker_id,
+                                 sequence=1, status="poll_failed", post=post) is True
+        except Exception:
+            if state.get("http_status_class") == "4xx":
+                raise DiagnosticFailure("HTTP_4XX") from None
+            if state.get("http_status_class") == "5xx":
+                raise DiagnosticFailure("HTTP_5XX") from None
+            raise
 
     def calendar():
         # GET same broker clock/calendar as the existing supervised
@@ -382,6 +394,17 @@ def diagnose_supervisor():
             raise DiagnosticFailure("SCHEMA_MISMATCH")
         # Closed market is a legitimate read-only observation, not an
         # authorization or diagnostic error.
+        from zoneinfo import ZoneInfo
+        today = datetime.now(timezone.utc).astimezone(
+            ZoneInfo("America/New_York")).date()
+        sessions = trading.get_calendar(
+            GetCalendarRequest(start=today, end=today))
+        if not isinstance(sessions, (tuple, list)):
+            raise DiagnosticFailure("SCHEMA_MISMATCH")
+        if not sessions:
+            raise DiagnosticFailure("MARKET_CLOSED")
+        if len(sessions) != 1 or getattr(sessions[0], "date", None) != today:
+            raise DiagnosticFailure("SCHEMA_MISMATCH")
         state["market_open"] = clock.is_open
         return True
 
