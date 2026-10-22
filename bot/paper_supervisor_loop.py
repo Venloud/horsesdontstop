@@ -361,9 +361,10 @@ def diagnose_supervisor():
         writer.assert_heartbeat_writer_only()
         # A fresh worker's first accepted heartbeat intentionally returns
         # False. It is not a healthy lease, and MUST NOT authorize trading.
+        state["observation_valid_for_pulse"] = valid_observation(state.get("report"))
         state["heartbeat_accepted"] = writer.pulse(
             worker_id=worker_id, sequence=1,
-            poll_succeeded=valid_observation(state.get("report")))
+            poll_succeeded=state["observation_valid_for_pulse"])
         return True
 
     def liveness():
@@ -411,7 +412,8 @@ def diagnose_supervisor():
     def first_heartbeat():
         if "heartbeat_accepted" not in state:
             raise DiagnosticFailure("NOT_FIRST_BEAT")
-        if state["heartbeat_accepted"] is False:
+        if (state["heartbeat_accepted"] is False
+                and state.get("observation_valid_for_pulse") is True):
             return "EXPECTED_FIRST_BEAT"
         # An existing worker lease must never be mislabeled first-beat.
         raise DiagnosticFailure("NOT_FIRST_BEAT")
