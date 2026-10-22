@@ -200,6 +200,243 @@ def run_supervisor_loop(
         alert_delivery_failures=alert_failures)
 
 
+
+# Fixed diagnostic output contract. Never interpolate third-party messages.
+DIAGNOSTIC_STAGES = (
+    "required_env", "alpaca_account", "alpaca_positions_orders",
+    "neon_journal", "neon_control", "observation_freshness",
+    "reconciliation", "independent_assessment", "heartbeat",
+    "external_liveness", "nyse_calendar", "first_heartbeat",
+)
+DIAGNOSTIC_REASONS = frozenset((
+    "MISSING_ENV", "AUTH_REJECTED", "TIMEOUT", "TLS", "DNS",
+    "PERMISSION_DENIED", "SCHEMA_MISMATCH", "STALE",
+    "BLOCKERS_PRESENT", "KILL_SWITCH_ON", "MARKET_CLOSED",
+    "NOT_FIRST_BEAT", "HTTP_2XX", "HTTP_4XX", "HTTP_5XX",
+    "UNKNOWN",
+))
+
+
+class DiagnosticFailure(Exception):
+    def __init__(self, reason_code):
+        self.reason_code = (reason_code if reason_code in DIAGNOSTIC_REASONS
+                            else "UNKNOWN")
+
+
+def _diagnostic_reason(error):
+    """Classify exception TYPES only. Never inspect or emit their strings."""
+    import socket
+    import ssl
+    from requests.exceptions import ConnectionError as RequestConnectionError
+    from requests.exceptions import Timeout as RequestTimeout
+    if isinstance(error, DiagnosticFailure):
+        return error.reason_code
+    if isinstance(error, (TimeoutError, RequestTimeout)):
+        return "TIMEOUT"
+    if isinstance(error, ssl.SSLError):
+        return "TLS"
+    name = type(error).__name__
+    if name in ("InvalidPassword", "AuthenticationError", "UnauthorizedError"):
+        return "AUTH_REJECTED"
+    if name in ("InsufficientPrivilege", "InvalidAuthorizationSpecification"):
+        return "PERMISSION_DENIED"
+    if name in ("UndefinedTable", "UndefinedColumn", "DatatypeMismatch"):
+        return "SCHEMA_MISMATCH"
+    if name in ("QueryCanceled", "ConnectionTimeout"):
+        return "TIMEOUT"
+    if isinstance(error, socket.gaierror):
+        return "DNS"
+    if isinstance(error, PermissionError):
+        return "PERMISSION_DENIED"
+    # Database/HTTP drivers can embed credentials in exception messages.
+    # Do not inspect them, even to search for a status code.
+    if isinstance(error, RequestConnectionError):
+        return "UNKNOWN"
+    return "UNKNOWN"
+
+
+def run_diagnostic_stages(stages, *, printer=print):
+    """Run every stage independently. Caller supplies SAME production checks.
+
+    An exception only affects its own stage. Stage callbacks return True,
+    EXPECTED_FIRST_BEAT, or a fixed reason from DIAGNOSTIC_REASONS.
+    """
+    failed = False
+    for name in DIAGNOSTIC_STAGES:
+        try:
+            result = stages[name]()
+            if result is True:
+                line = "PASS"
+            elif name == "first_heartbeat" and result == "EXPECTED_FIRST_BEAT":
+                line = "EXPECTED_FIRST_BEAT"
+            else:
+                code = result if result in DIAGNOSTIC_REASONS else "UNKNOWN"
+                line = "FAIL " + code
+                failed = True
+        except Exception as error:
+            line = "FAIL " + _diagnostic_reason(error)
+            failed = True
+        printer("STAGE " + name + ": " + line)
+    return 2 if failed else 0
+
+
+def diagnose_supervisor():
+    """One bounded read-only inspection plus ONE restricted heartbeat write.
+
+    No DB changes other than the existing lease pulse; no broker order calls.
+    Every stage calls the same clients and validators as the regular loop.
+    """
+    from alpaca.trading.enums import QueryOrderStatus
+    from alpaca.trading.requests import GetOrdersRequest, GetCalendarRequest
+    from .paper_store import PostgresPaperJournal
+    from .paper_watchdog import run_once, make_paper_readonly_client
+    from .paper_external_liveness import check_liveness_settings, send_liveness
+    from .paper_supervised_execution import _verified_calendar_session
+    from datetime import timedelta
+
+    required = ("ALPACA_PAPER_API_KEY", "ALPACA_PAPER_SECRET_KEY",
+                "PAPER_JOURNAL_DSN", "PAPER_HEARTBEAT_DSN",
+                "PAPER_MONITOR_NTFY_TOPIC", "PAPER_EXTERNAL_LIVENESS_URL",
+                "PAPER_EXTERNAL_LIVENESS_TOKEN")
+    state = {}
+    worker_id = "paper-" + uuid4().hex
+
+    def env():
+        if any(not os.environ.get(name) for name in required):
+            raise DiagnosticFailure("MISSING_ENV")
+        return True
+
+    def client():
+        if "trading" not in state:
+            state["trading"] = make_paper_readonly_client(
+                os.environ["ALPACA_PAPER_API_KEY"],
+                os.environ["ALPACA_PAPER_SECRET_KEY"])
+        return state["trading"]
+
+    def account():
+        state["account"] = client().get_account()
+        return True
+
+    def positions_orders():
+        trading = client()
+        state["positions"] = trading.get_all_positions()
+        state["open_orders"] = trading.get_orders(
+            filter=GetOrdersRequest(status=QueryOrderStatus.OPEN,
+                                    limit=500, nested=True))
+        return True
+
+    def journal():
+        j = PostgresPaperJournal(os.environ["PAPER_JOURNAL_DSN"])
+        j.assert_monitor_only()
+        state["journal"] = j
+        return True
+
+    def control():
+        row = state["journal"].read_control()
+        state["control"] = row
+        if row.kill_switch_active is not True:
+            raise DiagnosticFailure("BLOCKERS_PRESENT")
+        if row.submissions_enabled is not False:
+            raise DiagnosticFailure("BLOCKERS_PRESENT")
+        return True
+
+    def observation():
+        # The same complete read-only observation as the regular supervisor.
+        report = run_once(output="")
+        state["report"] = report
+        dt = datetime.fromisoformat(report["observed_at_utc"].replace("Z", "+00:00"))
+        age = (datetime.now(timezone.utc) - dt.astimezone(timezone.utc)).total_seconds()
+        if not 0 <= age <= 120:
+            raise DiagnosticFailure("STALE")
+        return True
+
+    def reconciliation():
+        rec = state["report"]["reconciliation"]
+        if (rec.get("consistent") is not True
+                or rec.get("blockers") != []
+                or rec.get("uncovered_symbols") != []):
+            raise DiagnosticFailure("BLOCKERS_PRESENT")
+        return True
+
+    def assessment():
+        if not valid_observation(state["report"]):
+            raise DiagnosticFailure("BLOCKERS_PRESENT")
+        return True
+
+    def heartbeat():
+        writer = PaperWorkerHeartbeat(os.environ["PAPER_HEARTBEAT_DSN"])
+        writer.assert_heartbeat_writer_only()
+        # A fresh worker's first accepted heartbeat intentionally returns
+        # False. It is not a healthy lease, and MUST NOT authorize trading.
+        state["observation_valid_for_pulse"] = valid_observation(state.get("report"))
+        state["heartbeat_accepted"] = writer.pulse(
+            worker_id=worker_id, sequence=1,
+            poll_succeeded=state["observation_valid_for_pulse"])
+        return True
+
+    def liveness():
+        import requests
+        url, token = check_liveness_settings(
+            os.environ.get("PAPER_EXTERNAL_LIVENESS_URL"),
+            os.environ.get("PAPER_EXTERNAL_LIVENESS_TOKEN"))
+        def post(*args, **kwargs):
+            response = requests.post(*args, **kwargs)
+            state["http_status_class"] = str(response.status_code // 100) + "xx"
+            return response
+        try:
+            return send_liveness(url=url, token=token, worker_id=worker_id,
+                                 sequence=1, status="poll_failed", post=post) is True
+        except Exception:
+            if state.get("http_status_class") == "2xx":
+                raise DiagnosticFailure("HTTP_2XX") from None
+            if state.get("http_status_class") == "4xx":
+                raise DiagnosticFailure("HTTP_4XX") from None
+            if state.get("http_status_class") == "5xx":
+                raise DiagnosticFailure("HTTP_5XX") from None
+            raise
+
+    def calendar():
+        # GET same broker clock/calendar as the existing supervised
+        # execution gate, never a guessed weekday schedule.
+        trading = client()
+        clock = trading.get_clock()
+        if type(clock.is_open) is not bool:
+            raise DiagnosticFailure("SCHEMA_MISMATCH")
+        # Closed market is a legitimate read-only observation, not an
+        # authorization or diagnostic error.
+        from zoneinfo import ZoneInfo
+        today = datetime.now(timezone.utc).astimezone(
+            ZoneInfo("America/New_York")).date()
+        sessions = trading.get_calendar(
+            GetCalendarRequest(start=today, end=today))
+        if not isinstance(sessions, (tuple, list)):
+            raise DiagnosticFailure("SCHEMA_MISMATCH")
+        if not sessions:
+            raise DiagnosticFailure("MARKET_CLOSED")
+        if len(sessions) != 1 or getattr(sessions[0], "date", None) != today:
+            raise DiagnosticFailure("SCHEMA_MISMATCH")
+        state["market_open"] = clock.is_open
+        if clock.is_open is False:
+            raise DiagnosticFailure("MARKET_CLOSED")
+        return True
+
+    def first_heartbeat():
+        if "heartbeat_accepted" not in state:
+            raise DiagnosticFailure("NOT_FIRST_BEAT")
+        if (state["heartbeat_accepted"] is False
+                and state.get("observation_valid_for_pulse") is True):
+            return "EXPECTED_FIRST_BEAT"
+        # An existing worker lease must never be mislabeled first-beat.
+        raise DiagnosticFailure("NOT_FIRST_BEAT")
+
+    stages = dict(zip(DIAGNOSTIC_STAGES, (
+        env, account, positions_orders, journal, control, observation,
+        reconciliation, assessment, heartbeat, liveness, calendar,
+        first_heartbeat,
+    )))
+    return run_diagnostic_stages(stages)
+
+
 def main() -> int:
     from dotenv import load_dotenv
     from .paper_watchdog import run_once
@@ -218,8 +455,12 @@ def main() -> int:
         "--external-liveness", action="store_true",
         help="Opt-in separate Cloudflare D1 worker-liveness heartbeat; "
              "required for Neon idle, never authorizes orders")
+    parser.add_argument("--diagnose", action="store_true",
+                        help="One bounded sanitized read-only stage diagnostic")
     args = parser.parse_args()
     load_dotenv()
+    if args.diagnose:
+        return diagnose_supervisor()
     from .monitor_notify import NotificationThrottle, validate_topic
     from .monitor_policy import make_incident
 

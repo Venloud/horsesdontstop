@@ -4,7 +4,8 @@
 param(
     [ValidateRange(1, 5)]
     [int]$MaxTicks = 3,
-    [switch]$Continuous
+    [switch]$Continuous,
+    [switch]$Diagnose
 )
 
 $ErrorActionPreference = "Stop"
@@ -54,7 +55,10 @@ try {
     $env:PAPER_EXTERNAL_LIVENESS_URL = "https://horsesdontstop-liveness-staging.vancastech.workers.dev/v1/heartbeat"
 
     $runTicks = if ($Continuous) { 0 } else { $MaxTicks }
-    if ($Continuous) {
+    if ($Diagnose) {
+        Write-Host "STARTING SANITIZED PAPER READ-ONLY DIAGNOSTIC"
+    }
+    elseif ($Continuous) {
         Write-Host "STARTING CONTINUOUS PAPER READ-ONLY SUPERVISION (Ctrl+C to stop)"
     }
     else {
@@ -64,7 +68,12 @@ try {
 
     Push-Location $repo
     try {
-        & $python -m bot.paper_supervisor_loop --max-ticks $runTicks --interval-seconds 30 --external-liveness
+        if ($Diagnose) {
+            & $python -m bot.paper_supervisor_loop --diagnose --external-liveness
+        }
+        else {
+            & $python -m bot.paper_supervisor_loop --max-ticks $runTicks --interval-seconds 30 --external-liveness
+        }
         $supervisorExitCode = $LASTEXITCODE
         Write-Host "SUPERVISOR EXIT CODE: $supervisorExitCode"
     }
