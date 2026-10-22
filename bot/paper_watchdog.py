@@ -145,8 +145,13 @@ def read_only_tick(trading_client, journal, *, now=None) -> dict:
     }
 
 
-def run_once(*, output: str) -> dict:
+def make_paper_readonly_client(key, secret):
+    """Construct the existing PAPER-only TradingClient with no write operation."""
     from alpaca.trading.client import TradingClient
+    return TradingClient(key, secret, paper=True, url_override=PAPER_ENDPOINT)
+
+
+def run_once(*, output: str) -> dict:
     from dotenv import load_dotenv
 
     load_dotenv()
@@ -158,8 +163,7 @@ def run_once(*, output: str) -> dict:
     if not dsn:
         raise RuntimeError("PAPER_JOURNAL_DSN secret not configured")
     # Hard-coded PAPER endpoint. No option to use live broker credentials.
-    trading = TradingClient(
-        key, secret, paper=True, url_override=PAPER_ENDPOINT)
+    trading = make_paper_readonly_client(key, secret)
     journal = PostgresPaperJournal(dsn)
     report = read_only_tick(trading, journal)
     incident = assess_read_only_report(report)
