@@ -283,6 +283,24 @@ def run_diagnostic_stages(stages, *, printer=print):
     return 2 if failed else 0
 
 
+def diagnostic_assessment_result(report):
+    """Use the production validator and independent incident classifier."""
+    if valid_observation(report):
+        return True
+    independent = assess_read_only_report(report, max_age_seconds=120)
+    safe_codes = {
+        "missing_opening_equity": "MISSING_OPENING_EQUITY",
+        "unsafe_exposure": "UNSAFE_EXPOSURE",
+        "degraded": "DEGRADED",
+        "security_switch": "SECURITY_SWITCH",
+        "unexpected_broker_write": "UNEXPECTED_BROKER_WRITE",
+        "stale_observation": "STALE",
+    }
+    if independent.level == "idle" and independent.code == "idle":
+        return "FINGERPRINT_MISMATCH"
+    return safe_codes.get(independent.code, "BLOCKERS_PRESENT")
+
+
 def diagnostic_first_beat(prior, observation_ok, heartbeat_accepted):
     """Classify lease evidence without authorizing a healthy lease."""
     if prior == "COMPETING":
@@ -374,21 +392,10 @@ def diagnose_supervisor():
         return True
 
     def assessment():
-        report = state["report"]
-        if valid_observation(report):
-            return True
-        independent = assess_read_only_report(report, max_age_seconds=120)
-        safe_codes = {
-            "missing_opening_equity": "MISSING_OPENING_EQUITY",
-            "unsafe_exposure": "UNSAFE_EXPOSURE",
-            "degraded": "DEGRADED",
-            "security_switch": "SECURITY_SWITCH",
-            "unexpected_broker_write": "UNEXPECTED_BROKER_WRITE",
-            "stale_observation": "STALE",
-        }
-        if independent.level == "idle" and independent.code == "idle":
-            raise DiagnosticFailure("FINGERPRINT_MISMATCH")
-        raise DiagnosticFailure(safe_codes.get(independent.code, "BLOCKERS_PRESENT"))
+        reason = diagnostic_assessment_result(state["report"])
+        if reason is not True:
+            raise DiagnosticFailure(reason)
+        return True
 
     def prior_lease(writer):
         # Restricted heartbeat connection; SELECT only, never show IDs.
