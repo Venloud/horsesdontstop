@@ -380,6 +380,8 @@ def diagnose_supervisor():
             return send_liveness(url=url, token=token, worker_id=worker_id,
                                  sequence=1, status="poll_failed", post=post) is True
         except Exception:
+            if state.get("http_status_class") == "2xx":
+                raise DiagnosticFailure("HTTP_2XX") from None
             if state.get("http_status_class") == "4xx":
                 raise DiagnosticFailure("HTTP_4XX") from None
             if state.get("http_status_class") == "5xx":
