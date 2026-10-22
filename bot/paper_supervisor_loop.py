@@ -442,7 +442,12 @@ def main() -> int:
         "--external-liveness", action="store_true",
         help="Opt-in separate Cloudflare D1 worker-liveness heartbeat; "
              "required for Neon idle, never authorizes orders")
-    parser.add_argument("--diagnose", action="store_true",\n                        help="One bounded sanitized read-only stage diagnostic")\n    args = parser.parse_args()\n    load_dotenv()\n    if args.diagnose:\n        return diagnose_supervisor()
+    parser.add_argument("--diagnose", action="store_true",
+                        help="One bounded sanitized read-only stage diagnostic")
+    args = parser.parse_args()
+    load_dotenv()
+    if args.diagnose:
+        return diagnose_supervisor()
     from .monitor_notify import NotificationThrottle, validate_topic
     from .monitor_policy import make_incident
 
