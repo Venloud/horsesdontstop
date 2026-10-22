@@ -291,7 +291,6 @@ def diagnose_supervisor():
     from .paper_store import PostgresPaperJournal
     from .paper_watchdog import run_once, make_paper_readonly_client
     from .paper_external_liveness import check_liveness_settings, send_liveness
-    from .paper_supervised_execution import _verified_calendar_session
     from datetime import timedelta
 
     required = ("ALPACA_PAPER_API_KEY", "ALPACA_PAPER_SECRET_KEY",
