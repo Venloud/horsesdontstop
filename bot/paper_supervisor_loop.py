@@ -277,11 +277,10 @@ def diagnose_supervisor():
     No DB changes other than the existing lease pulse; no broker order calls.
     Every stage calls the same clients and validators as the regular loop.
     """
-    from alpaca.trading.client import TradingClient
     from alpaca.trading.enums import QueryOrderStatus
     from alpaca.trading.requests import GetOrdersRequest, GetCalendarRequest
     from .paper_store import PostgresPaperJournal
-    from .paper_watchdog import run_once
+    from .paper_watchdog import run_once, make_paper_readonly_client
     from .paper_external_liveness import check_liveness_settings, send_liveness
     from .paper_supervised_execution import _verified_calendar_session
     from datetime import timedelta
@@ -300,10 +299,9 @@ def diagnose_supervisor():
 
     def client():
         if "trading" not in state:
-            state["trading"] = TradingClient(
+            state["trading"] = make_paper_readonly_client(
                 os.environ["ALPACA_PAPER_API_KEY"],
-                os.environ["ALPACA_PAPER_SECRET_KEY"],
-                paper=True, url_override=PAPER_ENDPOINT)
+                os.environ["ALPACA_PAPER_SECRET_KEY"])
         return state["trading"]
 
     def account():
