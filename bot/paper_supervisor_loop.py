@@ -233,8 +233,8 @@ def _diagnostic_reason(error):
         return error.reason_code
     if isinstance(error, (TimeoutError, RequestTimeout)):
         return "TIMEOUT"
-    if isinstance(error, (ssl.SSLError,)):
-        return "TLS"
+    if isinstance(error, ssl.SSLError):
+        return "TLS"\n    name = type(error).__name__\n    if name in ("InvalidPassword", "AuthenticationError", "UnauthorizedError"):\n        return "AUTH_REJECTED"\n    if name in ("InsufficientPrivilege", "InvalidAuthorizationSpecification"):\n        return "PERMISSION_DENIED"\n    if name in ("UndefinedTable", "UndefinedColumn", "DatatypeMismatch"):\n        return "SCHEMA_MISMATCH"\n    if name in ("QueryCanceled", "ConnectionTimeout"):\n        return "TIMEOUT"
     if isinstance(error, socket.gaierror):
         return "DNS"
     if isinstance(error, PermissionError):
