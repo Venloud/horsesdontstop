@@ -416,6 +416,8 @@ def diagnose_supervisor():
         if len(sessions) != 1 or getattr(sessions[0], "date", None) != today:
             raise DiagnosticFailure("SCHEMA_MISMATCH")
         state["market_open"] = clock.is_open
+        if clock.is_open is False:
+            raise DiagnosticFailure("MARKET_CLOSED")
         return True
 
     def first_heartbeat():
