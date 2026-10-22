@@ -7,6 +7,7 @@ repeat notifications across process restarts.
 """
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 from hashlib import sha256
 import json
 from typing import Mapping
@@ -82,6 +83,8 @@ def make_incident(level: str, code: str, reasons, *, observation=None,
         "security_switch": "Unexpected paper trading control state; investigate immediately.",
         "unexpected_broker_write": "Paper monitor reported a broker-write capability; investigate immediately.",
         "stale_observation": "Paper broker observation is stale; verify positions and stops.",
+        "supervisor_heartbeat_missing": "Independent PAPER worker heartbeat is missing or unhealthy; review supervision.",
+        "supervisor_observation_unverified": "Independent PAPER broker/journal check is degraded; review immediately.",
     }
     return MonitorIncident(
         level=level, code=code, fingerprint=fingerprint,
@@ -170,6 +173,20 @@ def assess_read_only_report(report: Mapping, *, now=None,
         return make_incident(
             "critical", "security_switch", ("paper_controls_not_locked",),
             observation=dtstr, positions=positions, orders=orders)
+
+    # An actual open PAPER broker session still missing its time-gated
+    # equity baseline AFTER 09:35 NY must page independently. Leaving
+    # this in the generic "expected" blocker list hid a broken sampler.
+    # Closed holidays do not receive invented trading-day baselines.
+    if report.get("market_open") is True and (
+            "missing_daily_open_equity" in blockers
+            or report.get("daily_open_equity_available") is False):
+        local = observed.astimezone(ZoneInfo("America/New_York"))
+        if local.hour > 9 or (local.hour == 9 and local.minute >= 35):
+            return make_incident(
+                "critical", "missing_opening_equity",
+                ("opening_equity_not_recorded",),
+                observation=dtstr, positions=positions, orders=orders)
 
     if rec.get("consistent") is not True:
         if positions or orders or rec.get("uncovered_symbols"):

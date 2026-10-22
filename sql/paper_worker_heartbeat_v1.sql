@@ -1,4 +1,7 @@
 -- STAGED ONLY. DO NOT APPLY TO NEON PRODUCTION WITHOUT OWNER APPROVAL.
+-- NEON SECURITY: Neon Console/CLI/API-created roles inherit neon_superuser.
+-- Create the restricted hds_paper_heartbeat LOGIN role via SQL instead,
+-- with a long random password; verify no neon_superuser membership.
 -- Tested on an isolated Neon branch. No order submissions or switch flips.
 --
 -- Heartbeat table has only one lease for the entire PAPER worker group.

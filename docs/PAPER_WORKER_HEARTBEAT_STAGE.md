@@ -69,6 +69,26 @@ an independent production monitor. A database row marked
 `poll_succeeded=True` alone cannot establish genuine broker
 stop protection or continuous uptime.
 
+## Production role provisioning safety (October 20 investigation)
+
+**Never use Neon Console, Neon CLI `roles create`, or Neon's API
+`create_postgres_role` to create the dedicated least-privilege writer.**
+As documented by Neon, those creation methods automatically grant the
+`neon_superuser` membership, including broad inherited data and role
+privileges. An account named `hds_paper_heartbeat` is **not** safe merely
+because it has the intended name. Create narrowly scoped accounts with
+direct SQL, explicitly validate `pg_has_role(...,'neon_superuser','MEMBER')
+=FALSE` and all object-specific access with a real role login before
+using its DSN. No unexpected privilege should be tolerated.
+
+A production role accidentally created by the Neon management API on
+October 20 had excessive privileges, was immediately detected, and its
+password was rotated. Console/API deletion was blocked in this session,
+and SQL REVOKE/ALTER failed; its **manual deletion in production is an
+outstanding security cleanup requirement**. Do not distribute or use
+that role's DSN. It is not an approved restricted heartbeat writer.
+Existing production trading kill remains ON and submissions remain OFF.
+
 ## Before any real worker deployment
 
 - [ ] Review/merge the source and SQL PR separately. **Do

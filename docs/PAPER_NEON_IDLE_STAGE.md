@@ -1,0 +1,318 @@
+# PAPER supervisor, optional broker-confirmed Neon idle (STAGED)
+
+**2026-10-16. No deployment, schema migration, order authorization or
+production change.** This is the implementation follow-up to the
+2026-10-16 VANDAM ROUTE hosting research. Project implementation belongs
+here, in HorsesDontStop. The private Vandam repo is for cross-agent
+memory and documented findings only.
+
+## Why
+
+The READ-ONLY `bot.paper_supervisor_loop` normally does a broker +
+Neon journal poll and writes a restricted database heartbeat every
+30–90 seconds. Neon Free currently advertises 100 CU-hours/project
+per month, while continuous polling at an *assumed* 0.25 CU
+for 30 days consumes 0.25 × 24 × 30 = **180 CU-hours**,
+before accounting for any other GitHub/Neon consumers. Monitoring only
+21 regular 6.5-hour trading sessions is approximately 34.1 CU-hours
+at the same assumed size, but actual consumption and scaling
+are not yet measured. These are planning estimates, not a quota
+guarantee. Official reference: https://neon.com/docs/introduction/plans .
+
+## How, without pretending the worker is deployed
+
+After **explicit opt-in** `--idle-neon-when-broker-closed-flat`:
+
+1. At process startup, ALWAYS perform a full authenticated broker
+   + restricted Neon read. The observer must attest a consistent
+   durable journal, exactly zero broker positions, zero broker open
+   orders, zero unresolved durable intents, and disabled trading
+   switches. A successful restricted heartbeat pulse is also required
+   before the in-process flat baseline is trusted.
+2. Every subsequent tick calls the ALPACA **PAPER-only** broker
+   to read its clock, all positions and all currently open orders.
+   Only `clock.is_open is False` and explicit EMPTY position/order
+   lists allow a tick to skip Neon entirely.
+3. The skipped tick **does not touch Neon and does not write a
+   heartbeat**. Its count is `neon_idle_ticks`, separate from
+   `healthy_polls`. An intentionally stale heartbeat must
+   NEVER be accepted as a healthy, independently supervised worker.
+4. On open market, any position/open order, unknown broker response,
+   API outage, worker restart, malformed journal evidence or
+   heartbeat error, do a full broker + Neon read again. If that
+   poll fails, report unhealthy, never assume flat.
+5. Even with this flag, this worker **only observes**. It cannot
+   auto-liquidate an open position, and it does not implement or prove
+   a flat-by-close policy. Overnight broker exposure requires a
+   continuously monitored system, not the idle path.
+
+The default invocation has **no behavior change**. Both workflows and
+the `PAPER_ORDER_SUBMISSIONS_RELEASED=False` source release stay
+unchanged. There is still no production heartbeat role/secret,
+a deployed always-on host, confirmed GTC protective stop lifecycle,
+independent alert delivery, verified NYSE calendar, or today's
+durable opening-equity baseline.
+
+## Explicit deployment and risk constraints
+
+- Read-only PAPER credentials ONLY. Broker order submission and
+  live-money operations remain prohibited.
+- Do not deploy the opt-in flag until a separate independent
+  monitoring/alerting design distinguishes deliberate
+  closed-flat idle from an unexpected dead supervisor.
+- The market-clock state is a broker observation, NOT a complete
+  NYSE holiday/early-close schedule. No trading decisions use it.
+- A journal could be changed by a separate process while Neon
+  is idle; that makes the cached flat baseline weaker than
+  a current durable journal check. Before enabling this in
+  any order-capable worker, prove exclusive writer authority and
+  safe invalidation/monitoring. For now all order release gates
+  remain blocked.
+- No card, Oracle VM, Neon usage upgrade, SQL deployment or
+  GitHub secret changes have been authorized.
+- **Actual monthly CU-hour consumption and other consumers are
+  unknown**. This feature alone cannot guarantee staying on Free.
+
+## Verify in CI
+
+`tests/test_paper_neon_idle.py` exercises real broker-request
+shapes against fakes, must-full-poll startup and restarts, long idle
+without heartbeat, mid-session position/order changes, outages and
+unchanged default polling. Synthetic tests DO NOT verify a live host.
+After separate owner approval of a safe host and read-only role:
+test the restricted role on a TEMP database branch, measure actual
+Neon compute usage, and test independent failed-worker alerts before
+any PAPER broker order request.
+
+## October 16 TEMP Neon credentialed-role and lease test, ACTUAL SQL
+
+Following separate owner approval, provisioned **only** the existing
+`test-paper-entry-20261011` temporary Neon branch. The official Neon
+create-role API initially produced an unexpectedly **overprivileged**
+role (including `neon_superuser` membership); the database account
+could not strip those privileged attributes. The new role was
+**immediately deleted and its deletion verified**. We then used
+explicit PostgreSQL `CREATE ROLE ... LOGIN NOINHERIT NOSUPERUSER
+NOCREATEROLE NOCREATEDB NOREPLICATION NOBYPASSRLS` under the temporary
+branch. A high-entropy password was generated inside PostgreSQL,
+rotated through Neon management and **never copied to GitHub or logged**.
+No production credential or database role was created.
+
+Live sessions authenticated as **both actual restricted roles**:
+
+| Test, existing TEMP branch only | Actual result |
+|---|---|
+| Heartbeat writer login as `hds_paper_heartbeat` | passed |
+| Monitor login as `hds_paper_monitor` | passed |
+| Writer heartbeat table SELECT/INSERT/UPDATE | allowed |
+| Writer heartbeat DELETE / control UPDATE / intent INSERT | denied |
+| Monitor heartbeat table SELECT | allowed |
+| Monitor heartbeat INSERT/UPDATE/DELETE | denied |
+| Monitor control UPDATE / intent INSERT | denied |
+| Both roles elevated attributes / `neon_superuser` membership | none |
+| A first pulse taking over a stale older lease | accepted, `poll_succeeded=false` |
+| Same worker with increased sequence 2 | accepted, `poll_succeeded=true` |
+| Duplicate sequence 2 | rejected, zero rows |
+| Competing worker with fresh lease | rejected, zero rows |
+| Cleanup sequence 3 for original worker | accepted, `poll_succeeded=false` |
+| Independent monitor reads first, second and final states | passed |
+| Negative writer control UPDATE / writer heartbeat DELETE / monitor heartbeat INSERT | actual PostgreSQL `permission denied` |
+
+**Important:** These are actual *temporary PostgreSQL role and SQL
+lease* tests, **not** actual broker polling or a running Python
+supervisor. We deliberately set the final TEMP lease state to
+`poll_succeeded=false` to avoid claiming a live healthy watchdog
+from synthetic SQL pulses. Sequential duplicate/competing-writer
+rejection was observed in separate database requests, not an
+independently timed simultaneous race test. A full Python
+`psycopg` restricted-role integration run is still needed before
+runtime credentials/deployment are considered ready.
+
+**Independent read-only production verification:** The
+`production` branch retains exactly one
+`paper_control` row with `kill_switch_active=true` and
+`submissions_enabled=false`; `paper_intents=0`,
+`paper_equity_snapshots=0`. Neither
+`hds_paper_heartbeat` nor `paper_worker_heartbeat` exists there.
+No production SQL, deployments, cloud charges, GitHub secrets, broker
+order submissions, or stop orders were changed by this test.
+
+**Next still blocked:** No production secret, persistent independent
+host, external dead-man/notification validation or real protective
+order proof. Never infer execution readiness from successful ACL
+and synthetic pulse verification.
+
+## October 16 TEMP Neon role preflight, actually executed read-only
+
+A read-only inspection of the existing temporary branch
+`test-paper-entry-20261011`, **NOT production**, checked the
+real PostgreSQL metadata and separately connected as
+`hds_paper_monitor`. The reusable, non-mutating query is
+[`sql/paper_worker_heartbeat_permissions_audit.sql`](../sql/paper_worker_heartbeat_permissions_audit.sql).
+Observed results:
+
+| Temporary database property | Actual result |
+|---|---|
+| `public.paper_worker_heartbeat` table exists | yes |
+| `hds_paper_heartbeat` role exists | **no** |
+| `hds_paper_monitor` login role exists | yes |
+| Monitor has `SELECT` on heartbeat table | **no** |
+| Monitor has `INSERT/UPDATE/DELETE` heartbeat permissions | no, as desired |
+| Monitor can write `paper_control` or insert `paper_intents` | no, as desired |
+| Monitor has `neon_superuser` membership/admin permissions | no |
+
+**These are measured temporary-branch facts, not synthetic CI proof.**
+No SQL writes, role creations, grants, Neon configuration changes or
+broker orders occurred during the inspection.
+
+**Next independent, explicit authorization is needed** before
+provisioning a new database LOGIN role or granting permissions, even
+on the temporary branch. The limited proposed repair is to add
+`hds_paper_heartbeat` with no administrative or inherited
+`neon_superuser` powers, grant it only
+`SELECT/INSERT/UPDATE` on the heartbeat table and schema usage,
+and grant `hds_paper_monitor` only `SELECT` on that table.
+Then rerun the audit under actual restricted credentials and test
+first/second pulse, competing-writer rejection, stale takeover and
+independent monitor inspection using **two separate real sessions**.
+Any future production migration/secret/deployment requires its own
+authorization. No operation on this PR activates that process.
+
+
+## October 16 TEMP-only Python/psycopg integration harness (STAGED)
+
+Added `bot/paper_temp_lease_smoke.py` and
+`tests/test_paper_temp_lease_smoke.py` to PR #23.
+
+**Purpose:** exercise the real existing `PaperWorkerHeartbeat.pulse()`
+and `inspect()` Python methods using two separate least-privileged
+connections. Unlike the prior Neon management SQL tests, this invokes
+the same Python `psycopg` connection and role-attestation paths used
+by the future service. It does **not** connect to Alpaca.
+
+**Prerequisites for a REAL run:** a network-enabled Python environment,
+`pip install -r requirements.txt`, and TWO separate ephemeral
+restricted DSNs for the existing temporary Neon branch endpoint:
+`PAPER_TEMP_HEARTBEAT_DSN` (user `hds_paper_heartbeat`) and
+`PAPER_TEMP_MONITOR_DSN` (user `hds_paper_monitor`). Do not paste,
+commit, print, upload, or place DSNs in shell history or GitHub Actions
+logs. Do NOT substitute production, admin or executor credentials.
+The CLI requires:
+
+```bash
+python -m bot.paper_temp_lease_smoke --acknowledge-temp-only-writes
+```
+
+The command **rejects any host except the known temporary Neon branch
+endpoint**, any wrong role, missing password, wrong database, absent
+acknowledgement, or missing credential. It re-attests both PostgreSQL
+roles, writes exactly two synthetic `poll_succeeded=FALSE` pulses,
+tries duplicate/competing-worker pulses (both must be denied), then
+confirms through the independent monitor that the final status is
+**UNHEALTHY**, never fake broker supervision. This modifies only the
+existing **TEMP heartbeat singleton**, not other tables. A fresh
+non-test worker lease prevents an attempted takeover for 120 seconds.
+Any database or Python failure returns exit code 2 with a sanitized
+message. Ordinary CI exercises the harness **only with fake clients**.
+
+**Execution status:** as of this update the runner was NOT executed
+against real Neon from the ChatGPT runtime: it has no configured DSNs,
+no `psycopg` installation and no network resolution for the Neon host.
+The role-based SQL checks previously run through the authenticated
+Neon connector remain valid but do not substitute for this test.
+No CI workflow was given an actual database credential, no production
+SQL/schema or GitHub secret was changed, and no PAPER trade was placed.
+
+
+## October 16 staged independent supervisor-loss checker (NEW, NOT HOSTED)
+
+Added `bot/paper_independent_check.py` and synthetic no-network
+`tests/test_paper_independent_check.py` on draft PR #23.
+
+**Reason:** The opt-in `--idle-neon-when-broker-closed-flat` worker
+intentionally stops refreshing its Neon heartbeat after hours. From an
+independent observer's perspective, this is **indistinguishable from
+a worker crash** using only that database lease. A safe checker must
+never report a healthy 120-second watchdog when that occurs.
+
+The separate read-only checker:
+
+- Requires a **separately configured, exact**
+  `PAPER_EXPECTED_WORKER_ID`, not a worker ID blindly copied from the
+  same possibly spoofed heartbeat row. On host restart, independently
+  authorize/refresh this ID; mismatches FAIL closed.
+- Uses `PAPER_JOURNAL_DSN` restricted SELECT-only monitor credentials
+  (NOT heartbeat writer, PAPER executor or database owner), authenticates
+  `PaperWorkerHeartbeat.assert_heartbeat_monitor_only()`, and
+  `paper_watchdog.run_once(output="")` for a fresh actual Alpaca PAPER
+  + Neon journal **read-only** observation.
+- Independently classifies the report and inspects the recent lease.
+  A missing, unhealthy, expired, mistaken, unproven or inconsistent
+  heartbeat is **CRITICAL** even if Alpaca says the market is closed
+  and positions/orders are empty. A warning from the account
+  observation is also escalated, rather than represented as healthy
+  supervision. There are no writes to Neon or broker.
+- Optionally sends an existing private-topic NTFY alert ONLY when
+  `--send-critical-alert` is passed and
+  `PAPER_MONITOR_NTFY_TOPIC` is configured. Missing topic or failed
+  delivery fails closed and prints sanitized errors, not secrets.
+  Offline tests inject the alert sender; **NO alert was delivered
+  to a real recipient by this change**.
+
+A representative invocation on a **separately hosted** verifier,
+only after storing read-only credentials and an externally verified
+expected worker ID, is:
+
+```bash
+python -m bot.paper_independent_check --send-critical-alert
+```
+
+This CLI is a **single check**, not a background service, and is
+**NOT deployed**. It cannot detect its own host crashing, and running
+it on GitHub Actions' five-minute, best-effort cron does **NOT**
+prove detection within 120 seconds. Safe 120-second enforcement still
+requires an independent host/scheduler with measured uptime, tested
+alerts and credentials; legitimate closed-flat Neon idle would
+currently cause **intentional critical alerts** until a separate
+verified liveness channel is engineered. This is preferable to
+silently treating a crash as healthy. Do not claim autonomous
+overnight monitoring is ready or enable PAPER order submission.
+
+
+## October 16 external off-hours liveness channel, STAGED NOT DEPLOYED
+
+The original closed-flat broker check lets Neon idle, but by design
+stops the Neon heartbeat, so the independent database-only monitor
+treats that as lost supervision. This **has NOT been made safe by
+silencing or relaxing the database heartbeat gate**.
+
+Added a **separate Cloudflare Worker + D1 prototype** in
+[`ops/cloudflare-liveness/`](../ops/cloudflare-liveness/README.md),
+plus `bot/paper_external_liveness.py`. Its authenticated POST
+carries ONLY current process ID, increasing tick sequence and one of
+three explicit read-only observation states:
+`read_only_poll_ok`, `closed_flat_idle` or `poll_failed`.
+A single D1 row rejects replay/competing fresh workers. A separate
+one-minute scheduled Cloudflare check emits fixed critical messages
+to a private NTFY topic if the signal is missing, stale (>120s)
+or says the poll failed; a confirmed 2xx is recorded for one-hour
+alert deduplication. It does **NOT** prove a broker stop is live.
+
+The staged Python supervisor CLI accepts `--external-liveness`
+only with private `PAPER_EXTERNAL_LIVENESS_URL` and
+`PAPER_EXTERNAL_LIVENESS_TOKEN` settings and refuses to use
+`--idle-neon-when-broker-closed-flat` unless this separate
+liveness sink is configured. A delivery failure fails closed and
+invalidates the in-process flat baseline rather than permitting
+indefinite Neon-silent idle. No default-mode behavior or broker
+submission permissions changed.
+
+The repository CI exercises the HTTP/SQL/cron protocol through
+Node built-in offline tests, plus Python synthetic sender/loop tests.
+**No Cloudflare account, D1 database, Worker, cron, ntfy receiver,
+Python host, secrets, paid service or real notification was created,
+configured or deployed.** Cloudflare Free quotas and its scheduled
+check are best-effort, not a strict <=120-second alert guarantee.
+Even once deployed, this would be supplementary process-liveness
+evidence, not proof sufficient to satisfy every execution
+readiness control or change the Neon watchdog gate.

@@ -23,7 +23,7 @@ def clean_report():
         "broker_write_operations": 0,
         "safety_blockers": [
             "kill_switch_active", "paper_order_submission_disabled",
-            "no_fresh_realtime_quote", "missing_daily_open_equity",
+            "no_fresh_realtime_quote",
             "missing_durable_equity_peak",
             "no_healthy_persistent_watchdog",
             "preflight_has_no_broker_write_capability"
@@ -205,3 +205,29 @@ def test_noninteger_or_nonzero_broker_write_count_is_critical(bad_writes):
     incident = assess_read_only_report(report, now=NOW)
     assert incident.level == "critical"
     assert incident.code == "unexpected_broker_write"
+
+
+def test_live_open_session_missing_baseline_pages_after_window():
+    p = clean_report()
+    p["safety_blockers"].append("missing_daily_open_equity")
+    p["daily_open_equity_available"] = False
+    incident = assess_read_only_report(p, now=NOW)
+    assert incident.level == "critical"
+    assert incident.code == "missing_opening_equity"
+    assert incident.reasons == ("opening_equity_not_recorded",)
+
+
+def test_opening_sampler_gets_full_five_minutes_before_missing_page():
+    p = clean_report()
+    before_deadline = datetime(2026, 10, 12, 13, 34, 59,
+                               tzinfo=timezone.utc)
+    p["observed_at_utc"] = before_deadline.isoformat()
+    p["safety_blockers"].append("missing_daily_open_equity")
+    assert assess_read_only_report(p, now=before_deadline).level == "idle"
+
+
+def test_closed_broker_does_not_invent_a_missing_holiday_baseline():
+    p = clean_report()
+    p["market_open"] = False
+    p["safety_blockers"].append("missing_daily_open_equity")
+    assert assess_read_only_report(p, now=NOW).level == "idle"

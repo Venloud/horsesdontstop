@@ -1,0 +1,15 @@
+# STAGED: Cloudflare D1 database provisioned manually, Worker NOT YET DEPLOYED.
+# No Cloudflare deployment, account signup, secrets or bills are authorized
+# by this file alone. CF Free plan has quotas and no guaranteed 120s SLA.
+name = "horsesdontstop-liveness-staging"
+main = "worker.mjs"
+compatibility_date = "2026-10-16"
+workers_dev = true
+
+[triggers]
+crons = ["* * * * *"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "horsesdontstop-liveness"
+database_id = "bfb4c95b-1edf-4192-8b63-823477212f40"
