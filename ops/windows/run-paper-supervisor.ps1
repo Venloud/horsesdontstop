@@ -4,7 +4,7 @@
 param(
     [ValidateRange(1, 5)]
     [int]$MaxTicks = 3,
-    [switch]$Continuous
+    [switch]$Continuous,\n    [switch]$Diagnose
 )
 
 $ErrorActionPreference = "Stop"
@@ -64,7 +64,7 @@ try {
 
     Push-Location $repo
     try {
-        & $python -m bot.paper_supervisor_loop --max-ticks $runTicks --interval-seconds 30 --external-liveness
+        if ($Diagnose) {\n            & $python -m bot.paper_supervisor_loop --diagnose --external-liveness\n        }\n        else {\n            & $python -m bot.paper_supervisor_loop --max-ticks $runTicks --interval-seconds 30 --external-liveness\n        }
         $supervisorExitCode = $LASTEXITCODE
         Write-Host "SUPERVISOR EXIT CODE: $supervisorExitCode"
     }
