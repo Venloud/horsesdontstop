@@ -213,7 +213,10 @@ DIAGNOSTIC_REASONS = frozenset((
     "PERMISSION_DENIED", "SCHEMA_MISMATCH", "STALE",
     "BLOCKERS_PRESENT", "KILL_SWITCH_ON", "MARKET_CLOSED",
     "NOT_FIRST_BEAT", "HTTP_2XX", "HTTP_4XX", "HTTP_5XX",
-    "UNKNOWN",
+    "UNKNOWN", "MISSING_OPENING_EQUITY", "UNSAFE_EXPOSURE",
+    "DEGRADED", "SECURITY_SWITCH", "UNEXPECTED_BROKER_WRITE",
+    "FINGERPRINT_MISMATCH", "UNHEALTHY_OBSERVATION",
+    "COMPETING_LEASE", "LEASE_STALE", "LEASE_UNVERIFIED",
 ))
 
 
@@ -358,13 +361,45 @@ def diagnose_supervisor():
         return True
 
     def assessment():
-        if not valid_observation(state["report"]):
-            raise DiagnosticFailure("BLOCKERS_PRESENT")
-        return True
+        report = state["report"]
+        if valid_observation(report):
+            return True
+        independent = assess_read_only_report(report, max_age_seconds=120)
+        safe_codes = {
+            "missing_opening_equity": "MISSING_OPENING_EQUITY",
+            "unsafe_exposure": "UNSAFE_EXPOSURE",
+            "degraded": "DEGRADED",
+            "security_switch": "SECURITY_SWITCH",
+            "unexpected_broker_write": "UNEXPECTED_BROKER_WRITE",
+            "stale_observation": "STALE",
+        }
+        if independent.level == "idle" and independent.code == "idle":
+            raise DiagnosticFailure("FINGERPRINT_MISMATCH")
+        raise DiagnosticFailure(safe_codes.get(independent.code, "BLOCKERS_PRESENT"))
+
+    def prior_lease(writer):
+        # Restricted heartbeat connection; SELECT only, never show IDs.
+        with writer._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT worker_id, observed_at, clock_timestamp() "
+                    "FROM public.paper_worker_heartbeat WHERE singleton=TRUE")
+                row = cur.fetchone()
+        if row is None:
+            return "FIRST"
+        if (len(row) != 3 or not isinstance(row[1], datetime)
+                or not isinstance(row[2], datetime)
+                or row[1].tzinfo is None or row[2].tzinfo is None):
+            return "UNVERIFIED"
+        seconds = (row[2] - row[1]).total_seconds()
+        if seconds < 0:
+            return "UNVERIFIED"
+        return "COMPETING" if seconds <= 120 else "STALE"
 
     def heartbeat():
         writer = PaperWorkerHeartbeat(os.environ["PAPER_HEARTBEAT_DSN"])
         writer.assert_heartbeat_writer_only()
+        state["prior_lease"] = prior_lease(writer)
         # A fresh worker's first accepted heartbeat intentionally returns
         # False. It is not a healthy lease, and MUST NOT authorize trading.
         state["observation_valid_for_pulse"] = valid_observation(state.get("report"))
@@ -420,12 +455,17 @@ def diagnose_supervisor():
         return True
 
     def first_heartbeat():
+        prior = state.get("prior_lease")
+        if prior == "COMPETING":
+            raise DiagnosticFailure("COMPETING_LEASE")
+        if prior == "UNVERIFIED":
+            raise DiagnosticFailure("LEASE_UNVERIFIED")
+        if state.get("observation_valid_for_pulse") is False:
+            raise DiagnosticFailure("UNHEALTHY_OBSERVATION")
         if "heartbeat_accepted" not in state:
-            raise DiagnosticFailure("NOT_FIRST_BEAT")
-        if (state["heartbeat_accepted"] is False
-                and state.get("observation_valid_for_pulse") is True):
+            raise DiagnosticFailure("LEASE_UNVERIFIED")
+        if state["heartbeat_accepted"] is False and prior in ("FIRST", "STALE"):
             return "EXPECTED_FIRST_BEAT"
-        # An existing worker lease must never be mislabeled first-beat.
         raise DiagnosticFailure("NOT_FIRST_BEAT")
 
     stages = dict(zip(DIAGNOSTIC_STAGES, (
