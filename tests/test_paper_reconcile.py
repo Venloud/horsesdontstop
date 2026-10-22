@@ -356,3 +356,41 @@ def test_matching_duplicate_broker_order_snapshot_counts_once():
         [], [first, same_view], [], order_fetch_complete=True)
     assert audit.open_broker_orders == 1
     assert "malformed_broker_order_tree" not in audit.blockers
+
+
+@pytest.mark.parametrize("kind", ["limit", "market", "stop_limit"])
+def test_competing_active_sell_exit_cannot_verify_protection(kind):
+    # Independent verifier H1: the account-wide checker must agree with
+    # paper_broker_recovery, which rejects a second active SELL exit.
+    stop = order("stop-leg", "F", side="sell", kind="stop", qty=2,
+                 status="new", parent="parent-1", tif="gtc", stop_price=24)
+    parent = order("parent-1", "F", side="buy", kind="limit", qty=2,
+                   filled=2, status="filled", cid="hds-c",
+                   legs=(stop,), klass="oto")
+    competitor = order("competing-exit", "F", side="sell", kind=kind,
+                       qty=2, status="accepted", tif="day")
+    result = reconcile_observation(
+        [position("F", 2)], [parent, competitor], [],
+        order_fetch_complete=True,
+        approved_stops=[("hds-c", "filled", "F", 2, 24, "parent-1")])
+    assert result.uncovered_symbols == ("F",)
+    assert "multiple_active_sell_exits_for_position" in result.blockers
+    assert "position_missing_verified_gtc_oto_stop" in result.blockers
+    assert not result.consistent
+
+
+def test_terminal_canceled_sell_limit_does_not_compete_with_valid_child():
+    stop = order("stop-leg", "F", side="sell", kind="stop", qty=2,
+                 status="new", parent="parent-1", tif="gtc", stop_price=24)
+    parent = order("parent-1", "F", side="buy", kind="limit", qty=2,
+                   filled=2, status="filled", cid="hds-c",
+                   legs=(stop,), klass="oto")
+    canceled = order("old-limit", "F", side="sell", kind="limit",
+                     qty=2, status="canceled", tif="day")
+    result = reconcile_observation(
+        [position("F", 2)], [parent, canceled], [],
+        order_fetch_complete=True,
+        approved_stops=[("hds-c", "filled", "F", 2, 24, "parent-1")])
+    assert result.uncovered_symbols == ()
+    assert "multiple_active_sell_exits_for_position" not in result.blockers
+    assert "open_broker_positions" in result.blockers

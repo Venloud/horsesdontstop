@@ -190,19 +190,24 @@ def reconcile_observation(
         if not symbol or qty <= 0:
             blockers.append("invalid_broker_position")
             continue
-        # Multiple simultaneously active STOP sells may each execute
-        # against the same shares, potentially creating excess exposure.
-        # Even one legitimate durable child cannot excuse a second stop.
-        all_active_sell_stops = [
+        # Any second active SELL exit (including LIMIT, MARKET or STOP_LIMIT)
+        # can compete with the genuine protective STOP for the same shares.
+        # Do not describe the position as having verified protection until
+        # there is exactly one active exit and it is the durable OTO STOP.
+        all_active_sell_exits = [
             o for o in open_orders
             if (getattr(o, "symbol", None) == symbol
                 and value(getattr(o, "side", None)) == "sell"
-                and value(getattr(o, "type", None)) == "stop"
-                and value(getattr(o, "status", None))
-                    in PROTECTIVE_ACTIVE_STATUSES)
+                and value(getattr(o, "status", None)) in OPEN_STATUSES)
+        ]
+        all_active_sell_stops = [
+            o for o in all_active_sell_exits
+            if value(getattr(o, "type", None)) == "stop"
         ]
         if len(all_active_sell_stops) > 1:
             blockers.append("multiple_active_sell_stops_for_position")
+        if len(all_active_sell_exits) > 1:
+            blockers.append("multiple_active_sell_exits_for_position")
         valid_child_count = 0
         for order in open_orders:
             if (getattr(order, "symbol", None) != symbol
@@ -242,7 +247,7 @@ def reconcile_observation(
                     and 0 < remaining <= durable[2]
                     and remaining >= qty and trigger == durable[3]):
                 valid_child_count += 1
-        if not (valid_child_count == 1 and len(all_active_sell_stops) == 1):
+        if not (valid_child_count == 1 and len(all_active_sell_exits) == 1):
             uncovered.append(symbol)
             blockers.append("position_missing_verified_gtc_oto_stop")
 
