@@ -77,3 +77,14 @@ def test_unknown_return_never_passes(capsys):
     stages["heartbeat"] = lambda: False
     assert run_diagnostic_stages(stages) == 2
     assert "STAGE heartbeat: FAIL UNKNOWN" in capsys.readouterr().out
+
+def test_real_diagnostic_entrypoint_resolves_imports_without_external_io(monkeypatch):
+    """Catch missing imports in diagnose_supervisor, not just fake stage runner."""
+    import bot.paper_supervisor_loop as module
+    seen = []
+    def collect(stages):
+        seen.extend(stages)
+        return 0
+    monkeypatch.setattr(module, "run_diagnostic_stages", collect)
+    assert module.diagnose_supervisor() == 0
+    assert tuple(seen) == DIAGNOSTIC_STAGES
