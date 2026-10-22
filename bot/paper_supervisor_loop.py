@@ -283,6 +283,19 @@ def run_diagnostic_stages(stages, *, printer=print):
     return 2 if failed else 0
 
 
+def diagnostic_first_beat(prior, observation_ok, heartbeat_accepted):
+    """Classify lease evidence without authorizing a healthy lease."""
+    if prior == "COMPETING":
+        return "COMPETING_LEASE"
+    if prior not in ("FIRST", "STALE"):
+        return "LEASE_UNVERIFIED"
+    if observation_ok is not True:
+        return "UNHEALTHY_OBSERVATION"
+    if heartbeat_accepted is False:
+        return "EXPECTED_FIRST_BEAT"
+    return "NOT_FIRST_BEAT"
+
+
 def diagnose_supervisor():
     """One bounded read-only inspection plus ONE restricted heartbeat write.
 
@@ -455,18 +468,13 @@ def diagnose_supervisor():
         return True
 
     def first_heartbeat():
-        prior = state.get("prior_lease")
-        if prior == "COMPETING":
-            raise DiagnosticFailure("COMPETING_LEASE")
-        if prior == "UNVERIFIED":
-            raise DiagnosticFailure("LEASE_UNVERIFIED")
-        if state.get("observation_valid_for_pulse") is False:
-            raise DiagnosticFailure("UNHEALTHY_OBSERVATION")
-        if "heartbeat_accepted" not in state:
-            raise DiagnosticFailure("LEASE_UNVERIFIED")
-        if state["heartbeat_accepted"] is False and prior in ("FIRST", "STALE"):
-            return "EXPECTED_FIRST_BEAT"
-        raise DiagnosticFailure("NOT_FIRST_BEAT")
+        result = diagnostic_first_beat(
+            state.get("prior_lease"),
+            state.get("observation_valid_for_pulse"),
+            state.get("heartbeat_accepted"))
+        if result == "EXPECTED_FIRST_BEAT":
+            return result
+        raise DiagnosticFailure(result)
 
     stages = dict(zip(DIAGNOSTIC_STAGES, (
         env, account, positions_orders, journal, control, observation,
