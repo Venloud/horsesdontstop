@@ -162,3 +162,33 @@ def test_coerced_safety_state_values_never_unlock_broker_gate(
 def test_exact_typed_synthetic_readiness_still_passes_no_order_gate():
     # Eligibility simulation only. The real release constant stays FALSE.
     assert execution_blockers(healthy_state()) == []
+
+
+def test_stale_equity_peak_fails_closed_even_if_drawdown_math_would_pass():
+    # Regression from independent 2026-10-22 audit P4:
+    # 500 -> 800 -> 600 is a 25% drawdown if the real peak was retained.
+    # A stale 500 peak must NOT make the synthetic gate look ready.
+    reasons = execution_blockers(healthy_state(
+        equity=600, available_cash=600,
+        day_open_equity=600, recorded_peak_equity=500))
+    assert "stale_or_unmaintained_equity_peak" in reasons
+
+
+def test_current_equity_equal_to_durable_peak_is_not_stale():
+    assert "stale_or_unmaintained_equity_peak" not in execution_blockers(
+        healthy_state(equity=500, available_cash=500,
+                      day_open_equity=500, recorded_peak_equity=500))
+
+
+def test_higher_durable_peak_still_applies_fifteen_percent_gate():
+    reasons = execution_blockers(healthy_state(
+        equity=600, available_cash=600,
+        day_open_equity=600, recorded_peak_equity=800))
+    assert "fifteen_percent_drawdown_cutoff" in reasons
+    assert "stale_or_unmaintained_equity_peak" not in reasons
+
+
+def test_nonpositive_peak_is_rejected_without_approving_paper_orders():
+    reasons = execution_blockers(healthy_state(recorded_peak_equity=0))
+    assert reasons
+    assert "fifteen_percent_drawdown_cutoff" in reasons
