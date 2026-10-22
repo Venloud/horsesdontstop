@@ -158,9 +158,11 @@ def preview_live_paper_entry(
 def build_live_protected_oto_request(preview: LivePaperEntryPreview):
     """Return Alpaca SDK OTO LIMIT BUY request. DO NOT SEND.
 
-    DAY limit buys cannot remain indefinitely pending overnight; the GTC
-    child stop is broker-side protection once the parent is filled.
-    The stop is not guaranteed to fill at its stop price.
+    DAY entry buys expire at close when unfilled, but this request DOES NOT
+    specify a separate child stop time-in-force. Never assume the child
+    is GTC, stays active overnight, or guarantees gap protection.
+    Real broker stop lifecycle evidence and independent supervision
+    are mandatory before any PAPER order release.
     """
     from alpaca.trading.enums import OrderClass, OrderSide, TimeInForce
     from alpaca.trading.requests import LimitOrderRequest, StopLossRequest
