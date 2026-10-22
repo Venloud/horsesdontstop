@@ -130,6 +130,11 @@ def execution_blockers(state: PaperSafetyState) -> list[str]:
             failures.append("missing_durable_equity_peak")
         else:
             peak = money(state.recorded_peak_equity)
+            # A stale or unmaintained high-water mark can conceal a
+            # drawdown after a prior equity increase. Never infer safety
+            # from a caller-provided peak below current equity.
+            if peak < equity:
+                failures.append("stale_or_unmaintained_equity_peak")
             if peak <= 0 or equity <= peak * Decimal(".85"):
                 failures.append("fifteen_percent_drawdown_cutoff")
     except TradeBlocked:
