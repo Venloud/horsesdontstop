@@ -148,6 +148,56 @@ def inspect_uncertain_submit_by_client_id(trading, plan: PaperOrderPlan):
     return "broker_order_found_requires_supervisor_reconciliation"
 
 
+
+def _verify_paper_market_session(trading, clock, *, now):
+    """Require today's authentic Alpaca PAPER calendar AND clock to agree.
+
+    Read-only GET; this does NOT establish stop duration or grant trade
+    approval. Never trust a caller-constructed calendar-ready boolean.
+    """
+    from zoneinfo import ZoneInfo
+    from alpaca.trading.requests import GetCalendarRequest
+
+    if not isinstance(now, datetime) or now.tzinfo is None:
+        raise TradeBlocked("Missing timezone-aware PAPER execution clock")
+    local_today = now.astimezone(ZoneInfo("America/New_York")).date()
+    try:
+        records = trading.get_calendar(
+            GetCalendarRequest(start=local_today, end=local_today))
+    except Exception:
+        raise TradeBlocked("Alpaca PAPER trading calendar unavailable") from None
+    if not isinstance(records, (list, tuple)) or len(records) != 1:
+        raise TradeBlocked("Today's NYSE trading session not verified")
+    session = records[0]
+    if getattr(session, "date", None) != local_today:
+        raise TradeBlocked("Alpaca calendar trading date mismatch")
+    opens = getattr(session, "open", None)
+    closes = getattr(session, "close", None)
+    broker_close = getattr(clock, "next_close", None)
+    if any(not isinstance(d, datetime) or d.tzinfo is None
+           or d.utcoffset() is None for d in (opens, closes, broker_close)):
+        raise TradeBlocked("Alpaca calendar/clock lacks timezone-aware session times")
+    open_utc = opens.astimezone(timezone.utc)
+    close_utc = closes.astimezone(timezone.utc)
+    clock_close_utc = broker_close.astimezone(timezone.utc)
+    if (opens.astimezone(ZoneInfo("America/New_York")).date() != local_today
+            or closes.astimezone(ZoneInfo("America/New_York")).date() != local_today
+            or not timedelta(hours=2) <= close_utc - open_utc <= timedelta(hours=7)
+            or abs((clock_close_utc - close_utc).total_seconds()) > 60):
+        raise TradeBlocked("Alpaca PAPER calendar and market clock disagree")
+    # Parent is DAY; do not risk a new fill at the end of the session.
+    # Independently bound regular sessions to 15:30 ET and early closing
+    # days to 30 minutes before the broker-reported calendar close.
+    regular_cutoff = datetime.combine(
+        local_today, datetime.min.time(), ZoneInfo("America/New_York")
+    ).replace(hour=15, minute=30).astimezone(timezone.utc)
+    latest_entry = min(regular_cutoff, close_utc - timedelta(minutes=30))
+    now_utc = now.astimezone(timezone.utc)
+    if not open_utc <= now_utc < latest_entry:
+        raise TradeBlocked("PAPER entry too close to verified NYSE close")
+    return True
+
+
 def submit_paper_once_supervised(
     *, trading, journal, market_quote, preview, safety_state,
     approval, now: datetime,
@@ -197,6 +247,7 @@ def submit_paper_once_supervised(
             or getattr(account, "trading_blocked", None) is not False
             or positions or orders):
         raise TradeBlocked("Paper market closed, account blocked or exposure exists")
+    _verify_paper_market_session(trading, clock, now=now)
     if (abs(money(account.equity) - money(safety_state.equity)) > money(".01")
             or abs(money(account.cash) - money(safety_state.available_cash))
                > money(".01")):
