@@ -6,9 +6,10 @@ reservation, real-time execution gate and monitored broker reconciliation.
 IEX quotes cover one exchange, not consolidated NBBO/SIP.
 """
 from dataclasses import asdict, dataclass
-from datetime import date, datetime, timezone
+from datetime import date, datetime, time, timezone
 from decimal import Decimal, InvalidOperation, ROUND_DOWN, ROUND_UP
 import re
+from zoneinfo import ZoneInfo
 
 from .paper_safety import TradeBlocked, make_client_order_id, money
 
@@ -86,6 +87,14 @@ def preview_live_paper_entry(
         raise TradeBlocked("Missing timezone-aware clock")
     if market_open is not True:
         raise TradeBlocked("NYSE regular session not confirmed open")
+    # An upstream is_open flag alone is not an entry deadline. DAY entries
+    # must not be previewed at the last moment before regular close.
+    # This conservatively blocks all times outside 09:30-15:30 ET.
+    # Early-close days still require an independently verified NYSE calendar
+    # and a stricter session-specific deadline before ANY order release.
+    ny_clock = now.astimezone(ZoneInfo("America/New_York")).time()
+    if not time(9, 30) <= ny_clock < time(15, 30):
+        raise TradeBlocked("PAPER entry outside safe regular-session window")
     if not isinstance(max_quote_age_seconds, int) or not 1 <= max_quote_age_seconds <= 60:
         raise TradeBlocked("Invalid quote freshness tolerance")
     quote_ts = getattr(quote, "timestamp", None)
