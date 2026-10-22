@@ -136,7 +136,6 @@ def preview_live_paper_entry(
     if shares < 1:
         raise TradeBlocked("No affordable whole share at 1% risk and current spread")
     # Deterministic symbol/day ID, derived from New York clock, not server UTC.
-    from zoneinfo import ZoneInfo
     session_day = now.astimezone(ZoneInfo("America/New_York")).date()
     cid = make_client_order_id(session_day, symbol)
     return LivePaperEntryPreview(
