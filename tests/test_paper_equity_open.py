@@ -238,3 +238,17 @@ def test_role_failure_aborts_before_alpaca_calls(monkeypatch):
         snapshot_one_opening(broker, j, now=NOW, after_read_now=NOW)
     assert broker.calls == []
     assert db["snapshots"] == []
+
+def test_github_opening_sampler_retries_only_in_five_minute_window():
+    """Cron retries are opportunities, not authority to late-backfill."""
+    from pathlib import Path
+    workflow = (Path(__file__).resolve().parents[1]
+                / ".github/workflows/paper-opening-equity.yml").read_text()
+    assert "cron: '30-34 13,14 * * 1-5'" in workflow
+    # Existing production sampler and DB constraints must stay strict.
+    from bot.paper_equity_open import opening_window
+    from datetime import datetime, timezone
+    assert opening_window(datetime(2026, 10, 22, 13, 34, 59,
+                                   tzinfo=timezone.utc)) is not None
+    assert opening_window(datetime(2026, 10, 22, 13, 35,
+                                   tzinfo=timezone.utc)) is None

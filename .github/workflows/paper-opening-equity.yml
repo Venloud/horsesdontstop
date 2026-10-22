@@ -9,9 +9,11 @@ on:
       - tests/test_paper_equity_open.py
       - bot/paper_execution_journal.py
   schedule:
-    # 9:30 a.m. America/New_York in EDT and EST respectively.
-    # A delayed GitHub job may miss the strict 09:30–09:35 window.
-    - cron: '30 13,14 * * 1-5'
+    # Try each minute of the ONLY allowable 09:30–09:34:59 ET window.
+    # Both UTC hours cover EDT and EST; the Python and Neon server-time
+    # gates reject off-window runs. GitHub cron can still be delayed,
+    # so this is best-effort, NOT proof of an opening baseline.
+    - cron: '30-34 13,14 * * 1-5'
 
 permissions:
   contents: read
