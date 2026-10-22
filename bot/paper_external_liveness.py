@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import re
 from urllib.parse import urlsplit
-from urllib.request import Request, urlopen
+import requests
 
 from .paper_safety import TradeBlocked
 
@@ -42,8 +42,12 @@ def check_liveness_settings(url, token):
     return url, token
 
 
-def send_liveness(*, url, token, worker_id, sequence, status, opener=urlopen):
-    """Strict, time-bounded POST with sanitized errors and zero broker calls."""
+def send_liveness(*, url, token, worker_id, sequence, status, post=None):
+    """Strict, time-bounded POST with sanitized errors and zero broker calls.
+
+    The default requests transport reaches Cloudflare Workers when the
+    urllib default client is blocked at the edge. Never follow redirects.
+    """
     check_liveness_settings(url, token)
     if (not isinstance(worker_id, str) or ID.fullmatch(worker_id) is None
             or type(sequence) is not int or not 1 <= sequence <= 2147483647
@@ -53,16 +57,16 @@ def send_liveness(*, url, token, worker_id, sequence, status, opener=urlopen):
         {"worker_id": worker_id, "sequence": sequence, "status": status},
         separators=(",", ":"), sort_keys=True
     ).encode("utf-8")
-    request = Request(
-        url, data=payload, method="POST",
-        headers={
-            "Authorization": "Bearer " + token,
-            "Content-Type": "application/json",
-        }
-    )
     try:
-        with opener(request, timeout=5) as response:
-            code = response.status
+        response = (post or requests.post)(
+            url, data=payload,
+            headers={
+                "Authorization": "Bearer " + token,
+                "Content-Type": "application/json",
+            },
+            timeout=5, allow_redirects=False,
+        )
+        code = response.status_code
     except Exception:
         raise TradeBlocked("External liveness delivery failed") from None
     if code != 204:
