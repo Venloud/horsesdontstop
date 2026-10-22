@@ -113,3 +113,22 @@ def test_assessor_codes_are_not_raw_exception_messages(capsys):
     out = capsys.readouterr().out
     assert "STAGE independent_assessment: FAIL MISSING_OPENING_EQUITY" in out
     assert "STAGE first_heartbeat: FAIL UNHEALTHY_OBSERVATION" in out
+
+@pytest.mark.parametrize(("incident_code", "expected"), [
+    ("missing_opening_equity", "MISSING_OPENING_EQUITY"),
+    ("unsafe_exposure", "UNSAFE_EXPOSURE"),
+    ("degraded", "DEGRADED"),
+    ("security_switch", "SECURITY_SWITCH"),
+    ("unexpected_broker_write", "UNEXPECTED_BROKER_WRITE"),
+    ("stale_observation", "STALE"),
+    ("idle", "FINGERPRINT_MISMATCH"),
+    ("SENSITIVE_UNTRUSTED_VALUE", "BLOCKERS_PRESENT"),
+])
+def test_independent_assessment_maps_real_incident_safely(monkeypatch, incident_code, expected):
+    from types import SimpleNamespace
+    import bot.paper_supervisor_loop as module
+    monkeypatch.setattr(module, "valid_observation", lambda report: False)
+    monkeypatch.setattr(module, "assess_read_only_report", lambda report, **kw:
+                        SimpleNamespace(code=incident_code,
+                                        level="idle" if incident_code == "idle" else "critical"))
+    assert module.diagnostic_assessment_result({"private": "DO_NOT_PRINT"}) == expected
