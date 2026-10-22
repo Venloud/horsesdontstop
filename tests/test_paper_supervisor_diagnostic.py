@@ -26,7 +26,21 @@ def test_all_stages_pass_and_order_is_fixed(capsys):
 @pytest.mark.parametrize("failed", DIAGNOSTIC_STAGES)
 def test_exactly_one_stage_fails_and_all_others_run(failed, capsys):
     stages = good_stages()
-    code = "NOT_FIRST_BEAT" if failed == "first_heartbeat" else "UNKNOWN"
+    reasons = {
+        "required_env": "MISSING_ENV",
+        "alpaca_account": "AUTH_REJECTED",
+        "alpaca_positions_orders": "TIMEOUT",
+        "neon_journal": "PERMISSION_DENIED",
+        "neon_control": "SCHEMA_MISMATCH",
+        "observation_freshness": "STALE",
+        "reconciliation": "BLOCKERS_PRESENT",
+        "independent_assessment": "BLOCKERS_PRESENT",
+        "heartbeat": "PERMISSION_DENIED",
+        "external_liveness": "HTTP_4XX",
+        "nyse_calendar": "MARKET_CLOSED",
+        "first_heartbeat": "NOT_FIRST_BEAT",
+    }
+    code = reasons[failed]
     def fail():
         raise DiagnosticFailure(code)
     stages[failed] = fail
