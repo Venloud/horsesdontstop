@@ -225,6 +225,35 @@ def test_failed_delivery_is_not_recorded_and_retries(tmp_path):
     assert not state.exists()
 
 
+def test_unacknowledged_delivery_never_suppresses_future_failure(tmp_path):
+    state = tmp_path / "state.json"
+    results = {"neon_journal": "FAIL TIMEOUT"}
+    with pytest.raises(RuntimeError, match="unacknowledged"):
+        loop.alert_diagnostic_failure(
+            results, phase="postopen", topic="t" * 30, state_path=state,
+            now=NOW, transport=lambda *_a, **_k: False)
+    assert not state.exists()
+    received = []
+    def accepted(*_a, **_k):
+        received.append(True)
+        return True
+    assert loop.alert_diagnostic_failure(
+        results, phase="postopen", topic="t" * 30, state_path=state,
+        now=NOW, transport=accepted) == "SENT"
+    assert received == [True]
+
+
+def test_test_alert_does_not_report_success_on_unacknowledged_transport(monkeypatch, capsys):
+    from types import SimpleNamespace
+    from bot import monitor_notify
+    monkeypatch.setenv("PAPER_MONITOR_NTFY_TOPIC", "t" * 30)
+    monkeypatch.setattr(monitor_notify, "send_critical_ntfy",
+                        lambda *_a, **_kw: False)
+    args = SimpleNamespace(test_alert=True)
+    assert loop.run_diagnostic_cli(args) == 2
+    assert "TEST ALERT: DELIVERY FAILED" in capsys.readouterr().out
+
+
 def test_log_is_fixed_tokens_and_rotates(tmp_path):
     log = tmp_path / "diag.jsonl"
     record = {"at_utc": NOW.isoformat(), "phase": "postopen", "exit_code": 2,
