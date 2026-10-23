@@ -58,6 +58,10 @@ class Cursor:
         elif "pg_advisory_xact_lock" in sql:
             self.row = (None,)
         elif "SELECT clock_timestamp()" in sql:
+            # In production the restricted executor cannot UPDATE paper_control.
+            # PostgreSQL also requires UPDATE privilege for SELECT ... FOR SHARE.
+            assert "FOR SHARE" not in sql
+            assert "FOR UPDATE" not in sql
             self.row = (self.db["db_now"], *self.db["switches"])
         elif "SELECT snapshot_id" in sql:
             self.row = (1,) if self.db["snapshots"] else None
@@ -126,6 +130,21 @@ def test_opening_snapshot_written_once_with_switches_disabled(monkeypatch):
     assert broker.calls == ["clock", "account", "clock", "account"]
     assert any("pg_advisory_xact_lock" in sql for sql, _ in db["sql"])
     assert all("paper_control SET" not in sql for sql, _ in db["sql"])
+
+
+def test_restricted_equity_writer_uses_select_only_control_check(monkeypatch):
+    # Regressed in production: a FOR SHARE lock silently required control
+    # UPDATE, which the PAPER executor is intentionally forbidden to hold.
+    j, db = journal(monkeypatch)
+    assert j.record_opening_equity(
+        session_open_utc=OPEN, equity=500, cash=500) is True
+    reads = [sql for sql, _ in db["sql"]
+             if "FROM public.paper_control" in sql]
+    assert len(reads) == 1
+    assert "SELECT clock_timestamp()" in reads[0]
+    assert "FOR SHARE" not in reads[0] and "FOR UPDATE" not in reads[0]
+    assert any("pg_advisory_xact_lock" in sql for sql, _ in db["sql"])
+    assert len(db["snapshots"]) == 1
 
 
 def test_expired_github_cron_blocks_late_backfill(monkeypatch):
