@@ -571,8 +571,11 @@ def alert_diagnostic_failure(results, *, phase, topic, state_path, now,
         sent = {}
     if sent.get(incident.fingerprint) == day:
         return "SUPPRESSED_DUPLICATE"
-    (transport or send_critical_ntfy)(
+    delivered = (transport or send_critical_ntfy)(
         incident, topic=topic, details="; ".join(failures))
+    if delivered is not True:
+        # Do not acknowledge a failed/ambiguous delivery.
+        raise RuntimeError("Diagnostic notification unacknowledged")
     sent = {k: v for k, v in sent.items() if v == day}
     sent[incident.fingerprint] = day
     state_file.parent.mkdir(parents=True, exist_ok=True)
@@ -588,9 +591,11 @@ def run_diagnostic_cli(args) -> int:
         from .monitor_notify import send_critical_ntfy
         from .monitor_policy import make_incident
         try:
-            send_critical_ntfy(
+            acknowledged = send_critical_ntfy(
                 make_incident("critical", "diagnostic_test", ("test",)),
                 topic=validate_topic(os.getenv("PAPER_MONITOR_NTFY_TOPIC")))
+            if acknowledged is not True:
+                raise RuntimeError("Test notification unacknowledged")
         except Exception:
             print("TEST ALERT: DELIVERY FAILED")
             return 2
