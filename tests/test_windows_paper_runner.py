@@ -28,3 +28,16 @@ def test_no_broker_writes_or_trading_release_in_runner():
     assert 'Read-HdsSecret "alpaca-paper-secret.dpapi"' in code
     assert 'Read-HdsSecret "beat-token.dpapi"' in code
     assert 'Remove-Item "Env:$name"' in code
+
+
+def test_supervisor_exit_status_reaches_task_scheduler_after_cleanup():
+    code = RUNNER.read_text(encoding="utf-8")
+    assert "$supervisorExitCode = $LASTEXITCODE" in code
+    assert "Write-Host \"SUPERVISOR EXIT CODE: $supervisorExitCode\"" in code
+    assert 'Remove-Item "Env:$name"' in code
+    # Preserve the native status across the outer try/finally cleanup,
+    # and fail closed if Python produces no exit code.
+    cleanup_pos = code.rfind('Remove-Item "Env:$name"')
+    final_exit_pos = code.rfind("exit $supervisorExitCode")
+    assert final_exit_pos > cleanup_pos
+    assert "if ($null -eq $supervisorExitCode) { exit 2 }" in code
