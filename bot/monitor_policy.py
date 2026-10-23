@@ -85,6 +85,8 @@ def make_incident(level: str, code: str, reasons, *, observation=None,
         "stale_observation": "Paper broker observation is stale; verify positions and stops.",
         "supervisor_heartbeat_missing": "Independent PAPER worker heartbeat is missing or unhealthy; review supervision.",
         "supervisor_observation_unverified": "Independent PAPER broker/journal check is degraded; review immediately.",
+        "diagnostic_failed": "Scheduled PAPER diagnostic failed; see the failed stages and the local diagnostic log.",
+        "diagnostic_test": "TEST ONLY: the PAPER diagnostic alert path works. No action needed.",
     }
     return MonitorIncident(
         level=level, code=code, fingerprint=fingerprint,
