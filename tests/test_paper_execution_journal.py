@@ -35,6 +35,9 @@ class Cursor:
         elif "pg_has_role(current_user" in sql:
             self.last = self.db["roles"]
         elif "SELECT kill_switch_active" in sql:
+            # No direct FOR SHARE with a role forbidden control UPDATE.
+            assert "FROM public.paper_reservation_control_guard()" in sql
+            assert "FOR SHARE" not in sql
             self.last = self.db["controls"]
         elif "SELECT COUNT(*) FROM public.paper_intents" in sql:
             self.last = (sum(1 for row in self.db["days"] if row == params[0]),)
@@ -105,7 +108,8 @@ def test_atomic_unique_reservation_stops_duplicate_order_id(monkeypatch):
     with pytest.raises(TradeBlocked, match="Only one"):
         j.reserve_if_enabled(plan)
     assert db["keys"] == {plan.client_order_id}
-    assert any("FOR SHARE" in sql for sql, _ in db["queries"])
+    assert any("paper_reservation_control_guard()" in sql
+               for sql, _ in db["queries"])
 
 
 @pytest.mark.parametrize("permissions", [
@@ -168,3 +172,26 @@ def test_second_symbol_same_day_rejected_by_account_lock(monkeypatch):
         j.reserve_if_enabled(other)
     assert db["keys"] == {first.client_order_id}
     assert any("pg_advisory_xact_lock" in sql for sql, _ in db["queries"])
+
+
+def test_restricted_reservation_requires_privileged_row_lock_guard(monkeypatch):
+    from pathlib import Path
+    j, db = journal(monkeypatch, allow=False)
+    with pytest.raises(TradeBlocked, match="kill switch"):
+        j.reserve_if_enabled(sample())
+    checks = [sql for sql, _ in db["queries"]
+              if "SELECT kill_switch_active" in sql]
+    assert len(checks) == 1
+    assert "FROM public.paper_reservation_control_guard()" in checks[0]
+    assert "FOR SHARE" not in checks[0]
+    assert not any("UPDATE public.paper_control" in sql for sql, _ in db["queries"])
+    sqlfile = (Path(__file__).resolve().parents[1] / "sql" /
+               "paper_reservation_control_guard_review_only.sql")
+    migration = sqlfile.read_text(encoding="utf-8")
+    assert "SECURITY DEFINER" in migration
+    assert "SET search_path = pg_catalog" in migration
+    assert "FOR SHARE" in migration
+    assert "REVOKE ALL ON FUNCTION public.paper_reservation_control_guard() FROM PUBLIC" in migration
+    assert "TO hds_paper_executor" in migration
+    assert "UPDATE public.paper_control" not in migration
+    assert "GRANT UPDATE ON public.paper_control" not in migration
