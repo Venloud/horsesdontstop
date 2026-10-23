@@ -75,6 +75,10 @@ try {
             & $python -m bot.paper_supervisor_loop --max-ticks $runTicks --interval-seconds 30 --external-liveness
         }
         $supervisorExitCode = $LASTEXITCODE
+        if ($null -eq $supervisorExitCode) {
+            # A missing native process status must not appear successful.
+            $supervisorExitCode = 2
+        }
         Write-Host "SUPERVISOR EXIT CODE: $supervisorExitCode"
     }
     finally {
@@ -87,3 +91,8 @@ finally {
     }
     Remove-Variable monitorPassword,heartbeatPassword -ErrorAction SilentlyContinue
 }
+
+# Let Task Scheduler distinguish a failed diagnostic (2) from success (0).
+# Leave credential/environment cleanup above intact before returning the status.
+if ($null -eq $supervisorExitCode) { exit 2 }
+exit $supervisorExitCode
