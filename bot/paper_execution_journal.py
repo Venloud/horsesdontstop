@@ -160,9 +160,14 @@ class PaperExecutorJournal(PostgresPaperJournal):
                     "SELECT pg_advisory_xact_lock("
                     "hashtext('horsesdontstop-paper-exclusive-intent'))")
                 cur.fetchone()
+                # The executor has SELECT but deliberately no UPDATE on
+                # paper_control. A direct FOR SHARE would fail PostgreSQL
+                # privilege checks. This restricted SECURITY DEFINER guard
+                # holds the same control-row lock until our transaction
+                # commits. If it is not yet installed/granted, fail closed.
                 cur.execute(
                     "SELECT kill_switch_active, submissions_enabled "
-                    "FROM public.paper_control WHERE singleton=TRUE FOR SHARE"
+                    "FROM public.paper_reservation_control_guard()"
                 )
                 if cur.fetchone() != (False, True):
                     raise TradeBlocked("Paper kill switch active or not approved")
