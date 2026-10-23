@@ -72,10 +72,14 @@ class PaperExecutorJournal(PostgresPaperJournal):
                     "hashtext('horsesdontstop-paper-opening-equity'))"
                 )
                 cur.fetchone()
+                # This is a type check, NOT an order-release authorization.
+                # PostgreSQL FOR SHARE requires UPDATE on paper_control,
+                # which the restricted executor must never have. The advisory
+                # lock above already serializes competing equity collectors.
                 cur.execute(
                     "SELECT clock_timestamp(), kill_switch_active, "
                     "submissions_enabled FROM public.paper_control "
-                    "WHERE singleton=TRUE FOR SHARE"
+                    "WHERE singleton=TRUE"
                 )
                 row = cur.fetchone()
                 if not row or len(row) != 3:
