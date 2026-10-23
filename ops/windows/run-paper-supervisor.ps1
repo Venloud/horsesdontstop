@@ -5,7 +5,8 @@ param(
     [ValidateRange(1, 5)]
     [int]$MaxTicks = 3,
     [switch]$Continuous,
-    [switch]$Diagnose
+    [switch]$Diagnose,
+    [switch]$TestAlert
 )
 
 $ErrorActionPreference = "Stop"
@@ -16,6 +17,25 @@ $python = Join-Path $repo ".venv\Scripts\python.exe"
 
 if (-not (Test-Path -LiteralPath $python)) {
     throw "Existing HorsesDontStop virtual environment not found. No supervisor started."
+}
+
+# Count ROOT python processes of one long-running module. A venv launcher
+# and its child interpreter share a command line and count once.
+# -1 means the count itself failed; the diagnostic treats that as FAIL.
+function Get-HdsServiceInstances([string]$module) {
+    try {
+        $procs = @(Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction Stop |
+            Where-Object {
+                $_.CommandLine -and
+                $_.CommandLine -match ("-m\s+" + [regex]::Escape($module) + "(\s|$)") -and
+                $_.CommandLine -notmatch "--diagnose"
+            })
+        $ids = @($procs | ForEach-Object { $_.ProcessId })
+        return @($procs | Where-Object { $ids -notcontains $_.ParentProcessId }).Count
+    }
+    catch {
+        return -1
+    }
 }
 
 function Read-HdsSecret([string]$name) {
@@ -55,8 +75,11 @@ try {
     $env:PAPER_EXTERNAL_LIVENESS_URL = "https://horsesdontstop-liveness-staging.vancastech.workers.dev/v1/heartbeat"
 
     $runTicks = if ($Continuous) { 0 } else { $MaxTicks }
-    if ($Diagnose) {
-        Write-Host "STARTING SANITIZED PAPER READ-ONLY DIAGNOSTIC"
+    if ($TestAlert) {
+        Write-Host "SENDING ONE TEST PAPER ALERT"
+    }
+    elseif ($Diagnose) {
+        Write-Host "STARTING SANITIZED PAPER READ-ONLY DIAGNOSTIC (one-shot, not the continuous supervisor)"
     }
     elseif ($Continuous) {
         Write-Host "STARTING CONTINUOUS PAPER READ-ONLY SUPERVISION (Ctrl+C to stop)"
@@ -68,8 +91,26 @@ try {
 
     Push-Location $repo
     try {
-        if ($Diagnose) {
-            & $python -m bot.paper_supervisor_loop --diagnose --external-liveness
+        if ($TestAlert) {
+            & $python -m bot.paper_supervisor_loop --test-alert
+        }
+        elseif ($Diagnose) {
+            # Sanitized JSON-lines log of fixed stage tokens, plus a one-alert-
+            # per-unchanged-failure-per-day receipt file. No secrets written.
+            $collectorCount = Get-HdsServiceInstances "bot.paper_opening_equity_daemon"
+            $supervisorCount = Get-HdsServiceInstances "bot.paper_supervisor_loop"
+            & $python -m bot.paper_supervisor_loop --diagnose --phase auto `
+                --collector-instances $collectorCount `
+                --supervisor-instances $supervisorCount `
+                --log-file (Join-Path $folder "diagnostic-log.jsonl") `
+                --alert-state (Join-Path $folder "diagnostic-alert-state.json")
+        }
+        elseif ($Continuous) {
+            # Continuous supervisor: full broker+Neon poll and lease pulse while
+            # the market is open or anything is exposed; broker-verified closed
+            # and flat ticks skip Neon (free-tier compute) but still post the
+            # Cloudflare liveness signal every 30 seconds.
+            & $python -m bot.paper_supervisor_loop --max-ticks 0 --interval-seconds 30 --external-liveness --idle-neon-when-broker-closed-flat
         }
         else {
             & $python -m bot.paper_supervisor_loop --max-ticks $runTicks --interval-seconds 30 --external-liveness

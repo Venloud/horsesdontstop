@@ -22,8 +22,11 @@ def validate_topic(topic: str):
     return topic
 
 
+_SAFE_DETAILS = re.compile(r"[A-Za-z0-9_:;, ]{1,400}")
+
+
 def send_critical_ntfy(incident: MonitorIncident, *, topic: str,
-                       open_url=urlopen) -> bool:
+                       open_url=urlopen, details: str | None = None) -> bool:
     """Only send critical incidents to the official HTTPS NTFY endpoint.
 
     This transport performs no persistence or deduplication across process
@@ -34,9 +37,15 @@ def send_critical_ntfy(incident: MonitorIncident, *, topic: str,
         return False
     key = validate_topic(topic)
     # Sanitized wording from a fixed string table; fingerprint only.
+    # Optional details are fixed stage/reason tokens only; anything else
+    # is dropped rather than risk forwarding untrusted text.
+    detail_line = ""
+    if details and _SAFE_DETAILS.fullmatch(details):
+        detail_line = f"Failed: {details}\n"
     body = (
         f"Project 10K PAPER WATCH: {incident.summary}\n"
         f"Incident {incident.code}, ID {incident.fingerprint}.\n"
+        f"{detail_line}"
         "Open Alpaca paper dashboard and review exposure/stops. "
         "No orders were placed by this monitor."
     )
