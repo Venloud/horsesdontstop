@@ -14,7 +14,7 @@ from .paper_store import PostgresPaperJournal
 class PaperExecutorJournal(PostgresPaperJournal):
     """Must use dedicated narrowly scoped PAPER writer role, never monitor."""
 
-    def assert_executor_permissions(self):
+    def assert_executor_permissions(self, *, reservation=False):
         """Fail closed for Neon owner/admin and switch-changing DB accounts."""
         with self._connect() as conn:
             with conn.cursor() as cur:
@@ -32,8 +32,24 @@ class PaperExecutorJournal(PostgresPaperJournal):
                     "has_table_privilege(current_user,'public.paper_equity_snapshots','INSERT')"
                 )
                 row = cur.fetchone()
-        if row != (False, False, False, True, True, False, True, True):
+        # Existing opening-equity work remains compatible with the legacy
+        # restricted role and the new reservation-only INSERT boundary.
+        if (not isinstance(row, (tuple, list)) or len(row) != 8
+                or row[:3] != (False, False, False)
+                or type(row[3]) is not bool
+                or row[4:] != (True, False, True, True)):
             raise TradeBlocked("Unrestricted or improperly granted writer role")
+        if reservation:
+            if row[3] is not False:
+                raise TradeBlocked("Direct intent INSERT bypass is forbidden")
+            with self._connect() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT has_function_privilege(current_user,"
+                        "'public.paper_reserve_intent_if_enabled("
+                        "text,text,text,date,integer,numeric,numeric)', 'EXECUTE')")
+                    if cur.fetchone() != (True,):
+                        raise TradeBlocked("Restricted reservation API unavailable")
 
     def record_opening_equity(self, *, session_open_utc: datetime,
                               equity, cash) -> bool:
@@ -150,46 +166,24 @@ class PaperExecutorJournal(PostgresPaperJournal):
         reconciliation before taking any further trading action.
         """
         self.validate_protected_intent(plan)
-        self.assert_executor_permissions()
+        self.assert_executor_permissions(reservation=True)
         with self._connect() as conn:
             with conn.cursor() as cur:
                 cur.execute("SET LOCAL statement_timeout = '3000ms'")
-                # Account-wide advisory lock serializes different symbols
-                # across simultaneously started scheduled jobs.
+                # The narrowly owned database function holds advisory and
+                # control-row locks, checks the kill switch, and atomically
+                # inserts at most one intent per trading day. This role has
+                # no raw paper_intents INSERT privilege after migration.
                 cur.execute(
-                    "SELECT pg_advisory_xact_lock("
-                    "hashtext('horsesdontstop-paper-exclusive-intent'))")
-                cur.fetchone()
-                # The executor has SELECT but deliberately no UPDATE on
-                # paper_control. A direct FOR SHARE would fail PostgreSQL
-                # privilege checks. This restricted SECURITY DEFINER guard
-                # holds the same control-row lock until our transaction
-                # commits. If it is not yet installed/granted, fail closed.
-                cur.execute(
-                    "SELECT kill_switch_active, submissions_enabled "
-                    "FROM public.paper_reservation_control_guard()"
-                )
-                if cur.fetchone() != (False, True):
-                    raise TradeBlocked("Paper kill switch active or not approved")
-                cur.execute(
-                    "SELECT COUNT(*) FROM public.paper_intents "
-                    "WHERE trading_day=%s", (plan.trading_day,))
-                today = cur.fetchone()
-                if today is None or today[0] != 0:
-                    raise TradeBlocked(
-                        "Only one protected PAPER order intent per NY trading day"
-                    )
-                cur.execute(
-                    "INSERT INTO public.paper_intents "
-                    "(client_order_id,strategy,symbol,trading_day,whole_shares,"
-                    "expected_entry,protective_stop) "
-                    "VALUES (%s,%s,%s,%s,%s,%s,%s) "
-                    "ON CONFLICT (client_order_id) DO NOTHING "
-                    "RETURNING client_order_id",
+                    "SELECT public.paper_reserve_intent_if_enabled("
+                    "%s,%s,%s,%s,%s,%s,%s)",
                     (plan.client_order_id, plan.strategy, plan.symbol,
-                     plan.trading_day, plan.whole_shares,
-                     plan.estimated_entry, plan.protective_stop))
-                return cur.fetchone() is not None
+                     date.fromisoformat(plan.trading_day), plan.whole_shares,
+                     money(plan.estimated_entry), money(plan.protective_stop)))
+                row = cur.fetchone()
+                if not row or len(row) != 1 or type(row[0]) is not bool:
+                    raise TradeBlocked("Unverifiable reservation transaction")
+                return row[0]
 
     def mark_uncertain(self, client_order_id):
         """Record an unknown submit outcome, NEVER blindly resubmit."""
