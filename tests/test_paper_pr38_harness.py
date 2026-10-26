@@ -20,6 +20,8 @@ def test_manual_neon_harness_compiles_and_has_branch_identity_gate():
     assert "ThreadPoolExecutor(" in src
     assert "has_table_privilege(current_user,'public.paper_intents','INSERT')" in src
     assert "sslmode=" in src
+    assert "urlsplit(dsn)" in src
+    assert "verify_safe_controls(owner_dsn)" in src
     assert 'controls(owner_dsn, enabled=False)' in src
     assert "cleanup(owner_dsn, keys)" in src
     assert "TradingClient(" not in src
@@ -92,6 +94,7 @@ def test_preexisting_synthetic_fixture_is_never_deleted(monkeypatch, capsys):
     monkeypatch.setattr(h, "inspect_role", lambda *_args: None)
     monkeypatch.setattr(h, "controls",
                         lambda *_args, enabled: switches.append(enabled))
+    monkeypatch.setattr(h, "verify_safe_controls", lambda *_args: None)
     def already_exists(*_args):
         raise h.SafetyBlock("Preexisting fixture, cleanup must not run")
     monkeypatch.setattr(h, "verify_empty_fixtures", already_exists)
@@ -109,6 +112,7 @@ def test_cleanup_failure_cannot_report_acceptance_success(monkeypatch, capsys):
     monkeypatch.setenv("HDS_PR38_TEST_EXECUTOR_DSN", "fake-executor")
     monkeypatch.setattr(h, "inspect_role", lambda *_args: None)
     monkeypatch.setattr(h, "controls", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(h, "verify_safe_controls", lambda *_args: None)
     monkeypatch.setattr(h, "verify_empty_fixtures", lambda *_args: None)
     monkeypatch.setattr(h, "assert_count", lambda *_args: None)
     monkeypatch.setattr(h, "test_raw_insert_denied", lambda *_args: None)
@@ -134,3 +138,13 @@ def test_cleanup_failure_cannot_report_acceptance_success(monkeypatch, capsys):
     output = capsys.readouterr().out
     assert "BLOCKED: could not verify synthetic fixture cleanup" in output
     assert "PASS: real Neon concurrency tests and cleanup completed" not in output
+
+
+@pytest.mark.parametrize("dsn", [
+    "", "not-a-postgres-dsn",
+    "postgresql://test-user:test-password@example-pooler.invalid/neondb",
+])
+def test_live_harness_rejects_missing_or_pooled_neon_endpoint(dsn):
+    h = _harness()
+    with pytest.raises(h.SafetyBlock, match="direct test-branch"):
+        h.connect(dsn, h.EXECUTOR_ROLE)
