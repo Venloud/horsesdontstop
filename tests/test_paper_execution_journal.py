@@ -271,3 +271,14 @@ def test_reservation_requires_function_execute_grant(monkeypatch):
     assert not db["keys"]
     assert not any("SELECT public.paper_reserve_intent_if_enabled(" in sql
                    for sql, _ in db["queries"])
+
+
+def test_review_only_definer_rejects_nonfinite_prices_and_raw_insert():
+    from pathlib import Path
+    sql = (Path(__file__).resolve().parents[1] / "sql" /
+           "paper_reservation_control_guard_review_only.sql").read_text()
+    assert "p_expected_entry::text IN ('NaN','Infinity','-Infinity')" in sql
+    assert "p_protective_stop::text IN ('NaN','Infinity','-Infinity')" in sql
+    assert "REVOKE INSERT ON TABLE public.paper_intents FROM hds_paper_executor" in sql
+    assert "CREATE UNIQUE INDEX uq_paper_intents_trading_day" in sql
+    assert "SET search_path TO 'pg_catalog'" in sql or "SET search_path = pg_catalog" in sql
