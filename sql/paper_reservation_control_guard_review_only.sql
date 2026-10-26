@@ -88,7 +88,9 @@ BEGIN
        OR p_strategy IS DISTINCT FROM 'momentum_volume'
        OR p_whole_shares IS NULL OR p_whole_shares < 1
        OR p_expected_entry IS NULL OR p_expected_entry <= 0
+       OR p_expected_entry::text IN ('NaN','Infinity','-Infinity')
        OR p_protective_stop IS NULL OR p_protective_stop <= 0
+       OR p_protective_stop::text IN ('NaN','Infinity','-Infinity')
        OR p_protective_stop >= p_expected_entry
        OR p_client_order_id IS NULL
        OR p_client_order_id !~ ('^hds-' || to_char(p_trading_day,'YYYYMMDD') || '-'
