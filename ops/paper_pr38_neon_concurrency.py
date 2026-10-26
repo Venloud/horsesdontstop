@@ -110,10 +110,14 @@ def attempt(executor_dsn, day, symbol, barrier=None):
                     return {"pid": pid, "accepted": True, "state": "reserved",
                             "seconds": round(monotonic()-t0, 3)}
                 except Exception as exc:
-                    # PostgreSQL status codes only, never database error messages,
-                    # URIs, parameters or exception traces.
-                    state = getattr(exc, "sqlstate", None) or type(exc).__name__
-                    return {"pid": pid, "accepted": False, "state": str(state)[:32],
+                    # Only the two EXPECTED SQL denial codes count as safe
+                    # reservation refusals. Missing functions, network errors,
+                    # lock timeouts and permission drift are test failures.
+                    # Never echo the exception: a driver error may contain a DSN.
+                    state = getattr(exc, "sqlstate", None)
+                    if state not in ("42501", "23505"):
+                        raise SafetyBlock("Unexpected reservation failure") from None
+                    return {"pid": pid, "accepted": False, "state": state,
                             "seconds": round(monotonic()-t0, 3)}
     finally:
         c.close()
@@ -219,8 +223,9 @@ def test_guard_race(executor_dsn, owner_dsn, day):
         raise SafetyBlock("Reservation holder/lock-wait evidence missing")
     controls(owner_dsn, enabled=False)
     assert_count(owner_dsn, day, 1)
-    if attempt(executor_dsn, day+timedelta(days=1), "F")["accepted"]:
-        raise SafetyBlock("Post-kill reservation accepted")
+    denied = attempt(executor_dsn, day+timedelta(days=1), "F")
+    if denied["accepted"] or denied["state"] != "42501":
+        raise SafetyBlock("Post-kill reservation was not explicitly denied")
     return {"reservation_pid": answer["pid"], "control_pid": owner_pid,
             "lock_timeout_sqlstate": "55P03", "blocked_after_kill": True}
 
@@ -229,8 +234,8 @@ def test_switch_first(executor_dsn, owner_dsn, day):
     controls(owner_dsn, enabled=False)
     r = attempt(executor_dsn, day, "F")
     assert_count(owner_dsn, day, 0)
-    if r["accepted"]:
-        raise SafetyBlock("Switch-first reservation unexpectedly committed")
+    if r["accepted"] or r["state"] != "42501":
+        raise SafetyBlock("Switch-first reservation was not explicitly denied")
     return r
 
 
@@ -274,28 +279,36 @@ def main():
     days = [BASE+timedelta(days=n) for n in (0, 1, 2, 3, 4, 5)]
     keys = {key(d, s) for d in days for s in ("F", "BAC", "AAPL", "MSFT")}
     verified = False
+    fixtures_verified_empty = False
+    passed = False
+    cleanup_ok = True
     try:
         inspect_role(exec_dsn, owner_dsn)
         verified = True
         controls(owner_dsn, enabled=False)
         verify_empty_fixtures(owner_dsn, days)
+        # NEVER clean up any fixture if it existed before this harness run.
+        # If verification fails, only restore the test control switches.
+        fixtures_verified_empty = True
         print("PASS: both credentials verified against isolated branch marker")
         print("PASS: restricted role lacks direct intent INSERT and control UPDATE")
         print("PASS: equity INSERT remains available; unique-day index exists")
         assert_count(owner_dsn, days[0], 0)
         blocked = parallel(exec_dsn, days[0], ["F", "BAC"])
-        if any(r["accepted"] for r in blocked):
-            raise SafetyBlock("Kill switch did not block reservations")
+        if any(r["accepted"] or r["state"] != "42501" for r in blocked):
+            raise SafetyBlock("Disabled control did not explicitly deny every reservation")
         print("PASS: disabled-control two-session attempts")
         controls(owner_dsn, enabled=True)
         four = parallel(exec_dsn, days[1], ["F", "BAC", "AAPL", "MSFT"])
-        if sum(bool(r["accepted"]) for r in four) != 1:
-            raise SafetyBlock("Four-way reservation was not exactly one")
+        if (sum(bool(r["accepted"]) for r in four) != 1
+                or sum(r["state"] == "23505" for r in four) != 3):
+            raise SafetyBlock("Four-way reservation not exactly one commit and three unique-day denials")
         assert_count(owner_dsn, days[1], 1)
         print("PASS: 4 distinct PostgreSQL backends, 1 commit / 3 rejections")
         duplicate = parallel(exec_dsn, days[2], ["F", "F"])
-        if sum(bool(r["accepted"]) for r in duplicate) != 1:
-            raise SafetyBlock("Duplicate client ID was not idempotent")
+        if (sum(bool(r["accepted"]) for r in duplicate) != 1
+                or sum(r["state"] == "23505" for r in duplicate) != 1):
+            raise SafetyBlock("Duplicate client ID was not deterministically refused")
         assert_count(owner_dsn, days[2], 1)
         print("PASS: duplicate ID protected by database uniqueness")
         test_rollback(exec_dsn, owner_dsn, days[3])
@@ -305,19 +318,29 @@ def main():
               race["lock_timeout_sqlstate"])
         test_switch_first(exec_dsn, owner_dsn, days[5])
         print("PASS: switch-first and post-switch reservations rejected")
-        print("PASS: real Neon concurrency tests completed; no broker operations")
-        return 0
+        passed = True
     except Exception as exc:
         print("BLOCKED: acceptance failed safely:", type(exc).__name__)
-        return 1
     finally:
         if verified:
             try:
                 controls(owner_dsn, enabled=False)
-                cleanup(owner_dsn, keys)
-                print("SAFE: isolated test controls disabled, own fixtures cleaned")
             except Exception:
-                print("WARNING: isolated test cleanup requires manual verification")
+                cleanup_ok = False
+                print("BLOCKED: could not confirm safe test-branch switch restoration")
+            if fixtures_verified_empty:
+                try:
+                    cleanup(owner_dsn, keys)
+                    verify_empty_fixtures(owner_dsn, days)
+                except Exception:
+                    cleanup_ok = False
+                    print("BLOCKED: could not verify synthetic fixture cleanup")
+        if not cleanup_ok:
+            passed = False
+    if passed:
+        print("PASS: real Neon concurrency tests and cleanup completed; no broker operations")
+        return 0
+    return 1
 
 
 if __name__ == "__main__":
