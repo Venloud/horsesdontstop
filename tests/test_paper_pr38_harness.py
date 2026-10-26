@@ -19,7 +19,8 @@ def test_manual_neon_harness_compiles_and_has_branch_identity_gate():
     assert "sslmode=" in src
     assert 'controls(owner_dsn, enabled=False)' in src
     assert "cleanup(owner_dsn, keys)" in src
-    assert "alpaca" not in src.lower()
+    assert "TradingClient(" not in src
+    assert "submit_order(" not in src
 
 
 def test_manual_harness_does_not_open_connections_without_both_dsns():
