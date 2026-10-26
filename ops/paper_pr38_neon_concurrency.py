@@ -11,6 +11,7 @@ from hashlib import sha256
 import os
 from threading import Barrier, Event
 from time import monotonic
+from urllib.parse import urlsplit
 
 TARGET = "br-rapid-glitter-b53xh7rb"
 OWNER_ROLE = "neondb_owner"
@@ -29,6 +30,11 @@ class SafetyBlock(Exception):
 
 
 def connect(dsn, expected_role):
+    # The Neon acceptance test must use DIRECT endpoints, never pooler DSNs.
+    # Parse only in memory; URLs can embed passwords and are never logged.
+    hostname = urlsplit(dsn).hostname if isinstance(dsn, str) else None
+    if not hostname or "-pooler" in hostname.lower():
+        raise SafetyBlock("A verified direct test-branch PostgreSQL DSN is required")
     # Import delayed until after explicit operator configuration checks.
     import psycopg
     c = psycopg.connect(
@@ -74,6 +80,22 @@ def controls(owner_dsn, *, enabled):
                 )
                 if cur.fetchone() != (True,):
                     raise SafetyBlock("Control singleton not present")
+    finally:
+        c.close()
+
+
+def verify_safe_controls(owner_dsn):
+    # A separate SELECT must confirm the control state after every run.
+    c, _ = connect(owner_dsn, OWNER_ROLE)
+    try:
+        with c:
+            with c.cursor() as cur:
+                cur.execute(
+                    "SELECT kill_switch_active, submissions_enabled "
+                    "FROM public.paper_control WHERE singleton=TRUE"
+                )
+                if cur.fetchone() != (True, False):
+                    raise SafetyBlock("Test branch control state was not restored")
     finally:
         c.close()
 
@@ -262,8 +284,10 @@ def test_raw_insert_denied(executor_dsn, owner_dsn, day):
                     raise SafetyBlock("Unexpected raw-intent INSERT failure") from None
                 denied = True
     finally:
-        c.rollback()
-        c.close()
+        try:
+            c.rollback()
+        finally:
+            c.close()
     if not denied:
         raise SafetyBlock("Raw intent INSERT unexpectedly accepted")
     assert_count(owner_dsn, day, 0)
@@ -358,6 +382,7 @@ def main():
         if verified:
             try:
                 controls(owner_dsn, enabled=False)
+                verify_safe_controls(owner_dsn)
             except Exception:
                 cleanup_ok = False
                 print("BLOCKED: could not confirm safe test-branch switch restoration")
