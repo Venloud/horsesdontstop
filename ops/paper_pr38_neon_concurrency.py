@@ -239,6 +239,37 @@ def test_switch_first(executor_dsn, owner_dsn, day):
     return r
 
 
+def test_raw_insert_denied(executor_dsn, owner_dsn, day):
+    """Exercise the actual restricted-role table grant, not only pg_acl views.
+
+    Roll back regardless of outcome. A surprising successful INSERT must
+    never leave a synthetic intent behind.
+    """
+    c, pid = connect(executor_dsn, EXECUTOR_ROLE)
+    denied = False
+    try:
+        with c.cursor() as cur:
+            try:
+                cur.execute(
+                    "INSERT INTO public.paper_intents "
+                    "(client_order_id,strategy,symbol,trading_day,whole_shares,"
+                    "expected_entry,protective_stop) "
+                    "VALUES(%s,%s,%s,%s,%s,%s,%s)",
+                    params(day, "F"),
+                )
+            except Exception as exc:
+                if getattr(exc, "sqlstate", None) != "42501":
+                    raise SafetyBlock("Unexpected raw-intent INSERT failure") from None
+                denied = True
+    finally:
+        c.rollback()
+        c.close()
+    if not denied:
+        raise SafetyBlock("Raw intent INSERT unexpectedly accepted")
+    assert_count(owner_dsn, day, 0)
+    return {"pid": pid, "permission_denied": True}
+
+
 def test_rollback(executor_dsn, owner_dsn, day):
     c, _ = connect(executor_dsn, EXECUTOR_ROLE)
     try:
@@ -298,6 +329,8 @@ def main():
         if any(r["accepted"] or r["state"] != "42501" for r in blocked):
             raise SafetyBlock("Disabled control did not explicitly deny every reservation")
         print("PASS: disabled-control two-session attempts")
+        test_raw_insert_denied(exec_dsn, owner_dsn, days[0])
+        print("PASS: restricted executor direct intent INSERT denied by PostgreSQL")
         controls(owner_dsn, enabled=True)
         four = parallel(exec_dsn, days[1], ["F", "BAC", "AAPL", "MSFT"])
         if (sum(bool(r["accepted"]) for r in four) != 1
