@@ -83,7 +83,7 @@ class Conn:
 def journal(monkeypatch, *, allow=False, permissions=None):
     db = {
         "roles": permissions if permissions is not None else
-            (False, False, False, False, False, False, True, True),
+            (False, False, False, False, True, False, True, True),
         "function_access": True,
         "controls": (False, True) if allow else (True, False),
         "queries": [], "keys": set(), "days": [], "intent_status": {}, "audits": [],
@@ -118,7 +118,7 @@ def test_atomic_unique_reservation_stops_duplicate_order_id(monkeypatch):
     (False, True, False, True, True, False, True, True),
     (False, False, True, True, True, False, True, True),
     (False, False, False, True, True, True, True, True),
-    (False, False, False, False, True, False, True, True),
+    (False, False, False, False, False, False, True, True),
 ])
 def test_privileged_or_incomplete_writer_role_refused(monkeypatch, permissions):
     j, db = journal(monkeypatch, allow=True, permissions=permissions)
