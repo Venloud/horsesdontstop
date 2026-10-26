@@ -34,22 +34,21 @@ class Cursor:
             self.last = (None,)
         elif "pg_has_role(current_user" in sql:
             self.last = self.db["roles"]
-        elif "SELECT kill_switch_active" in sql:
-            # No direct FOR SHARE with a role forbidden control UPDATE.
-            assert "FROM public.paper_reservation_control_guard()" in sql
-            assert "FOR SHARE" not in sql
-            self.last = self.db["controls"]
-        elif "SELECT COUNT(*) FROM public.paper_intents" in sql:
-            self.last = (sum(1 for row in self.db["days"] if row == params[0]),)
-        elif "INSERT INTO public.paper_intents" in sql:
-            cid = params[0]
+        elif "has_function_privilege(current_user" in sql:
+            self.last = (self.db["function_access"],)
+        elif "SELECT public.paper_reserve_intent_if_enabled(" in sql:
+            cid, strategy, symbol, day, shares, entry, stop = params
+            if self.db["controls"] != (False, True):
+                raise TradeBlocked("PAPER kill switch blocks reservation")
+            if day in self.db["days"]:
+                raise TradeBlocked("Only one protected PAPER order intent per trading day")
             if cid in self.db["keys"]:
-                self.last = None
+                self.last = (False,)
             else:
                 self.db["keys"].add(cid)
-                self.db["days"].append(params[3])
+                self.db["days"].append(day)
                 self.db["intent_status"][cid] = "reserved"
-                self.last = (cid,)
+                self.last = (True,)
         elif "UPDATE public.paper_intents" in sql:
             cid = params[0]
             if self.db["intent_status"].get(cid) == "reserved":
@@ -83,7 +82,9 @@ class Conn:
 
 def journal(monkeypatch, *, allow=False, permissions=None):
     db = {
-        "roles": permissions or (False, False, False, True, True, False, True, True),
+        "roles": permissions if permissions is not None else
+            (False, False, False, False, False, False, True, True),
+        "function_access": True,
         "controls": (False, True) if allow else (True, False),
         "queries": [], "keys": set(), "days": [], "intent_status": {}, "audits": [],
     }
@@ -108,7 +109,7 @@ def test_atomic_unique_reservation_stops_duplicate_order_id(monkeypatch):
     with pytest.raises(TradeBlocked, match="Only one"):
         j.reserve_if_enabled(plan)
     assert db["keys"] == {plan.client_order_id}
-    assert any("paper_reservation_control_guard()" in sql
+    assert any("paper_reserve_intent_if_enabled(" in sql
                for sql, _ in db["queries"])
 
 
@@ -171,7 +172,8 @@ def test_second_symbol_same_day_rejected_by_account_lock(monkeypatch):
     with pytest.raises(TradeBlocked, match="one protected PAPER order"):
         j.reserve_if_enabled(other)
     assert db["keys"] == {first.client_order_id}
-    assert any("pg_advisory_xact_lock" in sql for sql, _ in db["queries"])
+    assert any("paper_reserve_intent_if_enabled(" in sql
+               for sql, _ in db["queries"])
 
 
 def test_restricted_reservation_requires_privileged_row_lock_guard(monkeypatch):
@@ -180,9 +182,9 @@ def test_restricted_reservation_requires_privileged_row_lock_guard(monkeypatch):
     with pytest.raises(TradeBlocked, match="kill switch"):
         j.reserve_if_enabled(sample())
     checks = [sql for sql, _ in db["queries"]
-              if "SELECT kill_switch_active" in sql]
+              if "SELECT public.paper_reserve_intent_if_enabled(" in sql]
     assert len(checks) == 1
-    assert "FROM public.paper_reservation_control_guard()" in checks[0]
+    assert "INSERT INTO public.paper_intents" not in checks[0]
     assert "FOR SHARE" not in checks[0]
     assert not any("UPDATE public.paper_control" in sql for sql, _ in db["queries"])
     sqlfile = (Path(__file__).resolve().parents[1] / "sql" /
@@ -195,6 +197,11 @@ def test_restricted_reservation_requires_privileged_row_lock_guard(monkeypatch):
     assert "OWNER TO hds_paper_reservation_guard" in migration
     assert "REVOKE CREATE ON SCHEMA public FROM hds_paper_reservation_guard" in migration
     assert "GRANT hds_paper_reservation_guard TO hds_paper_executor" not in migration
+    assert "CREATE UNIQUE INDEX uq_paper_intents_trading_day" in migration
+    assert "REVOKE INSERT ON TABLE public.paper_intents FROM hds_paper_executor" in migration
+    assert "REVOKE EXECUTE ON FUNCTION public.paper_reservation_control_guard()" in migration
+    assert "paper_reserve_intent_if_enabled" in migration
+    assert "pg_advisory_xact_lock" in migration
     assert "SET search_path = pg_catalog" in migration
     assert "FOR SHARE" in migration
     assert "REVOKE ALL ON FUNCTION public.paper_reservation_control_guard() FROM PUBLIC" in migration
@@ -221,7 +228,7 @@ def test_guard_permission_loss_blocks_intent_creation(monkeypatch):
 
     class DeniedGuardCursor(Cursor):
         def execute(self, sql, params=None):
-            if "FROM public.paper_reservation_control_guard()" in sql:
+            if "SELECT public.paper_reserve_intent_if_enabled(" in sql:
                 raise PermissionError("guard execution permission revoked")
             return super().execute(sql, params)
 
@@ -235,3 +242,32 @@ def test_guard_permission_loss_blocks_intent_creation(monkeypatch):
     assert db["keys"] == set()
     assert not any("INSERT INTO public.paper_intents" in statement
                    for statement, _ in db["queries"])
+
+
+def test_raw_intent_insert_privilege_is_not_accepted_for_reservation(monkeypatch):
+    legacy_grants = (False, False, False, True, True, False, True, True)
+    j, db = journal(monkeypatch, allow=True, permissions=legacy_grants)
+    # The existing opening-equity collector still accepts its legacy grants.
+    j.assert_executor_permissions()
+    with pytest.raises(TradeBlocked, match="Direct intent INSERT"):
+        j.reserve_if_enabled(sample())
+    assert db["keys"] == set()
+    assert not any("paper_reserve_intent_if_enabled(" in sql
+                   for sql, _ in db["queries"])
+
+
+def test_hardened_role_still_passes_equity_role_attestation(monkeypatch):
+    j, db = journal(monkeypatch, allow=False)
+    j.assert_executor_permissions()
+    assert not any("paper_reserve_intent_if_enabled(" in sql
+                   for sql, _ in db["queries"])
+
+
+def test_reservation_requires_function_execute_grant(monkeypatch):
+    j, db = journal(monkeypatch, allow=True)
+    db["function_access"] = False
+    with pytest.raises(TradeBlocked, match="reservation API"):
+        j.reserve_if_enabled(sample())
+    assert not db["keys"]
+    assert not any("SELECT public.paper_reserve_intent_if_enabled(" in sql
+                   for sql, _ in db["queries"])
