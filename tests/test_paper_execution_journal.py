@@ -189,6 +189,12 @@ def test_restricted_reservation_requires_privileged_row_lock_guard(monkeypatch):
                "paper_reservation_control_guard_review_only.sql")
     migration = sqlfile.read_text(encoding="utf-8")
     assert "SECURITY DEFINER" in migration
+    assert "CREATE ROLE hds_paper_reservation_guard NOLOGIN NOINHERIT" in migration
+    assert "GRANT SELECT, UPDATE ON TABLE public.paper_control" in migration
+    assert "TO hds_paper_reservation_guard" in migration
+    assert "OWNER TO hds_paper_reservation_guard" in migration
+    assert "REVOKE CREATE ON SCHEMA public FROM hds_paper_reservation_guard" in migration
+    assert "GRANT hds_paper_reservation_guard TO hds_paper_executor" not in migration
     assert "SET search_path = pg_catalog" in migration
     assert "FOR SHARE" in migration
     assert "REVOKE ALL ON FUNCTION public.paper_reservation_control_guard() FROM PUBLIC" in migration
