@@ -21,7 +21,7 @@ def test_prepare_is_review_only_and_single_atomic_install():
     assert len(re.findall(r"(?im)^BEGIN;\s*$", sql)) == 1
     assert len(re.findall(r"(?im)^COMMIT;\s*$", sql)) == 1
     assert sql.index("BEGIN;") < sql.index("CREATE ROLE") < sql.index("COMMIT;")
-    assert sql.count("SECURITY DEFINER") == 2
+    assert len(re.findall(r"(?im)^SECURITY DEFINER\\s*$", sql)) == 2
     assert sql.count("SET search_path = pg_catalog") == 2
     assert sql.count("FOR UPDATE;") == 2
     assert "GRANT hds_paper_reconciler TO hds_paper_executor" not in sql
