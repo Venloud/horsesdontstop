@@ -47,16 +47,17 @@ class Cursor:
                 self.db["days"].append(params[3])
                 self.db["intent_status"][cid] = "reserved"
                 self.last = (cid,)
-        elif "UPDATE public.paper_intents" in sql:
+        elif "SELECT public.paper_mark_reserved_intent_unknown(" in sql:
             cid = params[0]
             if self.db["intent_status"].get(cid) == "reserved":
                 self.db["intent_status"][cid] = "unknown"
-                self.last = (cid,)
+                # Simulate single SQL function transaction, not two
+                # independently granted direct status/audit writes.
+                self.db["audits"].append(
+                    (cid, "submission_outcome_unknown"))
+                self.last = (True,)
             else:
-                self.last = None
-        elif "INSERT INTO public.paper_audit_events" in sql:
-            self.db["audits"].append(params)
-            self.last = None
+                raise TradeBlocked("Cannot mark nonreserved intent unknown")
         else:
             raise AssertionError("Unexpected SQL: " + sql)
 
@@ -144,6 +145,11 @@ def test_unknown_order_submission_records_durable_no_retry(monkeypatch):
     j.mark_uncertain(plan.client_order_id)
     assert db["intent_status"][plan.client_order_id] == "unknown"
     assert len(db["audits"]) == 1
+    sql_calls = [sql for sql, _params in db["queries"]]
+    assert any("paper_mark_reserved_intent_unknown" in sql for sql in sql_calls)
+    assert not any("UPDATE public.paper_intents" in sql
+                   or "INSERT INTO public.paper_audit_events" in sql
+                   for sql in sql_calls)
     with pytest.raises(TradeBlocked):
         j.mark_uncertain(plan.client_order_id)
     with pytest.raises(TradeBlocked, match="Only one"):
