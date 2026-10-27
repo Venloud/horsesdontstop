@@ -223,3 +223,81 @@ def test_unknown_journal_can_reconcile_new_broker_order_without_resend():
     assert state == "submitted"
     assert journal.modified[0][1:3] == ("unknown", "submitted")
     assert broker.calls == ["positions", "lookup", "nested"]
+
+
+def test_role_attestation_requires_separate_narrow_reconciler_grants(monkeypatch):
+    from bot.paper_status_reconciler import PaperStatusReconcilerJournal
+
+    class Cursor:
+        def __init__(self, row):
+            self.row = row
+            self.query = None
+        def __enter__(self):
+            return self
+        def __exit__(self, *_):
+            return False
+        def execute(self, sql):
+            self.query = sql
+        def fetchone(self):
+            return self.row
+
+    class Conn:
+        def __init__(self, cursor):
+            self.c = cursor
+        def __enter__(self):
+            return self
+        def __exit__(self, *_):
+            return False
+        def cursor(self):
+            return self.c
+
+    allowed = (True, False, False, False, False, False,
+               False, False, True, True)
+    j = PaperStatusReconcilerJournal("postgresql://fake.invalid/neondb")
+    cursor = Cursor(allowed)
+    monkeypatch.setattr(j, "_connect", lambda: Conn(cursor))
+    j.assert_reconciler_permissions()
+    assert "hds_paper_reconciler" in cursor.query
+    assert "hds_paper_executor" in cursor.query
+    assert "paper_record_reconciled_intent_status" in cursor.query
+    assert "paper_control" in cursor.query
+    assert "paper_audit_events" in cursor.query
+    assert "paper_intents" in cursor.query
+
+    # Executor membership, direct status writes, missing function grant,
+    # and owner/admin are all refused before any broker call.
+    for idx in (1, 2, 3, 4, 5, 6, 7):
+        current = list(allowed)
+        current[idx] = True
+        cursor.row = tuple(current)
+        with pytest.raises(TradeBlocked, match="reconciler role"):
+            j.assert_reconciler_permissions()
+    for idx in (0, 8, 9):
+        current = list(allowed)
+        current[idx] = False
+        cursor.row = tuple(current)
+        with pytest.raises(TradeBlocked, match="reconciler role"):
+            j.assert_reconciler_permissions()
+
+
+def test_db_status_function_is_single_atomic_call(monkeypatch):
+    from bot.paper_status_reconciler import PaperStatusReconcilerJournal
+
+    calls = []
+    class Cursor:
+        def __enter__(self): return self
+        def __exit__(self, *_): return False
+        def execute(self, sql, args): calls.append((sql, args))
+        def fetchone(self): return (True,)
+    class Conn:
+        def __enter__(self): return self
+        def __exit__(self, *_): return False
+        def cursor(self): return Cursor()
+    journal = PaperStatusReconcilerJournal("postgresql://fake.invalid/neondb")
+    monkeypatch.setattr(journal, "_connect", lambda: Conn())
+    journal.record_broker_verified_state("client-x", "submitted", "accepted", "broker-x")
+    assert len(calls) == 1
+    sql, args = calls[0]
+    assert "SELECT public.paper_record_reconciled_intent_status(" in sql
+    assert "UPDATE" not in sql and "INSERT" not in sql
+    assert args == ("client-x", "submitted", "accepted", "broker-x")
