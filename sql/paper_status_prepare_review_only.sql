@@ -53,7 +53,7 @@ BEGIN
      WHERE client_order_id = p_client_order_id;
     INSERT INTO public.paper_audit_events(client_order_id, kind, summary)
     VALUES(p_client_order_id, 'submission_outcome_unknown',
-           'Broker response unavailable; no blind retry');
+           'Broker outcome not independently verified; never retry');
     RETURN true;
 END;
 $mark_unknown$;
