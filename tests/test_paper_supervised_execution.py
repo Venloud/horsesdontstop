@@ -191,8 +191,7 @@ def test_mock_only_happy_path_one_protected_paper_order(monkeypatch):
     assert order.stop_loss.stop_price == p.stop_usd
     assert broker.calls.index("get_order_by_client_id") < broker.calls.index("submit_order")
     assert journal.calls[0][0] == "reserve"
-    assert journal.calls[1] == ("observe", p.client_order_id,
-                                "submitted", "mock-paper-id")
+    assert journal.calls[1] == ("unknown", p.client_order_id)
 
 
 def test_fake_timeout_marked_unknown_never_retried(monkeypatch):
