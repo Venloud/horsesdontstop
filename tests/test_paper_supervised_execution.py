@@ -145,11 +145,11 @@ class FakeJournal:
 
     def mark_uncertain(self, cid):
         self.calls.append(("unknown", cid))
-
-    def record_observed_state(self, cid, status, oid):
-        self.calls.append(("observe", cid, status, oid))
         if self.fail_record:
             raise RuntimeError("Neon unavailable")
+
+    def record_observed_state(self, cid, status, oid):
+        raise AssertionError("Executor must not attest broker status")
 
 
 def execute(p=None, *, broker=None, journal=None, state=None,
@@ -182,7 +182,7 @@ def test_mock_only_happy_path_one_protected_paper_order(monkeypatch):
     result = execute(p, broker=broker, journal=journal)
     assert result.client_order_id == p.client_order_id
     assert result.broker_order_id == "mock-paper-id"
-    assert result.result == "submitted_unreconciled_stop_not_proven"
+    assert result.result == "broker_acknowledged_unreconciled_stop_not_proven"
     assert len(broker.sent) == 1
     order = broker.sent[0]
     assert order.client_order_id == p.client_order_id
@@ -322,7 +322,7 @@ def test_journal_update_failure_after_submit_never_triggers_retry(monkeypatch):
     monkeypatch.setattr(entry, "PAPER_ORDER_SUBMISSIONS_RELEASED", True)
     p = preview()
     broker, journal = FakeBroker(p), FakeJournal(fail_record=True)
-    with pytest.raises(TradeBlocked, match="durable journal update failed"):
+    with pytest.raises(TradeBlocked, match="durable unresolved marker failed"):
         execute(p, broker=broker, journal=journal)
     assert len(broker.sent) == 1
 
