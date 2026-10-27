@@ -15,6 +15,9 @@ CREATE ROLE hds_paper_reconciler NOLOGIN NOINHERIT;
 
 GRANT USAGE, CREATE ON SCHEMA public TO hds_paper_status_owner;
 GRANT USAGE ON SCHEMA public TO hds_paper_reconciler;
+-- The reconciler must compare the broker GET with durable order terms.
+-- No write grants are delegated to this role; transitions use a function.
+GRANT SELECT ON TABLE public.paper_intents TO hds_paper_reconciler;
 GRANT SELECT, UPDATE (status, broker_order_id, updated_at)
     ON TABLE public.paper_intents TO hds_paper_status_owner;
 GRANT INSERT ON TABLE public.paper_audit_events TO hds_paper_status_owner;
