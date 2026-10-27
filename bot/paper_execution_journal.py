@@ -187,18 +187,18 @@ class PaperExecutorJournal(PostgresPaperJournal):
                 return cur.fetchone() is not None
 
     def mark_uncertain(self, client_order_id):
-        """Record an unknown submit outcome, NEVER blindly resubmit."""
+        """Atomically mark reserved -> unknown, audit, NEVER blindly retry.
+
+        Requires the separately reviewed PAPER status prepare migration.
+        This is staged behind the unreleased broker gateway and MUST NOT
+        be enabled against an unmigrated database.
+        """
+        if not isinstance(client_order_id, str) or not client_order_id:
+            raise TradeBlocked("Missing PAPER client ID")
         with self._connect() as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    "UPDATE public.paper_intents SET status='unknown',"
-                    "updated_at=now() WHERE client_order_id=%s "
-                    "AND status='reserved' RETURNING client_order_id",
+                    "SELECT public.paper_mark_reserved_intent_unknown(%s)",
                     (client_order_id,))
-                if not cur.fetchone():
+                if cur.fetchone() != (True,):
                     raise TradeBlocked("Cannot mark nonreserved intent unknown")
-                cur.execute(
-                    "INSERT INTO public.paper_audit_events "
-                    "(client_order_id,kind,summary) VALUES (%s,%s,%s)",
-                    (client_order_id, "submission_outcome_unknown",
-                     "Broker response unavailable; do not blind retry"))
