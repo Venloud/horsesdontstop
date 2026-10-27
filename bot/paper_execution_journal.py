@@ -46,11 +46,14 @@ class PaperExecutorJournal(PostgresPaperJournal):
                     "text,text,text,text)','EXECUTE'), "
                     "pg_has_role(current_user,'hds_paper_reconciler','MEMBER'), "
                     "pg_has_role(current_user,'hds_paper_status_owner','MEMBER'), "
-                    "pg_has_role(current_user,'hds_paper_reservation_guard','MEMBER')"
+                    "pg_has_role(current_user,'hds_paper_reservation_guard','MEMBER'), "
+                    "pg_has_role(current_user,'neondb_owner','MEMBER'), "
+                    "has_schema_privilege(current_user,'public','CREATE'), "
+                    "has_database_privilege(current_user,current_database(),'CREATE')"
                 )
                 row = cur.fetchone()
         expected = (False, False, False, False, False, False, False,
-                    False, False, True, True, True, False, False, False, False)
+                    False, False, True, True, True, False, False, False, False, False, False, False)
         if row != expected:
             raise TradeBlocked("Unsafe or incomplete post-cutover PAPER executor role")
 
