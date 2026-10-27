@@ -54,6 +54,9 @@ def test_reconciler_is_separate_and_transition_is_transactional():
     assert "v_existing_broker_id IS DISTINCT FROM p_broker_order_id" in body
     assert "INSERT INTO public.paper_audit_events" in body
     assert "p_new_status IN ('submitted','accepted','filled')" in body
+    # COALESCE is a SQL expression, not a pg_catalog callable function.
+    assert "pg_catalog.coalesce(" not in sql.lower()
+    assert body.count("COALESCE(") >= 2
     assert re.search(
         r"GRANT EXECUTE ON FUNCTION public\.paper_record_reconciled_intent_status"
         r"\(text,text,text,text\)\s+TO hds_paper_reconciler;",
