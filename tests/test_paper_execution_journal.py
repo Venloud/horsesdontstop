@@ -38,15 +38,19 @@ class Cursor:
             self.last = self.db["controls"]
         elif "SELECT COUNT(*) FROM public.paper_intents" in sql:
             self.last = (sum(1 for row in self.db["days"] if row == params[0]),)
-        elif "INSERT INTO public.paper_intents" in sql:
+        elif "SELECT public.paper_reserve_intent_if_enabled" in sql:
             cid = params[0]
+            if self.db["controls"] != (False, True):
+                raise TradeBlocked("Paper kill switch active or not approved")
+            if params[3] in self.db["days"]:
+                raise TradeBlocked("Only one protected PAPER order intent per NY trading day")
             if cid in self.db["keys"]:
-                self.last = None
+                self.last = (False,)
             else:
                 self.db["keys"].add(cid)
                 self.db["days"].append(params[3])
                 self.db["intent_status"][cid] = "reserved"
-                self.last = (cid,)
+                self.last = (True,)
         elif "SELECT public.paper_mark_reserved_intent_unknown(" in sql:
             cid = params[0]
             if self.db["intent_status"].get(cid) == "reserved":
@@ -81,7 +85,9 @@ class Conn:
 
 def journal(monkeypatch, *, allow=False, permissions=None):
     db = {
-        "roles": permissions or (False, False, False, True, True, False, True, True),
+        "roles": (permissions if permissions is not None else
+                  (False, False, False, False, False, False, False, False,
+                   False, True, True, True, False, False, False, False)),
         "controls": (False, True) if allow else (True, False),
         "queries": [], "keys": set(), "days": [], "intent_status": {}, "audits": [],
     }
@@ -106,21 +112,21 @@ def test_atomic_unique_reservation_stops_duplicate_order_id(monkeypatch):
     with pytest.raises(TradeBlocked, match="Only one"):
         j.reserve_if_enabled(plan)
     assert db["keys"] == {plan.client_order_id}
-    assert any("FOR SHARE" in sql for sql, _ in db["queries"])
+    assert any("paper_reserve_intent_if_enabled" in sql for sql, _ in db["queries"])
+    assert not any("INSERT INTO public.paper_intents" in sql
+                   for sql, _ in db["queries"])
 
 
-@pytest.mark.parametrize("permissions", [
-    (True, False, False, True, True, False, True, True),
-    (False, True, False, True, True, False, True, True),
-    (False, False, True, True, True, False, True, True),
-    (False, False, False, True, True, True, True, True),
-    (False, False, False, False, True, False, True, True),
-])
-def test_privileged_or_incomplete_writer_role_refused(monkeypatch, permissions):
-    j, db = journal(monkeypatch, allow=True, permissions=permissions)
+@pytest.mark.parametrize("blocked_index", list(range(16)))
+def test_privileged_or_incomplete_writer_role_refused(monkeypatch, blocked_index):
+    baseline = (False, False, False, False, False, False, False, False,
+                False, True, True, True, False, False, False, False)
+    changed = list(baseline)
+    changed[blocked_index] = not baseline[blocked_index]
+    j, db = journal(monkeypatch, allow=True, permissions=tuple(changed))
     with pytest.raises(TradeBlocked, match="role"):
         j.reserve_if_enabled(sample())
-    assert not db["keys"]
+    assert db["keys"] == set()
 
 
 def test_order_intent_tampering_rejected_before_database_access(monkeypatch):
@@ -159,7 +165,8 @@ def test_unknown_order_submission_records_durable_no_retry(monkeypatch):
 def test_readonly_monitor_dsn_cannot_reserve(monkeypatch):
     j, db = journal(monkeypatch, allow=True,
                     permissions=(False, False, False, False,
-                                 False, False, False, False))
+                                 False, False, False, False,
+                 False, False, False, False))
     with pytest.raises(TradeBlocked, match="role"):
         j.reserve_if_enabled(sample())
     assert not db["keys"]
@@ -173,4 +180,5 @@ def test_second_symbol_same_day_rejected_by_account_lock(monkeypatch):
     with pytest.raises(TradeBlocked, match="one protected PAPER order"):
         j.reserve_if_enabled(other)
     assert db["keys"] == {first.client_order_id}
-    assert any("pg_advisory_xact_lock" in sql for sql, _ in db["queries"])
+    assert sum("paper_reserve_intent_if_enabled" in sql
+               for sql, _ in db["queries"]) == 2
