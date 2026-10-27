@@ -282,3 +282,30 @@ def test_review_only_definer_rejects_nonfinite_prices_and_raw_insert():
     assert "REVOKE INSERT ON TABLE public.paper_intents FROM hds_paper_executor" in sql
     assert "CREATE UNIQUE INDEX uq_paper_intents_trading_day" in sql
     assert "SET search_path TO 'pg_catalog'" in sql or "SET search_path = pg_catalog" in sql
+
+
+def test_duplicate_day_sqlstate_23505_is_not_a_false_or_success(monkeypatch):
+    """Live SQL RAISE 23505 must fail closed, not masquerade as False."""
+    j, db = journal(monkeypatch, allow=True)
+
+    class DuplicateDayViolation(Exception):
+        sqlstate = "23505"
+
+    class DuplicateCursor(Cursor):
+        def execute(self, sql, params=None):
+            if "SELECT public.paper_reserve_intent_if_enabled(" in sql:
+                self.db["queries"].append((sql, params))
+                raise DuplicateDayViolation("synthetic unique-day violation")
+            return super().execute(sql, params)
+
+    class DuplicateConn(Conn):
+        def cursor(self):
+            return DuplicateCursor(db)
+
+    monkeypatch.setattr(j, "_connect", lambda: DuplicateConn(db))
+    with pytest.raises(DuplicateDayViolation) as exc:
+        j.reserve_if_enabled(sample())
+    assert exc.value.sqlstate == "23505"
+    assert not db["keys"]
+    assert not db["days"]
+    assert not db["audits"]
