@@ -36,7 +36,11 @@ BEGIN
     END IF;
     IF pg_has_role('hds_paper_executor','hds_paper_reconciler','MEMBER')
        OR pg_has_role('hds_paper_executor','hds_paper_status_owner','MEMBER')
-       OR pg_has_role('hds_paper_executor','hds_paper_reservation_guard','MEMBER') THEN
+       OR pg_has_role('hds_paper_executor','hds_paper_reservation_guard','MEMBER')
+       OR pg_has_role('hds_paper_executor','neondb_owner','MEMBER')
+       OR pg_has_role('hds_paper_executor','neon_superuser','MEMBER')
+       OR has_schema_privilege('hds_paper_executor','public','CREATE')
+       OR has_database_privilege('hds_paper_executor',current_database(),'CREATE') THEN
         RAISE EXCEPTION 'Executor can assume privileged functions owner'
             USING ERRCODE='42501';
     END IF;
@@ -74,6 +78,10 @@ BEGIN
        OR pg_has_role('hds_paper_executor','hds_paper_reconciler','MEMBER')
        OR pg_has_role('hds_paper_executor','hds_paper_status_owner','MEMBER')
        OR pg_has_role('hds_paper_executor','hds_paper_reservation_guard','MEMBER')
+       OR pg_has_role('hds_paper_executor','neondb_owner','MEMBER')
+       OR pg_has_role('hds_paper_executor','neon_superuser','MEMBER')
+       OR has_schema_privilege('hds_paper_executor','public','CREATE')
+       OR has_database_privilege('hds_paper_executor',current_database(),'CREATE')
        OR has_function_privilege('hds_paper_executor',
           'public.paper_record_reconciled_intent_status(text,text,text,text)', 'EXECUTE')
        OR NOT has_function_privilege('hds_paper_executor',
