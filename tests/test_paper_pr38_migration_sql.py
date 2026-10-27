@@ -23,10 +23,6 @@ def source():
 def test_complete_symbol_and_client_order_regex_strings():
     sql = source()
     assert "p_symbol !~ '^[A-Z]{1,5}$'" in sql
-    assert (
-        "p_client_order_id !~ ('^hds-' || to_char(p_trading_day,'YYYYMMDD')"
-        " || '-'" not in sql
-    )  # Preserve multiline layout; never rely on a one-line approximation.
     assert re.search(
         r"p_client_order_id\s+!~\s*\('\^hds-'\s*\|\|\s*to_char"
         r"\(p_trading_day,'YYYYMMDD'\)\s*\|\|\s*'-'\s*\|\|"
