@@ -321,22 +321,23 @@ def submit_paper_once_supervised(
             "Broker acknowledgement inconsistent; outcome UNKNOWN after "
             "client-ID lookup: " + outcome
         )
+    # Even a genuine ACK cannot be promoted to "submitted" by the
+    # executor. Only the independent PAPER GET/stop reconciler has that
+    # DB function grant. Mark the durable reservation unresolved so
+    # crashes or delayed broker visibility can NEVER trigger a second POST.
     try:
-        journal.record_observed_state(
-            plan.client_order_id, "submitted", str(broker_id))
+        journal.mark_uncertain(plan.client_order_id)
     except Exception:
-        # Broker MAY have accepted order even when Neon status update
-        # fails. Make a best-effort read-only lookup, never re-submit.
         outcome = inspect_uncertain_submit_by_client_id(trading, plan)
         raise TradeBlocked(
-            "Broker sent but durable journal update failed; "
-            "client-ID lookup: " + outcome + "; do not resubmit"
+            "Broker acknowledged but durable unresolved marker failed; "
+            "client-ID lookup: " + outcome + "; NEVER retry reserved ID"
         ) from None
-    # Success only confirms acceptance of submission, NOT a fill or
-    # active stop. Separate round-the-clock stop verifier still needed.
+    # Success means the broker ACK was observed, not that the durable
+    # journal is independently verified or a GTC stop exists.
     return PaperSubmitResult(
         client_order_id=plan.client_order_id,
         broker_order_id=str(broker_id),
-        result="submitted_unreconciled_stop_not_proven",
+        result="broker_acknowledged_unreconciled_stop_not_proven",
         submitted_to_paper_broker=True,
     )
