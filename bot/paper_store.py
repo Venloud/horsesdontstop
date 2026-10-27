@@ -156,23 +156,16 @@ class PostgresPaperJournal:
                 return JournalControl(bool(row[0]), bool(row[1]))
 
     def reserve_intent(self, plan: PaperOrderPlan) -> bool:
-        """Atomic one-time reservation. False means NEVER auto-resubmit."""
-        if plan.whole_shares < 1 or plan.protective_stop >= plan.estimated_entry:
-            raise TradeBlocked("Unsafe protective order")
-        with self._connect() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "INSERT INTO paper_intents "
-                    "(client_order_id, strategy, symbol, trading_day, "
-                    " whole_shares, expected_entry, protective_stop) "
-                    "VALUES (%s,%s,%s,%s,%s,%s,%s) "
-                    "ON CONFLICT (client_order_id) DO NOTHING "
-                    "RETURNING client_order_id",
-                    (plan.client_order_id, plan.strategy, plan.symbol,
-                     plan.trading_day, plan.whole_shares,
-                     plan.estimated_entry, plan.protective_stop),
-                )
-                return cur.fetchone() is not None
+        """Legacy direct-INSERT shortcut is intentionally retired.
+
+        After PR38, every executable intent reservation must flow through
+        PaperExecutorJournal.reserve_if_enabled(), whose narrowly owned
+        SQL function atomically locks/checks the actual control row.
+        A plain INSERT can bypass emergency controls or forge a filled
+        record and must NEVER become an available fallback.
+        """
+        raise TradeBlocked(
+            "Direct PAPER intent INSERT forbidden: use atomic guarded reservation")
 
     def read_unresolved_intents(self, limit: int = 501):
         """Read durable order intents. A saturated result is NOT complete.
