@@ -250,29 +250,16 @@ class PostgresPaperJournal:
 
     def record_observed_state(self, client_order_id: str,
                               observed_status: str, broker_order_id=None):
-        """Use ONLY with trusted, freshly reconciled broker state.
+        """Never let the legacy journal directly attest broker outcomes.
 
-        Reject backward/unsafe transitions and duplicate status writes.
-        The journal NEVER authorizes trading by itself.
+        A future independent broker reconciler must first verify PAPER
+        order/position/stop evidence, then call the separately privileged
+        atomic paper_record_reconciled_intent_status SQL interface.
+        This legacy entrypoint fails closed BEFORE any SQL or broker work.
         """
-        with self._connect() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT status FROM paper_intents "
-                    "WHERE client_order_id = %s FOR UPDATE",
-                    (client_order_id,))
-                row = cur.fetchone()
-                if row is None or not transition_allowed(row[0], observed_status):
-                    raise TradeBlocked("Unknown or invalid order state transition")
-                cur.execute(
-                    "UPDATE paper_intents SET status = %s, "
-                    "broker_order_id = COALESCE(%s, broker_order_id), "
-                    "updated_at = now() WHERE client_order_id = %s",
-                    (observed_status, broker_order_id, client_order_id))
-                cur.execute(
-                    "INSERT INTO paper_audit_events "
-                    "(client_order_id, kind, summary) VALUES (%s,%s,%s)",
-                    (client_order_id, "status_observed", observed_status))
+        raise TradeBlocked(
+            "Direct PAPER status and audit writes disabled: use trusted "
+            "independent broker reconciliation")
 
     def record_equity(self, equity: float, cash: float):
         from .paper_safety import money
