@@ -160,10 +160,11 @@ class PaperExecutorJournal(PostgresPaperJournal):
     def reserve_if_enabled(self, plan: PaperOrderPlan) -> bool:
         """Atomic kill-switch+idempotency check, only when paper allowed.
 
-        False means order ID already reserved. Neither True nor False
-        authorizes a broker submission by itself. If the broker call
-        later becomes ambiguous, the supervisor must perform client-ID
-        reconciliation before taking any further trading action.
+        A duplicate trading-day reservation raises PostgreSQL SQLSTATE
+        23505, even for the same client order ID; do not assume it returns
+        False. A False result from the database function also means no
+        new intent was inserted. Neither result authorizes broker submission.
+        On any ambiguous outcome, reconcile broker/client ID before retrying.
         """
         self.validate_protected_intent(plan)
         self.assert_executor_permissions(reservation=True)
