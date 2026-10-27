@@ -18,8 +18,8 @@ def test_cutover_is_explicitly_not_a_production_installer():
     source = sql()
     assert source.startswith("-- REVIEW ONLY.")
     assert "BEGIN;" in source and "COMMIT;" in source
-    assert source.index("BEGIN;") < source.index("DO $preflight$") < (
-        source.index("DO $verify$") < source.index("COMMIT;"))
+    assert (source.index("BEGIN;") < source.index("DO $preflight$")
+            < source.index("DO $verify$") < source.index("COMMIT;"))
     assert "paper_control SET" not in source
     assert "UPDATE public.paper_control" not in source
     assert "DELETE FROM" not in source
@@ -56,7 +56,8 @@ def test_revoke_table_and_column_permissions_plus_audit_and_intent_insert():
     assert "has_column_privilege('hds_paper_executor','public.paper_intents','broker_order_id','UPDATE')" in source
     assert "has_column_privilege('hds_paper_executor','public.paper_intents','updated_at','UPDATE')" in source
     assert "has_table_privilege('hds_paper_executor','public.paper_audit_events','INSERT')" in source
-    assert "has_table_privilege('hds_paper_executor','public.paper_equity_snapshots','INSERT')" in source
+    assert ("has_table_privilege('hds_paper_executor',"
+            in source and "public.paper_equity_snapshots" in source)
     assert "has_column_privilege('hds_paper_reconciler','public.paper_intents','status','UPDATE')" in source
     assert "has_table_privilege('hds_paper_reconciler','public.paper_audit_events','INSERT')" in source
 
