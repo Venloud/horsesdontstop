@@ -180,5 +180,5 @@ def test_second_symbol_same_day_rejected_by_account_lock(monkeypatch):
     with pytest.raises(TradeBlocked, match="one protected PAPER order"):
         j.reserve_if_enabled(other)
     assert db["keys"] == {first.client_order_id}
-    assert sum("paper_reserve_intent_if_enabled" in sql
+    assert sum("SELECT public.paper_reserve_intent_if_enabled(" in sql
                for sql, _ in db["queries"]) == 2
