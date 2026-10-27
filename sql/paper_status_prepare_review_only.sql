@@ -117,15 +117,15 @@ BEGIN
             USING ERRCODE = '42501';
     END IF;
     IF p_new_status IN ('submitted','accepted','filled')
-       AND (pg_catalog.coalesce(p_broker_order_id,v_existing_broker_id) IS NULL
+       AND (COALESCE(p_broker_order_id,v_existing_broker_id) IS NULL
             OR pg_catalog.length(pg_catalog.btrim(
-                pg_catalog.coalesce(p_broker_order_id,v_existing_broker_id))) = 0) THEN
+                COALESCE(p_broker_order_id,v_existing_broker_id))) = 0) THEN
         RAISE EXCEPTION 'Reconciled PAPER broker identity missing'
             USING ERRCODE = '42501';
     END IF;
     UPDATE public.paper_intents
        SET status = p_new_status,
-           broker_order_id = pg_catalog.coalesce(p_broker_order_id,broker_order_id),
+           broker_order_id = COALESCE(p_broker_order_id,broker_order_id),
            updated_at = pg_catalog.now()
      WHERE client_order_id = p_client_order_id;
     INSERT INTO public.paper_audit_events(client_order_id, kind, summary)
