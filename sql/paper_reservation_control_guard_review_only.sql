@@ -76,15 +76,7 @@ BEGIN
     IF NOT FOUND OR v_kill IS DISTINCT FROM FALSE OR v_enabled IS DISTINCT FROM TRUE THEN
         RAISE EXCEPTION 'PAPER reservation blocked by control state' USING ERRCODE = '42501';
     END IF;
-    IF p_trading_day IS NULL OR p_symbol IS NULL OR p_symbol !~ '^[A-Z]{1,5}
-
--- Post-migration read-only audit as restricted executor:
--- SELECT has_function_privilege(current_user,
---    'public.paper_reservation_control_guard()', 'EXECUTE');
--- SELECT has_table_privilege(current_user,'public.paper_control','UPDATE');
--- Keep executor UPDATE = false. Full reservation is still blocked by
--- production kill_switch_active = true / submissions_enabled = false.
-
+    IF p_trading_day IS NULL OR p_symbol IS NULL OR p_symbol !~ '^[A-Z]{1,5}$'
        OR p_strategy IS DISTINCT FROM 'momentum_volume'
        OR p_whole_shares IS NULL OR p_whole_shares < 1
        OR p_expected_entry IS NULL OR p_expected_entry <= 0
@@ -94,15 +86,7 @@ BEGIN
        OR p_protective_stop >= p_expected_entry
        OR p_client_order_id IS NULL
        OR p_client_order_id !~ ('^hds-' || to_char(p_trading_day,'YYYYMMDD') || '-'
-                               || p_symbol || '-[0-9a-f]{12}
-
--- Post-migration read-only audit as restricted executor:
--- SELECT has_function_privilege(current_user,
---    'public.paper_reservation_control_guard()', 'EXECUTE');
--- SELECT has_table_privilege(current_user,'public.paper_control','UPDATE');
--- Keep executor UPDATE = false. Full reservation is still blocked by
--- production kill_switch_active = true / submissions_enabled = false.
-) THEN
+                               || p_symbol || '-[0-9a-f]{12}$') THEN
         RAISE EXCEPTION 'Invalid protected PAPER intent' USING ERRCODE = '22023';
     END IF;
     IF EXISTS(SELECT 1 FROM public.paper_intents WHERE trading_day = p_trading_day) THEN
@@ -117,7 +101,7 @@ BEGIN
     RETURNING client_order_id INTO v_new_id;
     RETURN v_new_id IS NOT NULL;
 END;
-$function$
+$function$;
 
 ALTER FUNCTION public.paper_reserve_intent_if_enabled(text,text,text,date,integer,numeric,numeric)
     OWNER TO hds_paper_reservation_guard;
