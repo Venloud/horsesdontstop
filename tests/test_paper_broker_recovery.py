@@ -326,3 +326,18 @@ def test_expired_or_unverifiable_stop_expiry_is_not_protection(expiry):
     audit = inspect_nested_oto(PLAN, parent(legs=[child]),
                                position_qty=PLAN.whole_shares)
     assert not audit.has_verified_protective_stop
+
+
+def test_stop_cannot_reuse_its_parent_order_id():
+    child = stop()
+    child.id = "safe-paper-parent"
+    audit = inspect_nested_oto(PLAN, parent(legs=[child]), position_qty=PLAN.whole_shares)
+    assert "invalid_or_duplicate_broker_child_identity" in audit.blockers
+    assert not audit.has_verified_protective_stop
+
+
+def test_conflicting_terminal_child_cannot_reuse_active_stop_identity():
+    audit = inspect_nested_oto(PLAN, parent(legs=[stop(), stop(status="canceled")]),
+                               position_qty=PLAN.whole_shares)
+    assert "invalid_or_duplicate_broker_child_identity" in audit.blockers
+    assert not audit.has_verified_protective_stop
