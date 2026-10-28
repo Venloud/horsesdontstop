@@ -306,3 +306,23 @@ def test_linked_partial_stop_execution_accounts_for_reduced_exposure():
         stop(qty=5, filled=4, status="partially_filled")]), position_qty=1)
     assert audit.blockers == ()
     assert audit.has_verified_protective_stop
+
+
+@pytest.mark.parametrize("status", ["held", "pending_cancel", "pending_replace", "unknown"])
+def test_uncertain_competing_exit_cannot_be_ignored(status):
+    other = stop(status=status)
+    other.id = "uncertain-exit"
+    audit = inspect_nested_oto(PLAN, parent(legs=[stop(), other]),
+                               position_qty=PLAN.whole_shares)
+    assert not audit.has_verified_protective_stop
+    assert "unexpected_active_sell_exit_count" in audit.blockers
+
+
+@pytest.mark.parametrize("expiry", ["bad-date", "2000-01-01T00:00:00+00:00",
+                                    "2099-01-01T00:00:00", 10])
+def test_expired_or_unverifiable_stop_expiry_is_not_protection(expiry):
+    child = stop()
+    child.expires_at = expiry
+    audit = inspect_nested_oto(PLAN, parent(legs=[child]),
+                               position_qty=PLAN.whole_shares)
+    assert not audit.has_verified_protective_stop

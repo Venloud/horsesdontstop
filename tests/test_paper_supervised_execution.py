@@ -565,3 +565,76 @@ def test_real_alpaca_sdk_calendar_date_must_match_local_market_day():
             broker, SimpleNamespace(next_close=datetime(
                 2026, 11, 30, 16, 0, tzinfo=local)),
             now=datetime(2026, 11, 30, 10, 0, tzinfo=local))
+
+
+def test_kill_switch_changed_during_reservation_never_posts(monkeypatch):
+    monkeypatch.setattr(entry, "PAPER_ORDER_SUBMISSIONS_RELEASED", True)
+    p = preview()
+    broker = FakeBroker(p)
+    class KilledJournal(FakeJournal):
+        @contextmanager
+        def authorize_reserved_submission(self, plan):
+            self.mark_uncertain(plan.client_order_id)
+            raise TradeBlocked("Kill changed after reservation")
+            yield  # pragma: no cover -- context manager protocol
+    with pytest.raises(TradeBlocked, match="before POST"):
+        execute(p, broker=broker, journal=KilledJournal())
+    assert broker.sent == []
+
+
+def test_lock_wait_cannot_extend_approval_or_quote_lifetime(monkeypatch):
+    monkeypatch.setattr(entry, "PAPER_ORDER_SUBMISSIONS_RELEASED", True)
+    times = iter([100, 221])
+    monkeypatch.setattr(entry, "monotonic", lambda: next(times))
+    p = preview()
+    broker = FakeBroker(p)
+    with pytest.raises(TradeBlocked, match="before POST"):
+        execute(p, broker=broker)
+    assert not broker.sent
+
+
+def test_account_change_after_reservation_cannot_post(monkeypatch):
+    monkeypatch.setattr(entry, "PAPER_ORDER_SUBMISSIONS_RELEASED", True)
+    p = preview()
+    broker = FakeBroker(p)
+    class ChangedJournal(FakeJournal):
+        @contextmanager
+        def authorize_reserved_submission(self, plan):
+            self.mark_uncertain(plan.client_order_id)
+            broker.balance = 100
+            yield
+    with pytest.raises(TradeBlocked, match="before POST"):
+        execute(p, broker=broker, journal=ChangedJournal())
+    assert not broker.sent
+
+
+def test_missing_buying_power_evidence_cannot_reserve(monkeypatch):
+    monkeypatch.setattr(entry, "PAPER_ORDER_SUBMISSIONS_RELEASED", True)
+    p = preview()
+    broker, journal = FakeBroker(p), FakeJournal()
+    broker.get_account = lambda: SimpleNamespace(equity="500", cash="500", trading_blocked=False)
+    with pytest.raises(TradeBlocked):
+        execute(p, broker=broker, journal=journal)
+    assert not broker.sent and not journal.calls
+
+
+@pytest.mark.parametrize("bad_history", ["missing", "stale", "duplicate", "no_signal"])
+def test_strategy_must_have_fresh_unique_eligible_completed_bars(monkeypatch, bad_history):
+    monkeypatch.setattr(entry, "PAPER_ORDER_SUBMISSIONS_RELEASED", True)
+    p = preview()
+    broker = FakeBroker(p)
+    class BadData(FakeMarketData):
+        def get_stock_bars(self, request):
+            response = super().get_stock_bars(request)
+            rows = response.data["F"]
+            if bad_history == "missing": response.data["F"] = []
+            elif bad_history == "stale": rows.pop()
+            elif bad_history == "duplicate": rows.append(rows[-1])
+            else: rows[-1].volume = 50
+            return response
+    with pytest.raises(TradeBlocked, match="momentum signal"):
+        entry.submit_paper_once_supervised(
+            trading=broker, journal=FakeJournal(), market_quote=quote(),
+            preview=p, safety_state=healthy(), approval=approved(p), now=NOW,
+            market_data=BadData())
+    assert not broker.sent

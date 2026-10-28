@@ -75,6 +75,32 @@ class PaperStatusReconcilerJournal(PostgresPaperJournal):
                     (client_order_id,))
                 return cur.fetchone()
 
+    def read_pending_plans(self):
+        """Rebuild reconciliation inputs after a restart; never reserve/send."""
+        self.assert_reconciler_permissions()
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT client_order_id,strategy,symbol,trading_day,whole_shares,"
+                    "expected_entry,protective_stop FROM public.paper_intents "
+                    "WHERE status IN ('reserved','submitted','accepted','unknown') "
+                    "ORDER BY created_at LIMIT 501")
+                rows = cur.fetchall()
+        if len(rows) >= 501:
+            raise TradeBlocked("Pending reconciler intent list incomplete")
+        plans = []
+        for cid, strategy, symbol, day, qty, entry, stop in rows:
+            # Derived numbers exist only to reconstruct the durable terms;
+            # this service cannot reserve or submit an order.
+            cost = money(entry) * qty
+            risk = (money(entry) - money(stop)) * qty
+            plans.append(PaperOrderPlan(
+                symbol=symbol, strategy=strategy, trading_day=day.isoformat(),
+                client_order_id=cid, whole_shares=qty, estimated_entry=entry,
+                protective_stop=stop, estimated_cost=cost,
+                risk_budget_usd=risk, estimated_risk_usd=risk))
+        return plans
+
     def record_broker_verified_state(self, client_order_id, old, new, broker_id):
         """Call restricted function, never direct UPDATE or audit INSERT.
 
@@ -152,7 +178,8 @@ def reconcile_verified_paper_order(*, trading, journal, plan):
     if audit.blockers or not audit.parent_order_id:
         raise TradeBlocked("Unresolved broker order/stop evidence")
     new = BROKER_TO_JOURNAL.get(audit.status)
-    if new is None or not transition_allowed(old, new):
+    unchanged = new == old and original_broker_id == audit.parent_order_id
+    if new is None or not (unchanged or transition_allowed(old, new)):
         raise TradeBlocked("Unverified or invalid broker state transition")
     if original_broker_id is not None and original_broker_id != audit.parent_order_id:
         raise TradeBlocked("Broker order ID conflicts with durable journal")
@@ -164,6 +191,21 @@ def reconcile_verified_paper_order(*, trading, journal, plan):
             audit.paper_exposure_shares != 0):
         raise TradeBlocked("Broker status inconsistent with live exposure")
 
-    journal.record_broker_verified_state(
-        plan.client_order_id, old, new, audit.parent_order_id)
+    if not unchanged:
+        journal.record_broker_verified_state(
+            plan.client_order_id, old, new, audit.parent_order_id)
     return new
+
+
+def reconcile_pending_once(*, trading, journal):
+    """Bounded service tick, including durable restart recovery.
+
+    The surrounding trusted supervisor must alert on ANY TradeBlocked and
+    continue read-only protection checks for terminal filled positions.
+    Deployment and independent credentials require separate owner approval.
+    """
+    if str(getattr(trading, "_base_url", "")).rstrip("/") != PAPER_ENDPOINT:
+        raise TradeBlocked("Reconciler is not bound to Alpaca PAPER")
+    plans = journal.read_pending_plans()
+    return tuple((plan.client_order_id, reconcile_verified_paper_order(
+        trading=trading, journal=journal, plan=plan)) for plan in plans)

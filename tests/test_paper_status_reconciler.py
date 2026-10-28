@@ -334,3 +334,20 @@ def test_exact_five_filled_one_held_unchanged_five_stop_regression(monkeypatch):
     with pytest.raises(TradeBlocked):
         run(broker=broker, journal=journal)
     assert journal.modified == []
+
+
+def test_repeated_verified_accepted_observation_does_not_rewrite_journal():
+    journal = FakeJournal(status="accepted", broker_id="broker-paper-id")
+    state, broker, journal = run(journal=journal, broker=FakeBroker(parent(status="accepted")))
+    assert state == "accepted" and journal.modified == []
+    assert broker.calls == ["positions", "lookup", "nested"]
+
+
+def test_restart_uses_durable_intents_and_gets_only():
+    from bot.paper_status_reconciler import reconcile_pending_once
+    journal = FakeJournal(status="unknown")
+    journal.read_pending_plans = lambda: [PLAN]
+    broker = FakeBroker(parent(status="accepted"))
+    assert reconcile_pending_once(trading=broker, journal=journal) == ((PLAN.client_order_id, "accepted"),)
+    assert journal.modified[0][1:3] == ("unknown", "accepted")
+    assert broker.calls == ["positions", "lookup", "nested"]

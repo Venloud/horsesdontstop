@@ -88,6 +88,19 @@ DO $verify$
 BEGIN
     IF EXISTS (
         SELECT 1 FROM (VALUES ('hds_paper_executor'),('hds_paper_reconciler')) AS r(role_name)
+        JOIN pg_roles privileged ON pg_has_role(r.role_name,privileged.oid,'MEMBER')
+        WHERE privileged.rolsuper OR privileged.rolcreaterole OR privileged.rolcreatedb
+           OR privileged.rolreplication OR privileged.rolbypassrls
+           OR privileged.rolname IN ('neondb_owner','hds_paper_status_owner','hds_paper_reservation_guard')
+    ) OR EXISTS (
+        SELECT 1 FROM (VALUES ('hds_paper_executor'),('hds_paper_reconciler')) AS r(role_name)
+        WHERE has_schema_privilege(r.role_name,'public','CREATE')
+           OR has_database_privilege(r.role_name,current_database(),'CREATE')
+    ) THEN
+        RAISE EXCEPTION 'Privileged executor or reconciler membership; rollback' USING ERRCODE='42501';
+    END IF;
+    IF EXISTS (
+        SELECT 1 FROM (VALUES ('hds_paper_executor'),('hds_paper_reconciler')) AS r(role_name)
         CROSS JOIN (VALUES ('public.paper_intents'),('public.paper_audit_events'),
                            ('public.paper_control')) AS t(tbl)
         WHERE has_any_column_privilege(r.role_name,t.tbl,'INSERT,UPDATE,REFERENCES')

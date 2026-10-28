@@ -28,7 +28,7 @@ SELECT /* paper_acl_boundary */
       OR has_table_privilege(current_user,t.tbl,'DELETE,TRUNCATE,TRIGGER'))
  AND NOT EXISTS (
    SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
-   WHERE n.nspname='public' AND p.prosecdef
+   WHERE n.nspname !~ '^pg_' AND n.nspname <> 'information_schema' AND p.prosecdef
      AND has_function_privilege(current_user,p.oid,'EXECUTE')
      AND p.oid::regprocedure::text NOT IN
        ('paper_reserve_intent_if_enabled(text,text,text,date,integer,numeric,numeric)',

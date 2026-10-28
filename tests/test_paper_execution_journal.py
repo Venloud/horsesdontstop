@@ -28,7 +28,7 @@ class Cursor:
 
     def execute(self, sql, params=None):
         self.db["queries"].append((sql, params))
-        if sql.startswith("SET LOCAL statement_timeout"):
+        if sql.startswith("SET LOCAL"):
             self.last = None
         elif "paper_acl_boundary" in sql:
             self.last = (True,)
@@ -64,6 +64,11 @@ class Cursor:
                 self.last = (True,)
             else:
                 raise TradeBlocked("Cannot mark nonreserved intent unknown")
+        elif "SELECT public.paper_authorize_unknown_submission(" in sql:
+            if self.db["controls"] != (False, True):
+                raise TradeBlocked("Final control check blocked")
+            assert self.db["intent_status"][params[0]] == "unknown"
+            self.last = (True,)
         else:
             raise AssertionError("Unexpected SQL: " + sql)
 
@@ -184,3 +189,26 @@ def test_second_symbol_same_day_rejected_by_account_lock(monkeypatch):
     assert db["keys"] == {first.client_order_id}
     assert sum("SELECT public.paper_reserve_intent_if_enabled(" in sql
                for sql, _ in db["queries"]) == 2
+
+
+def test_final_authorization_consumes_reservation_before_yield_and_never_reuses(monkeypatch):
+    j, db = journal(monkeypatch, allow=True)
+    plan = sample()
+    j.reserve_if_enabled(plan)
+    with j.authorize_reserved_submission(plan):
+        assert db["intent_status"][plan.client_order_id] == "unknown"
+        assert len(db["audits"]) == 1
+    with pytest.raises(TradeBlocked):
+        with j.authorize_reserved_submission(plan):
+            pytest.fail("Reservation reused after attempted submission")
+
+
+def test_kill_change_after_reservation_blocks_final_authorization(monkeypatch):
+    j, db = journal(monkeypatch, allow=True)
+    plan = sample()
+    j.reserve_if_enabled(plan)
+    db["controls"] = (True, False)
+    with pytest.raises(TradeBlocked, match="Final control"):
+        with j.authorize_reserved_submission(plan):
+            pytest.fail("Disabled control permitted POST")
+    assert db["intent_status"][plan.client_order_id] == "unknown"

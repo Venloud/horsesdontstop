@@ -349,6 +349,15 @@ def submit_paper_once_supervised(
                         < money(plan.estimated_cost)):
                 raise TradeBlocked("PAPER account changed after reservation")
             _verify_paper_market_session(trading, final_clock, now=final_now)
+            # Network reads can themselves stall. Approval and quote freshness
+            # must still hold immediately before the POST boundary.
+            send_now = now + timedelta(seconds=monotonic() - started)
+            _validate_approval(approval, recomputed, send_now)
+            preview_live_paper_entry(
+                symbol=preview.symbol, quote=market_quote, equity=final_account.equity,
+                available_cash=final_account.cash, now=send_now, market_open=True)
+            if send_now - final_now > timedelta(seconds=3):
+                raise TradeBlocked("PAPER final broker verification exceeded freshness budget")
             attempted = True
             result = trading.submit_order(order_data=order_request)
     except Exception:
