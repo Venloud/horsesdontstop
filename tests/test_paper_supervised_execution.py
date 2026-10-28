@@ -652,3 +652,58 @@ def test_early_close_deadline_crossed_during_final_reads_blocks(monkeypatch):
     with pytest.raises(TradeBlocked, match="before POST"):
         execute(p, broker=broker)
     assert not broker.sent
+
+
+def test_simulated_order_to_independent_fill_reconciliation_and_restart(monkeypatch):
+    from datetime import date
+    from bot.paper_status_reconciler import reconcile_pending_once
+    monkeypatch.setattr(entry, "PAPER_ORDER_SUBMISSIONS_RELEASED", True)
+    p = preview()
+    class Durable(FakeJournal):
+        status = None
+        def reserve_if_enabled(self, plan):
+            if self.status is not None:
+                return False
+            self.plan, self.status = plan, "reserved"
+            return True
+        def mark_uncertain(self, cid):
+            assert self.status == "reserved" and cid == self.plan.client_order_id
+            self.status = "unknown"
+    durable = Durable()
+    broker = FakeBroker(p)
+    result = execute(p, broker=broker, journal=durable)
+    assert result.submitted_to_paper_broker and durable.status == "unknown"
+    assert len(broker.sent) == 1
+    # New independent process/role reconstructs the intent from durable terms.
+    class IndependentJournal:
+        def read_pending_plans(self): return [durable.plan]
+        def assert_reconciler_permissions(self): pass  # isolated-role fake only
+        def get_durable_intent_terms(self, cid):
+            plan = durable.plan
+            return (durable.status, None, plan.strategy, plan.symbol,
+                    date.fromisoformat(plan.trading_day), plan.whole_shares,
+                    plan.estimated_entry, plan.protective_stop)
+        def record_broker_verified_state(self, cid, old, new, broker_id):
+            assert durable.status == old and broker_id == "mock-paper-id"
+            durable.status = new
+    child = SimpleNamespace(
+        id="linked-stop", parent_order_id="mock-paper-id", symbol=p.symbol,
+        side="sell", type="stop", status="new", time_in_force="gtc",
+        qty=str(p.shares), filled_qty="0", stop_price=str(p.stop_usd))
+    nested = SimpleNamespace(
+        id="mock-paper-id", client_order_id=p.client_order_id, symbol=p.symbol,
+        side="buy", type="limit", order_class="oto", time_in_force="day",
+        status="filled", qty=str(p.shares), filled_qty=str(p.shares),
+        limit_price=str(p.buy_limit_usd), legs=[child])
+    broker.get_order_by_client_id = lambda cid: nested
+    broker.get_order_by_id = lambda pid, **kw: nested
+    broker.get_all_positions = lambda: [SimpleNamespace(symbol=p.symbol, qty=str(p.shares))]
+    states = reconcile_pending_once(trading=broker, journal=IndependentJournal())
+    assert states == ((p.client_order_id, "filled"),)
+    assert durable.status == "filled" and len(broker.sent) == 1
+    # Restart cannot interpret a subsequent broker 404 as resubmission permission.
+    broker.get_all_positions = lambda: []
+    broker.get_order_by_client_id = FakeBroker(p).get_order_by_client_id
+    with pytest.raises(TradeBlocked, match="NEVER retry"):
+        execute(p, broker=broker, journal=durable)
+    assert len(broker.sent) == 1

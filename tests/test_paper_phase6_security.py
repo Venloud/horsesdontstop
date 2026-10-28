@@ -22,6 +22,8 @@ def test_unverifiable_effective_privileges_fail_closed(result):
     assert "pg_has_role(current_user,c.relowner,'MEMBER')" in cur.sql
     assert "has_function_privilege(current_user,p.oid,'EXECUTE')" in cur.sql
     assert "paper_authorize_unknown_submission" in cur.sql
+    assert "session_user = current_user" in cur.sql
+    assert "rolcanlogin" in cur.sql
 
 
 def test_final_submission_sql_preserves_lock_terms_and_install_boundary():

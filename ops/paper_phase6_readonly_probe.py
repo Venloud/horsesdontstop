@@ -67,6 +67,20 @@ def probe():
     except Exception:
         report["neon"] = {"monitor_reads_verified": False}
     try:
+        from bot.paper_worker_lease import PaperWorkerHeartbeat
+        from bot.paper_external_liveness import check_liveness_settings
+        writer = PaperWorkerHeartbeat(os.environ["PAPER_HEARTBEAT_DSN"])
+        writer.assert_heartbeat_writer_only()
+        check_liveness_settings(os.environ["PAPER_EXTERNAL_LIVENESS_URL"],
+                                os.environ["PAPER_EXTERNAL_LIVENESS_TOKEN"])
+        report["supervision_dependencies"] = {
+            "authenticated_heartbeat_writer_acl": True,
+            "external_liveness_config_valid": True,
+            "fresh_receiver_receipt_verified": False,
+            "no_heartbeat_writes_performed": True}
+    except Exception:
+        report["supervision_dependencies"] = {"verified": False}
+    try:
         data = StockHistoricalDataClient(key, secret)
         candidates = research_candidates(data, BROADER_SYMBOLS)
         report["completed_bar_research_only"] = candidates[:3]

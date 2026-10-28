@@ -282,6 +282,8 @@ def submit_paper_once_supervised(
     # missing values. In particular, None does not prove trading is allowed.
     if (getattr(clock, "is_open", None) is not True
             or getattr(account, "trading_blocked", None) is not False
+            or not isinstance(positions, (list, tuple))
+            or not isinstance(orders, (list, tuple))
             or positions or orders):
         raise TradeBlocked("Paper market closed, account blocked or exposure exists")
     _verify_paper_market_session(trading, clock, now=now)

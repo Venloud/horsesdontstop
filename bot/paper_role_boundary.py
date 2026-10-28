@@ -8,7 +8,9 @@ from .paper_safety import TradeBlocked
 
 BOUNDARY_SQL = """
 SELECT /* paper_acl_boundary */
- NOT EXISTS (
+ session_user = current_user
+ AND EXISTS (SELECT 1 FROM pg_roles WHERE rolname=current_user AND rolcanlogin)
+ AND NOT EXISTS (
    SELECT 1 FROM pg_roles r
    WHERE (r.rolsuper OR r.rolcreaterole OR r.rolcreatedb OR r.rolreplication
           OR r.rolbypassrls OR r.rolname IN
