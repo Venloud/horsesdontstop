@@ -13,7 +13,7 @@ from threading import Barrier, Event
 from time import monotonic
 from urllib.parse import urlsplit
 
-TARGET = "br-rapid-glitter-b53xh7rb"
+TARGET = "br-misty-dawn-b5dbnr90"
 OWNER_ROLE = "neondb_owner"
 EXECUTOR_ROLE = "hds_paper_executor"
 DSN_OWNER = "HDS_PR38_TEST_OWNER_DSN"

@@ -14,7 +14,7 @@ HARNESS = ROOT / "ops" / "paper_pr38_neon_concurrency.py"
 def test_manual_neon_harness_compiles_and_has_branch_identity_gate():
     src = HARNESS.read_text(encoding="utf-8")
     compile(src, str(HARNESS), "exec")
-    assert 'TARGET = "br-rapid-glitter-b53xh7rb"' in src
+    assert 'TARGET = "br-misty-dawn-b5dbnr90"' in src
     assert "public.hds_pr38_test_marker" in src
     assert "Barrier(" in src
     assert "ThreadPoolExecutor(" in src

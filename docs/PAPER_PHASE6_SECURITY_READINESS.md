@@ -170,3 +170,28 @@ PR38/41 merge/deployment approval; distinct trusted reconciler credentials and
 supervision; genuine GTC/partial/exit/restart lifecycle; complete audited equity and
 cash-flow evidence; fresh external receiver and market-open monitoring acceptance;
 then separate explicit submission-control and exact first-order authorization.
+
+
+## Verified session update, October 28, 2026
+
+Venloud authorized eligible integration, isolated migrations, and verified cleanup
+for this session. This supersedes the earlier proposed new-branch rehearsal:
+existing child `br-misty-dawn-b5dbnr90` was reused after baseline inspection.
+Production was not migrated. Its legacy executor status/audit grants remain a
+release blocker. Independent security review and a verified coordinated runtime
+rollout/rollback remain prerequisites to production cutover.
+
+Actual restricted-login acceptance passed on the reused isolated branch: five
+executor forgery attempts denied with SQLSTATE 42501, atomic reservation and
+uniqueness, independently committed single-use authorization receipt, real
+cross-connection control lock, status/audit rollback and equity-writer rollback.
+Four-backend reservation concurrency passed (one winner, three daily-uniqueness
+denials). Final isolated controls were kill ON, submissions OFF, zero synthetic
+intents and audits. No broker operations occurred. Private catalog snapshots,
+migration hashes and complete sanitized harness outputs are preserved in Vandam.
+
+The authorization receipt now survives rollback of the final lock transaction;
+replay is denied by a partial unique audit index. A broker acknowledgement still
+does not establish filled quantity or protective-stop coverage. No trade is
+ready: actual overnight stop lifecycle, trusted deployed reconciler, fresh
+market-open monitoring and exact owner-approved order remain required.
