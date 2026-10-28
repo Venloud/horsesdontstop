@@ -145,12 +145,26 @@ def inspect_nested_oto(plan: PaperOrderPlan, parent, *, position_qty) -> BrokerO
             leg_filled = quantity(getattr(leg, "filled_qty", None))
             if leg_filled > leg_qty or leg_qty > expected_qty:
                 continue
-            if leg_qty - leg_filled >= qty and leg_qty > 0:
+            # A smaller position is explained only by this independently
+            # fetched, linked stop's consistent executions. An oversized
+            # unchanged stop is not evidence of a sale elsewhere.
+            status = field(leg, "status")
+            consistent_fill = (
+                (status in PROTECTIVE_ACTIVE - {"partially_filled"}
+                 and leg_filled == 0)
+                or (status == "partially_filled"
+                    and 0 < leg_filled < leg_qty)
+                or (status == "filled" and leg_filled == leg_qty)
+            )
+            if (leg_qty == fill_qty and leg_qty > 0
+                    and consistent_fill and fill_qty - leg_filled == qty):
                 protective.append(leg)
         except TradeBlocked:
             continue
     active = [x for x in protective if field(x, "status") in PROTECTIVE_ACTIVE]
     filled_stop = [x for x in protective if field(x, "status") in EXIT_FINISHED]
+    if qty != fill_qty and len(protective) != 1:
+        blockers.append("broker_position_change_without_verified_stop_execution")
     if qty > 0 and not active:
         blockers.append("unprotected_open_paper_position")
     if qty == 0 and fill_qty > 0 and not filled_stop:

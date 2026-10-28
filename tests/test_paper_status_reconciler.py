@@ -3,6 +3,7 @@
 The runtime and SQL privilege rollout are still NOT deployed or authorized.
 """
 from datetime import date
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -301,3 +302,34 @@ def test_db_status_function_is_single_atomic_call(monkeypatch):
     assert "SELECT public.paper_record_reconciled_intent_status(" in sql
     assert "UPDATE" not in sql and "INSERT" not in sql
     assert args == ("client-x", "submitted", "accepted", "broker-x")
+
+
+@pytest.mark.parametrize("exposure", [1, PLAN.whole_shares - 1,
+                                       PLAN.whole_shares + 1])
+def test_unexplained_share_discrepancy_cannot_promote_journal(exposure):
+    journal = FakeJournal(status="accepted")
+    broker = FakeBroker(parent(status="filled", filled=PLAN.whole_shares,
+                               legs=[stop()]), exposure=exposure)
+    with pytest.raises(TradeBlocked):
+        run(broker=broker, journal=journal)
+    assert journal.modified == []
+
+
+def test_independent_linked_stop_fill_can_explain_reduced_position():
+    child = stop(status="partially_filled")
+    child.filled_qty = str(PLAN.whole_shares - 1)
+    state, broker, journal = run(broker=FakeBroker(
+        parent(status="filled", filled=PLAN.whole_shares, legs=[child]),
+        exposure=1), journal=FakeJournal(status="accepted"))
+    assert state == "filled"
+    assert len(journal.modified) == 1
+    assert broker.calls == ["positions", "lookup", "nested"]
+
+
+def test_exact_five_filled_one_held_unchanged_five_stop_regression(monkeypatch):
+    monkeypatch.setattr(__import__(__name__), "PLAN", replace(PLAN, whole_shares=5))
+    journal = FakeJournal(status="accepted")
+    broker = FakeBroker(parent(status="filled", filled=5, legs=[stop()]), exposure=1)
+    with pytest.raises(TradeBlocked):
+        run(broker=broker, journal=journal)
+    assert journal.modified == []

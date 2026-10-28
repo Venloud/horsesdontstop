@@ -278,3 +278,31 @@ def test_terminal_sell_child_does_not_count_as_active_competitor():
         position_qty=PLAN.whole_shares)
     assert "unexpected_active_sell_exit_count" not in audit.blockers
     assert audit.has_verified_protective_stop is True
+
+
+@pytest.mark.parametrize("position,leg_qty,leg_fill,status", [
+    (1, 5, 0, "new"),  # confirmed Phase 5.9 false verification
+    (1, 1, 0, "new"),  # resizing alone cannot explain missing shares
+    (1, 5, 3, "partially_filled"),
+    (1, 5, 4, "new"),  # fill counter contradicts status
+    (0, 5, 4, "filled"),
+    (1, 5, 5, "partially_filled"),
+    (6, 5, 0, "new"),
+])
+def test_unexplained_position_or_stop_quantity_never_verifies(
+        position, leg_qty, leg_fill, status):
+    plan = replace(PLAN, whole_shares=5)
+    audit = inspect_nested_oto(
+        plan, parent(qty=5, fill=5, legs=[
+            stop(qty=leg_qty, filled=leg_fill, status=status)]),
+        position_qty=position)
+    assert audit.blockers
+    assert not audit.has_verified_protective_stop
+
+
+def test_linked_partial_stop_execution_accounts_for_reduced_exposure():
+    plan = replace(PLAN, whole_shares=5)
+    audit = inspect_nested_oto(plan, parent(qty=5, fill=5, legs=[
+        stop(qty=5, filled=4, status="partially_filled")]), position_qty=1)
+    assert audit.blockers == ()
+    assert audit.has_verified_protective_stop
