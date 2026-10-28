@@ -638,3 +638,17 @@ def test_strategy_must_have_fresh_unique_eligible_completed_bars(monkeypatch, ba
             preview=p, safety_state=healthy(), approval=approved(p), now=NOW,
             market_data=BadData())
     assert not broker.sent
+
+
+def test_early_close_deadline_crossed_during_final_reads_blocks(monkeypatch):
+    monkeypatch.setattr(entry, "PAPER_ORDER_SUBMISSIONS_RELEASED", True)
+    monkeypatch.setattr(entry, "_verify_paper_market_session", lambda *_a, **_kw: True)
+    times = iter([100, 100, 102])
+    monkeypatch.setattr(entry, "monotonic", lambda: next(times))
+    p = preview()
+    broker = FakeBroker(p)
+    broker.get_clock = lambda: SimpleNamespace(
+        is_open=True, next_close=NOW + timedelta(minutes=30, seconds=1))
+    with pytest.raises(TradeBlocked, match="before POST"):
+        execute(p, broker=broker)
+    assert not broker.sent

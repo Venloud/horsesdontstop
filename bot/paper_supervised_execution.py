@@ -358,6 +358,8 @@ def submit_paper_once_supervised(
                 available_cash=final_account.cash, now=send_now, market_open=True)
             if send_now - final_now > timedelta(seconds=3):
                 raise TradeBlocked("PAPER final broker verification exceeded freshness budget")
+            if send_now >= final_clock.next_close - timedelta(minutes=30):
+                raise TradeBlocked("PAPER entry deadline passed during verification")
             attempted = True
             result = trading.submit_order(order_data=order_request)
     except Exception:
