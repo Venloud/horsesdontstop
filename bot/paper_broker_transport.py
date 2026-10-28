@@ -36,3 +36,17 @@ def assert_single_attempt_transport(trading):
             or not isinstance(getattr(trading, "_session", None), BoundedPaperSession)
             or any(adapter.max_retries.total != 0 for adapter in trading._session.adapters.values())):
         raise TradeBlocked("PAPER requires bounded transport with all HTTP retries disabled")
+
+
+class ReadOnlyPaperSession(BoundedPaperSession):
+    def request(self, method, url, **kwargs):
+        if method.upper() != "GET":
+            raise TradeBlocked("Independent reconciler transport permits broker GET only")
+        return super().request(method, url, **kwargs)
+
+
+def make_reconciler_paper_client(key, secret):
+    client = make_supervised_paper_client(key, secret)
+    client._session.close()
+    client._session = ReadOnlyPaperSession()
+    return client

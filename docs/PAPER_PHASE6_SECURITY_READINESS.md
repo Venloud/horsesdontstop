@@ -46,6 +46,15 @@ owner `SET ROLE` is not independent service authentication. The cutover also
 revokes all intent/audit column grants and rejects inherited/PUBLIC bypasses.
 A bounded reconciler tick rebuilds pending plans from durable DB terms after
 restart and avoids rewriting unchanged independently verified observations.
+`python -m bot.paper_reconciler_service` is a staged, observe-only service
+entrypoint using distinct `PAPER_RECONCILER_DSN`,
+`ALPACA_RECONCILER_PAPER_API_KEY`, `ALPACA_RECONCILER_PAPER_SECRET_KEY` and ntfy
+configuration. Its broker transport refuses every non-GET operation. Status
+writing is hard-disabled by `PAPER_RECONCILIATION_SERVICE_RELEASED=False`;
+`--apply-status` cannot bypass that gate. No service/task was installed or started.
+After separate deployment approval, its `--continuous` mode supplies bounded
+polling and critical failure alerts; existing independent supervisor acceptance
+and actual credentials remain mandatory, not inferred from this entrypoint.
 
 ## Exact separately authorized isolated rehearsal scope
 

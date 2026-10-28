@@ -351,3 +351,10 @@ def test_restart_uses_durable_intents_and_gets_only():
     assert reconcile_pending_once(trading=broker, journal=journal) == ((PLAN.client_order_id, "accepted"),)
     assert journal.modified[0][1:3] == ("unknown", "accepted")
     assert broker.calls == ["positions", "lookup", "nested"]
+
+
+def test_observe_only_reconciliation_cannot_record_status():
+    journal = FakeJournal(status="unknown")
+    broker = FakeBroker(parent(status="accepted"))
+    state = reconcile_verified_paper_order(trading=broker, journal=journal, plan=PLAN, record=False)
+    assert state == "accepted" and journal.modified == []

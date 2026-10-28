@@ -139,7 +139,7 @@ def _durable_matches_plan(plan, row):
         return False
 
 
-def reconcile_verified_paper_order(*, trading, journal, plan):
+def reconcile_verified_paper_order(*, trading, journal, plan, record=True):
     """Reconcile ONE persisted intent, using only Alpaca PAPER read-only GETs.
 
     The journal is intentionally a separate service principal. Do not
@@ -191,13 +191,13 @@ def reconcile_verified_paper_order(*, trading, journal, plan):
             audit.paper_exposure_shares != 0):
         raise TradeBlocked("Broker status inconsistent with live exposure")
 
-    if not unchanged:
+    if record is True and not unchanged:
         journal.record_broker_verified_state(
             plan.client_order_id, old, new, audit.parent_order_id)
     return new
 
 
-def reconcile_pending_once(*, trading, journal):
+def reconcile_pending_once(*, trading, journal, record=True):
     """Bounded service tick, including durable restart recovery.
 
     The surrounding trusted supervisor must alert on ANY TradeBlocked and
@@ -208,4 +208,4 @@ def reconcile_pending_once(*, trading, journal):
         raise TradeBlocked("Reconciler is not bound to Alpaca PAPER")
     plans = journal.read_pending_plans()
     return tuple((plan.client_order_id, reconcile_verified_paper_order(
-        trading=trading, journal=journal, plan=plan)) for plan in plans)
+        trading=trading, journal=journal, plan=plan, record=record)) for plan in plans)
