@@ -14,6 +14,7 @@ from time import monotonic
 
 from .live_quotes import LivePaperEntryPreview, build_live_protected_oto_request
 from .live_quotes import preview_live_paper_entry
+from .paper_broker_transport import assert_single_attempt_transport
 from .paper_safety import (
     PAPER_ENDPOINT, PaperOrderPlan, PaperSafetyState, TradeBlocked,
     execution_blockers, money,
@@ -261,6 +262,7 @@ def submit_paper_once_supervised(
     # default to refusal instead of guessing.
     if str(getattr(trading, "_base_url", "")).rstrip("/") != PAPER_ENDPOINT:
         raise TradeBlocked("Actual broker client endpoint is not Alpaca PAPER")
+    assert_single_attempt_transport(trading)
     if not isinstance(preview, LivePaperEntryPreview):
         raise TradeBlocked("Invalid live IEX preview")
 

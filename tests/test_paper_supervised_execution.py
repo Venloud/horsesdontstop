@@ -17,6 +17,7 @@ from bot.paper_safety import (
     PAPER_ENDPOINT, PaperSafetyState, TradeBlocked,
 )
 from bot import paper_supervised_execution as entry
+from bot.paper_broker_transport import BoundedPaperSession
 
 
 NOW = datetime(2026, 10, 12, 14, 45, tzinfo=timezone.utc)
@@ -74,6 +75,8 @@ class FakeBroker:
                  clock_open=True, balance=500, positions=()):
         self.p = p
         self._base_url = PAPER_ENDPOINT
+        self._retry = 0
+        self._session = BoundedPaperSession()
         self.calls = []
         self.existing = existing
         self.failure = failure

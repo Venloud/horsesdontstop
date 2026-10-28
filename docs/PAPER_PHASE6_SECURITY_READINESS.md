@@ -22,6 +22,12 @@ serialization, not cancellation of an in-flight POST. Broker and DB timeouts,
 crashes and lost commit responses remain UNKNOWN; NEVER retry the reserved ID.
 Approval, quotes, account, exposure, buying power and entry deadline are rechecked
 after lock waits. Production release remains hard-coded FALSE.
+The gateway also rejects the SDK's default retrying/unbounded transport.
+`make_supervised_paper_client` uses PAPER-only URLs, no redirects, no SDK or
+adapter retries, and bounded connect/read inactivity timeouts. An intercepted
+real alpaca-py 429 test proves one HTTP POST attempt, not merely one Python call.
+These timeouts do not create a distributed atomic transaction or guarantee
+emergency cancellation of a request already accepted by the broker.
 
 The gateway independently refetches momentum-volume completed bars and the
 preceding broker-confirmed exchange session. Missing, stale, duplicate or
