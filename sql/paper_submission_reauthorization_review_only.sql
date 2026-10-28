@@ -2,6 +2,13 @@
 -- AFTER PR38 reservation, PR41 PREPARE and executor CUTOVER.
 -- Does not change controls, credentials, or release broker submissions.
 BEGIN;
+-- The consumption receipt commits on a separate connection BEFORE POST.
+-- Its uniqueness survives rollback/loss of the transaction holding controls.
+CREATE UNIQUE INDEX uq_paper_submission_authorization_consumed
+    ON public.paper_audit_events(client_order_id)
+    WHERE kind='submission_authorization_consumed';
+GRANT SELECT ON TABLE public.paper_audit_events
+    TO hds_paper_status_owner, hds_paper_reservation_guard;
 GRANT CREATE ON SCHEMA public TO hds_paper_reservation_guard;
 CREATE FUNCTION public.paper_authorize_unknown_submission(
     p_client_order_id text, p_strategy text, p_symbol text,
@@ -34,6 +41,11 @@ BEGIN
     ) THEN
         RAISE EXCEPTION 'PAPER final reserved terms unavailable or stale' USING ERRCODE='42501';
     END IF;
+    IF EXISTS (SELECT 1 FROM public.paper_audit_events
+               WHERE client_order_id=p_client_order_id
+                 AND kind='submission_authorization_consumed') THEN
+        RAISE EXCEPTION 'PAPER submission authorization already consumed' USING ERRCODE='42501';
+    END IF;
     RETURN TRUE;
 END;
 $authorize$;
@@ -42,6 +54,30 @@ ALTER FUNCTION public.paper_authorize_unknown_submission(text,text,text,date,int
 REVOKE CREATE ON SCHEMA public FROM hds_paper_reservation_guard;
 REVOKE ALL ON FUNCTION public.paper_authorize_unknown_submission(text,text,text,date,integer,numeric,numeric) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION public.paper_authorize_unknown_submission(text,text,text,date,integer,numeric,numeric)
+    TO hds_paper_executor;
+GRANT CREATE ON SCHEMA public TO hds_paper_status_owner;
+CREATE FUNCTION public.paper_consume_submission_authorization(p_client_order_id text)
+RETURNS boolean LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = pg_catalog
+AS $consume$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM public.paper_intents
+                   WHERE client_order_id=p_client_order_id AND status='unknown'
+                     AND broker_order_id IS NULL
+                     AND updated_at BETWEEN clock_timestamp()-interval '5 seconds' AND clock_timestamp()) THEN
+        RAISE EXCEPTION 'PAPER submission claim is absent or stale' USING ERRCODE='42501';
+    END IF;
+    INSERT INTO public.paper_audit_events(client_order_id,kind,summary)
+    VALUES(p_client_order_id,'submission_authorization_consumed',
+           'One attempt consumed before broker POST; never retry');
+    RETURN TRUE;
+END;
+$consume$;
+ALTER FUNCTION public.paper_consume_submission_authorization(text)
+    OWNER TO hds_paper_status_owner;
+REVOKE CREATE ON SCHEMA public FROM hds_paper_status_owner;
+REVOKE ALL ON FUNCTION public.paper_consume_submission_authorization(text) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.paper_consume_submission_authorization(text)
     TO hds_paper_executor;
 COMMIT;
 

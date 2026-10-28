@@ -69,6 +69,12 @@ class Cursor:
                 raise TradeBlocked("Final control check blocked")
             assert self.db["intent_status"][params[0]] == "unknown"
             self.last = (True,)
+        elif "SELECT public.paper_consume_submission_authorization(" in sql:
+            cid = params[0]
+            if any(a == (cid, "submission_authorization_consumed") for a in self.db["audits"]):
+                raise TradeBlocked("Authorization already consumed")
+            self.db["audits"].append((cid, "submission_authorization_consumed"))
+            self.last = (True,)
         else:
             raise AssertionError("Unexpected SQL: " + sql)
 
@@ -197,7 +203,9 @@ def test_final_authorization_consumes_reservation_before_yield_and_never_reuses(
     j.reserve_if_enabled(plan)
     with j.authorize_reserved_submission(plan):
         assert db["intent_status"][plan.client_order_id] == "unknown"
-        assert len(db["audits"]) == 1
+        assert len(db["audits"]) == 2
+        with pytest.raises(TradeBlocked, match="already consumed"):
+            j.consume_submission_authorization(plan.client_order_id)
     with pytest.raises(TradeBlocked):
         with j.authorize_reserved_submission(plan):
             pytest.fail("Reservation reused after attempted submission")

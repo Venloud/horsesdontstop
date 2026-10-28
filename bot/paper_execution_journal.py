@@ -234,4 +234,15 @@ class PaperExecutorJournal(PostgresPaperJournal):
                      money(plan.estimated_entry), money(plan.protective_stop)))
                 if cur.fetchone() != (True,):
                     raise TradeBlocked("PAPER final submission authorization denied")
+                # Separate committed receipt survives rollback of this lock
+                # transaction, including a broker timeout or lost connection.
+                self.consume_submission_authorization(plan.client_order_id)
                 yield
+
+    def consume_submission_authorization(self, client_order_id):
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT public.paper_consume_submission_authorization(%s)",
+                            (client_order_id,))
+                if cur.fetchone() != (True,):
+                    raise TradeBlocked("PAPER submission authorization consumption failed")

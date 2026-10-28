@@ -42,6 +42,9 @@ def test_final_submission_sql_preserves_lock_terms_and_install_boundary():
     assert "REVOKE ALL ON FUNCTION" in source and "FROM PUBLIC" in source
     assert "SET search_path = pg_catalog" in source
     assert "UPDATE public.paper_control" not in source
+    assert "CREATE UNIQUE INDEX uq_paper_submission_authorization_consumed" in source
+    assert "WHERE kind='submission_authorization_consumed'" in source
+    assert "paper_consume_submission_authorization" in source
 
 
 def test_cutover_covers_column_and_inherited_write_bypasses():

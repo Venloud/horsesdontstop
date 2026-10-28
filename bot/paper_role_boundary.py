@@ -35,6 +35,7 @@ SELECT /* paper_acl_boundary */
      AND p.oid::regprocedure::text NOT IN
        ('paper_reserve_intent_if_enabled(text,text,text,date,integer,numeric,numeric)',
         'paper_mark_reserved_intent_unknown(text)',
+        'paper_consume_submission_authorization(text)',
         'paper_record_reconciled_intent_status(text,text,text,text)',
         'paper_authorize_unknown_submission(text,text,text,date,integer,numeric,numeric)'))
 """
@@ -47,6 +48,7 @@ def assert_journal_acl_boundary(cursor, *, reconciler=False):
           SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
           WHERE n.nspname='public' AND p.proname IN
             ('paper_reserve_intent_if_enabled','paper_mark_reserved_intent_unknown',
+             'paper_consume_submission_authorization',
              'paper_authorize_unknown_submission','paper_reservation_control_guard')
             AND has_function_privilege(current_user,p.oid,'EXECUTE'))"""
     cursor.execute(sql)

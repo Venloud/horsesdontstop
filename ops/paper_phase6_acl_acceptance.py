@@ -72,7 +72,7 @@ def controls(conn, kill, enabled):
     conn.commit()
 
 
-def run(owner, executor, reconciler):
+def run(owner, executor, reconciler, consumer):
     day = scalar(owner, "SELECT (clock_timestamp() AT TIME ZONE 'America/New_York')::date")
     cid = make_client_order_id(day, "F")
     safe = scalar(owner, "SELECT kill_switch_active AND NOT submissions_enabled "
@@ -120,11 +120,16 @@ def run(owner, executor, reconciler):
         controls(owner, False, True)
         if scalar(executor, authorize, terms) is not True:
             raise AcceptanceBlocked("Final authorization failed")
+        consume = "SELECT public.paper_consume_submission_authorization(%s)"
+        scalar(consumer, consume, (cid,))
+        consumer.commit()
+        denied(consumer, consume, (cid,), state="23505")
         # Executor retains the control FOR SHARE until rollback. This is a
         # genuine competing owner connection, not serialized connector calls.
         denied(owner, "UPDATE public.paper_control SET kill_switch_active=TRUE "
                "WHERE singleton=TRUE RETURNING singleton", state="55P03")
         executor.rollback()
+        denied(executor, authorize, terms)
         controls(owner, True, False)
         result["final_control_recheck_and_cross_connection_lock"] = True
         denied(executor, "SELECT public.paper_mark_reserved_intent_unknown(%s)", (cid,))
@@ -138,7 +143,7 @@ def run(owner, executor, reconciler):
         reconciler.rollback()
         if scalar(owner, "SELECT status FROM public.paper_intents WHERE client_order_id=%s", (cid,)) != "submitted":
             raise AcceptanceBlocked("Forced rollback changed status")
-        if scalar(owner, "SELECT count(*) FROM public.paper_audit_events WHERE client_order_id=%s", (cid,)) != 2:
+        if scalar(owner, "SELECT count(*) FROM public.paper_audit_events WHERE client_order_id=%s", (cid,)) != 3:
             raise AcceptanceBlocked("Forced rollback leaked audit")
         owner.commit()
         scalar(reconciler, transition, (cid, "submitted", "accepted", "synthetic-phase6"))
@@ -146,12 +151,13 @@ def run(owner, executor, reconciler):
         scalar(reconciler, transition, (cid, "accepted", "filled", "synthetic-phase6"))
         reconciler.commit()
         denied(reconciler, transition, (cid, "filled", "canceled", "synthetic-phase6"))
-        if scalar(owner, "SELECT count(*) FROM public.paper_audit_events WHERE client_order_id=%s", (cid,)) != 4:
+        if scalar(owner, "SELECT count(*) FROM public.paper_audit_events WHERE client_order_id=%s", (cid,)) != 5:
             raise AcceptanceBlocked("Transition and audit counts disagree")
         owner.commit()
         scalar(executor, "INSERT INTO public.paper_equity_snapshots(observed_at,equity,cash) "
                "VALUES('2099-12-01T14:30:00Z',500,500) RETURNING snapshot_id")
         executor.rollback()
+        consumer.rollback()
         result.update(synthetic_status_audit_rollback=True, restricted_equity_insert_rollback=True)
     finally:
         executor.rollback()
@@ -184,9 +190,10 @@ def main():
             raise AcceptanceBlocked("All credentials must target one isolated direct endpoint")
         for name, role in zip(names, ("neondb_owner", "hds_paper_executor", "hds_paper_reconciler_service")):
             connections.append(connect(os.environ[name], role, branch))
+        connections.append(connect(os.environ[names[1]], "hds_paper_executor", branch))
         pids = [scalar(conn, "SELECT pg_backend_pid()") for conn in connections]
-        if len(set(pids)) != 3:
-            raise AcceptanceBlocked("Three distinct authenticated PostgreSQL backends required")
+        if len(set(pids)) != 4:
+            raise AcceptanceBlocked("Four distinct authenticated PostgreSQL backends required")
         for conn in connections:
             conn.commit()
         result = run(*connections)
