@@ -6,6 +6,7 @@ even if an OTO order was initially accepted.
 """
 from dataclasses import asdict, dataclass
 from decimal import Decimal
+from datetime import datetime, timezone
 from typing import Optional
 
 from .paper_safety import PAPER_ENDPOINT, PaperOrderPlan, TradeBlocked, money
@@ -118,7 +119,7 @@ def inspect_nested_oto(plan: PaperOrderPlan, parent, *, position_qty) -> BrokerO
     active_sell_exits = [
         leg for leg in legs
         if (field(leg, "side") == "sell"
-            and field(leg, "status") in PROTECTIVE_ACTIVE)
+            and field(leg, "status") not in {"canceled", "rejected", "expired", "filled"})
     ]
     if qty > 0 and len(active_sell_exits) != 1:
         blockers.append("unexpected_active_sell_exit_count")
@@ -138,6 +139,16 @@ def inspect_nested_oto(plan: PaperOrderPlan, parent, *, position_qty) -> BrokerO
             # actual nesting is the primary linkage evidence.
             if not getattr(leg, "id", None):
                 continue
+            expiry = getattr(leg, "expires_at", None)
+            if expiry is not None:
+                if isinstance(expiry, str):
+                    try:
+                        expiry = datetime.fromisoformat(expiry.replace("Z", "+00:00"))
+                    except ValueError:
+                        continue
+                if (not isinstance(expiry, datetime) or expiry.tzinfo is None
+                        or expiry <= datetime.now(timezone.utc)):
+                    continue
             parent_ref = getattr(leg, "parent_order_id", None)
             if parent_ref is not None and str(parent_ref) != pid:
                 continue

@@ -30,6 +30,8 @@ class Cursor:
         self.db["queries"].append((sql, params))
         if sql.startswith("SET LOCAL statement_timeout"):
             self.last = None
+        elif "paper_acl_boundary" in sql:
+            self.last = (True,)
         elif "pg_advisory_xact_lock" in sql:
             self.last = (None,)
         elif "pg_has_role(current_user" in sql:

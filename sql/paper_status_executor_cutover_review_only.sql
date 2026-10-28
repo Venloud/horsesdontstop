@@ -62,11 +62,40 @@ REVOKE UPDATE (status, broker_order_id, updated_at)
 REVOKE INSERT ON TABLE public.paper_audit_events FROM hds_paper_executor;
 -- Defense in depth even when PR38's revocation was already applied.
 REVOKE INSERT ON TABLE public.paper_intents FROM hds_paper_executor;
+REVOKE UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER
+    ON TABLE public.paper_audit_events FROM hds_paper_executor;
+REVOKE DELETE, TRUNCATE, REFERENCES, TRIGGER
+    ON TABLE public.paper_intents FROM hds_paper_executor;
+-- Table revocation does not remove column-specific grants. Cover every
+-- column, including intent terms and audit summary/identity, not just status.
+DO $columns$
+DECLARE v_table text; v_columns text;
+BEGIN
+    FOREACH v_table IN ARRAY ARRAY['paper_intents','paper_audit_events'] LOOP
+        SELECT string_agg(quote_ident(attname), ',') INTO v_columns
+        FROM pg_attribute
+        WHERE attrelid=format('public.%I',v_table)::regclass
+          AND attnum>0 AND NOT attisdropped;
+        EXECUTE format('REVOKE INSERT (%s), UPDATE (%s), REFERENCES (%s) ON TABLE public.%I FROM hds_paper_executor',
+                       v_columns,v_columns,v_columns,v_table);
+    END LOOP;
+END
+$columns$;
 
 -- The executor must only be able to reserve through PR38 and mark an
 -- ambiguous broker response UNKNOWN through PR41, never forge broker truth.
 DO $verify$
 BEGIN
+    IF EXISTS (
+        SELECT 1 FROM (VALUES ('hds_paper_executor'),('hds_paper_reconciler')) AS r(role_name)
+        CROSS JOIN (VALUES ('public.paper_intents'),('public.paper_audit_events'),
+                           ('public.paper_control')) AS t(tbl)
+        WHERE has_any_column_privilege(r.role_name,t.tbl,'INSERT,UPDATE,REFERENCES')
+           OR has_table_privilege(r.role_name,t.tbl,'DELETE,TRUNCATE,TRIGGER')
+    ) THEN
+        RAISE EXCEPTION 'Inherited, PUBLIC or column journal write bypass; rollback'
+            USING ERRCODE='42501';
+    END IF;
     IF has_table_privilege('hds_paper_executor','public.paper_intents','INSERT')
        OR has_table_privilege('hds_paper_executor','public.paper_intents','UPDATE')
        OR has_column_privilege('hds_paper_executor','public.paper_intents','status','UPDATE')

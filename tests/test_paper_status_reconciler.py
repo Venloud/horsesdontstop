@@ -240,6 +240,8 @@ def test_role_attestation_requires_separate_narrow_reconciler_grants(monkeypatch
         def execute(self, sql):
             self.query = sql
         def fetchone(self):
+            if "paper_acl_boundary" in self.query:
+                return (True,)
             return self.row
 
     class Conn:
@@ -258,8 +260,7 @@ def test_role_attestation_requires_separate_narrow_reconciler_grants(monkeypatch
     cursor = Cursor(allowed)
     monkeypatch.setattr(j, "_connect", lambda: Conn(cursor))
     j.assert_reconciler_permissions()
-    assert "hds_paper_reconciler" in cursor.query
-    assert "hds_paper_executor" in cursor.query
+    assert "paper_acl_boundary" in cursor.query
     assert "paper_record_reconciled_intent_status" in cursor.query
     assert "paper_control" in cursor.query
     assert "paper_audit_events" in cursor.query

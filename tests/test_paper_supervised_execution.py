@@ -5,6 +5,7 @@ The module code release switch is OFF except inside explicitly patched
 synthetic test cases.
 """
 from dataclasses import replace
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
@@ -85,7 +86,7 @@ class FakeBroker:
         self.calls.append("get_account")
         return SimpleNamespace(
             equity=str(self.balance), cash=str(self.balance),
-            trading_blocked=False,
+            buying_power=str(self.balance), trading_blocked=False,
         )
 
     def get_clock(self):
@@ -150,6 +151,11 @@ class FakeJournal:
 
     def record_observed_state(self, cid, status, oid):
         raise AssertionError("Executor must not attest broker status")
+
+    @contextmanager
+    def authorize_reserved_submission(self, plan):
+        self.mark_uncertain(plan.client_order_id)
+        yield
 
 
 def execute(p=None, *, broker=None, journal=None, state=None,
@@ -317,13 +323,13 @@ def test_quoted_buy_limit_change_blocks_prior_approval(monkeypatch):
     assert broker.sent == []
 
 
-def test_journal_update_failure_after_submit_never_triggers_retry(monkeypatch):
+def test_durable_unknown_failure_blocks_before_submit(monkeypatch):
     monkeypatch.setattr(entry, "PAPER_ORDER_SUBMISSIONS_RELEASED", True)
     p = preview()
     broker, journal = FakeBroker(p), FakeJournal(fail_record=True)
-    with pytest.raises(TradeBlocked, match="durable unresolved marker failed"):
+    with pytest.raises(TradeBlocked, match="reauthorization failed before POST"):
         execute(p, broker=broker, journal=journal)
-    assert len(broker.sent) == 1
+    assert broker.sent == []
 
 
 def test_untrusted_broker_exception_not_exposed(monkeypatch):

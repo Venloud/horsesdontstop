@@ -4,11 +4,13 @@ NO Alpaca submit_order() calls. This layer only prepares for a
 future supervised worker with independently verified live order safety.
 """
 from datetime import date, datetime, timedelta, timezone
+from contextlib import contextmanager
 
 from .paper_safety import (
     PaperOrderPlan, TradeBlocked, make_client_order_id, money,
 )
 from .paper_store import PostgresPaperJournal
+from .paper_role_boundary import assert_journal_acl_boundary
 
 
 class PaperExecutorJournal(PostgresPaperJournal):
@@ -52,6 +54,10 @@ class PaperExecutorJournal(PostgresPaperJournal):
                     "has_database_privilege(current_user,current_database(),'CREATE')"
                 )
                 row = cur.fetchone()
+                if row == (False, False, False, False, False, False, False,
+                           False, False, True, True, True, False, False, False,
+                           False, False, False, False):
+                    assert_journal_acl_boundary(cur)
         expected = (False, False, False, False, False, False, False,
                     False, False, True, True, True, False, False, False, False, False, False, False)
         if row != expected:
@@ -203,3 +209,29 @@ class PaperExecutorJournal(PostgresPaperJournal):
                     (client_order_id,))
                 if cur.fetchone() != (True,):
                     raise TradeBlocked("Cannot mark nonreserved intent unknown")
+
+    @contextmanager
+    def authorize_reserved_submission(self, plan):
+        """Consume the reservation before POST, then hold the control row lock.
+
+        UNKNOWN is committed separately first: a crash or transaction rollback
+        after sending cannot restore a reusable reserved permit. The second
+        transaction locks controls until the one attempted POST completes.
+        Requires the separately approved Phase6 reauthorization migration.
+        """
+        self.validate_protected_intent(plan)
+        self.assert_executor_permissions(reservation=True)
+        self.mark_uncertain(plan.client_order_id)
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SET LOCAL statement_timeout = '3000ms'")
+                cur.execute("SET LOCAL lock_timeout = '3000ms'")
+                cur.execute(
+                    "SELECT public.paper_authorize_unknown_submission("
+                    "%s,%s,%s,%s,%s,%s,%s)",
+                    (plan.client_order_id, plan.strategy, plan.symbol,
+                     date.fromisoformat(plan.trading_day), plan.whole_shares,
+                     money(plan.estimated_entry), money(plan.protective_stop)))
+                if cur.fetchone() != (True,):
+                    raise TradeBlocked("PAPER final submission authorization denied")
+                yield

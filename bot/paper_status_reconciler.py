@@ -14,6 +14,7 @@ from datetime import date
 from .paper_broker_recovery import recover_by_client_id
 from .paper_safety import PAPER_ENDPOINT, PaperOrderPlan, TradeBlocked, money
 from .paper_store import PostgresPaperJournal, transition_allowed
+from .paper_role_boundary import assert_journal_acl_boundary
 
 
 # Broker status is untrusted until full nested order + live position GETs pass.
@@ -57,6 +58,9 @@ class PaperStatusReconcilerJournal(PostgresPaperJournal):
                     "'EXECUTE')"
                 )
                 row = cur.fetchone()
+                if row == (True, False, False, False, False, False,
+                           False, False, True, True):
+                    assert_journal_acl_boundary(cur, reconciler=True)
         if row != (True, False, False, False, False, False,
                    False, False, True, True):
             raise TradeBlocked("Unsafe or incomplete PAPER broker-reconciler role")

@@ -10,6 +10,7 @@ logic. Never change the release constant to True as a convenience.
 """
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from time import monotonic
 
 from .live_quotes import LivePaperEntryPreview, build_live_protected_oto_request
 from .live_quotes import preview_live_paper_entry
@@ -224,6 +225,7 @@ def submit_paper_once_supervised(
         raise TradeBlocked("PAPER broker submissions NOT RELEASED")
     if not isinstance(now, datetime) or now.tzinfo is None:
         raise TradeBlocked("Missing trustworthy timezone-aware clock")
+    started = monotonic()
     if not isinstance(safety_state, PaperSafetyState):
         raise TradeBlocked("Required independent persistent supervisor missing")
     blockers = execution_blockers(safety_state)
@@ -286,6 +288,8 @@ def submit_paper_once_supervised(
     from .paper_execution_journal import PaperExecutorJournal
     PaperExecutorJournal.validate_protected_intent(plan)
     order_request = build_live_protected_oto_request(recomputed)
+    if money(getattr(account, "buying_power", None)) < money(plan.estimated_cost):
+        raise TradeBlocked("Insufficient verified PAPER buying power")
 
     # First read for prior broker orders, then reserve in Neon. Broker
     # lookup/race failures cannot cause a duplicate post: stable client
@@ -294,13 +298,24 @@ def submit_paper_once_supervised(
     if journal.reserve_if_enabled(plan) is not True:
         raise TradeBlocked("Durable order already reserved: NEVER retry")
 
+    attempted = False
     try:
-        result = trading.submit_order(order_data=order_request)
+        with journal.authorize_reserved_submission(plan):
+            # Reservation is consumed durably before entering this context.
+            # Recheck time-sensitive evidence after any DB lock wait.
+            final_now = now + timedelta(seconds=monotonic() - started)
+            _validate_approval(approval, recomputed, final_now)
+            preview_live_paper_entry(
+                symbol=preview.symbol, quote=market_quote, equity=account.equity,
+                available_cash=account.cash, now=final_now, market_open=True)
+            _verify_paper_market_session(trading, clock, now=final_now)
+            attempted = True
+            result = trading.submit_order(order_data=order_request)
     except Exception:
-        try:
-            journal.mark_uncertain(plan.client_order_id)
-        except Exception:
-            pass  # Durable reservation remains; no broker resend.
+        if not attempted:
+            raise TradeBlocked(
+                "Final PAPER reauthorization failed before POST; NEVER retry reserved ID"
+            ) from None
         outcome = inspect_uncertain_submit_by_client_id(trading, plan)
         raise TradeBlocked(
             "Broker submit outcome UNKNOWN after client-ID lookup: " + outcome
@@ -312,10 +327,6 @@ def submit_paper_once_supervised(
             or getattr(result, "client_order_id", None) != plan.client_order_id
             or str(getattr(getattr(result, "side", None), "value",
                            getattr(result, "side", ""))).lower() != "buy"):
-        try:
-            journal.mark_uncertain(plan.client_order_id)
-        except Exception:
-            pass
         outcome = inspect_uncertain_submit_by_client_id(trading, plan)
         raise TradeBlocked(
             "Broker acknowledgement inconsistent; outcome UNKNOWN after "
@@ -325,14 +336,7 @@ def submit_paper_once_supervised(
     # executor. Only the independent PAPER GET/stop reconciler has that
     # DB function grant. Mark the durable reservation unresolved so
     # crashes or delayed broker visibility can NEVER trigger a second POST.
-    try:
-        journal.mark_uncertain(plan.client_order_id)
-    except Exception:
-        outcome = inspect_uncertain_submit_by_client_id(trading, plan)
-        raise TradeBlocked(
-            "Broker acknowledged but durable unresolved marker failed; "
-            "client-ID lookup: " + outcome + "; NEVER retry reserved ID"
-        ) from None
+    # Already committed UNKNOWN before the attempt. No ACK can promote it.
     # Success means the broker ACK was observed, not that the durable
     # journal is independently verified or a GTC stop exists.
     return PaperSubmitResult(
