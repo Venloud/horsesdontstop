@@ -206,6 +206,11 @@ def reconcile_pending_once(*, trading, journal, record=True):
     """
     if str(getattr(trading, "_base_url", "")).rstrip("/") != PAPER_ENDPOINT:
         raise TradeBlocked("Reconciler is not bound to Alpaca PAPER")
+    # An empty durable queue must not turn broken broker authentication into
+    # a successful service tick. Account-blocked accounts still need recovery.
+    account = trading.get_account()
+    if type(getattr(account, "trading_blocked", None)) is not bool:
+        raise TradeBlocked("Independent PAPER broker authentication unverified")
     plans = journal.read_pending_plans()
     return tuple((plan.client_order_id, reconcile_verified_paper_order(
         trading=trading, journal=journal, plan=plan, record=record)) for plan in plans)

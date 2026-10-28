@@ -348,9 +348,41 @@ def test_restart_uses_durable_intents_and_gets_only():
     journal = FakeJournal(status="unknown")
     journal.read_pending_plans = lambda: [PLAN]
     broker = FakeBroker(parent(status="accepted"))
+    broker.get_account = lambda: SimpleNamespace(trading_blocked=False)
     assert reconcile_pending_once(trading=broker, journal=journal) == ((PLAN.client_order_id, "accepted"),)
     assert journal.modified[0][1:3] == ("unknown", "accepted")
     assert broker.calls == ["positions", "lookup", "nested"]
+
+
+@pytest.mark.parametrize("failure", ["unauthorized", "missing_account_evidence"])
+def test_empty_queue_does_not_hide_broken_broker_authentication(failure):
+    from bot.paper_reconciler_service import run_service
+    broker = FakeBroker()
+    def get_account():
+        if failure == "unauthorized":
+            raise RuntimeError("SENSITIVE_BROKER_CREDENTIAL")
+        return SimpleNamespace()
+    broker.get_account = get_account
+    journal = FakeJournal()
+    journal.read_pending_plans = lambda: []
+    alerts = []
+    with pytest.raises(TradeBlocked, match="unresolved") as exc:
+        run_service(trading=broker, journal=journal,
+                    alert=lambda: alerts.append(True) or True)
+    assert alerts == [True] and journal.modified == []
+    assert "SENSITIVE" not in str(exc.value)
+
+
+def test_empty_queue_verifies_broker_authentication_on_every_tick():
+    from bot.paper_reconciler_service import run_service
+    broker = FakeBroker()
+    calls = []
+    broker.get_account = lambda: calls.append("account") or SimpleNamespace(trading_blocked=True)
+    journal = FakeJournal()
+    journal.read_pending_plans = lambda: []
+    assert run_service(trading=broker, journal=journal, max_ticks=2,
+                       sleeper=lambda _: None) == 2
+    assert calls == ["account", "account"] and journal.modified == []
 
 
 def test_observe_only_reconciliation_cannot_record_status():
