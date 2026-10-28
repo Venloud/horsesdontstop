@@ -1,5 +1,9 @@
 """Adversarial offline tests; no credentials, migrations or broker writes."""
 from pathlib import Path
+import importlib.util
+import os
+import subprocess
+import sys
 
 import pytest
 
@@ -45,3 +49,44 @@ def test_cutover_covers_column_and_inherited_write_bypasses():
     assert "has_any_column_privilege(r.role_name,t.tbl,'INSERT,UPDATE,REFERENCES')" in source
     assert "REVOKE INSERT (%s), UPDATE (%s), REFERENCES (%s)" in source
     assert "Inherited, PUBLIC or column journal write bypass; rollback" in source
+
+
+def test_acceptance_harness_requires_explicit_scope_and_private_credentials():
+    path = ROOT / "ops/paper_phase6_acl_acceptance.py"
+    compile(path.read_text(), str(path), "exec")
+    env = {k: v for k, v in os.environ.items() if not k.startswith("HDS_PHASE6_TEST_")}
+    process = subprocess.run([sys.executable, str(path)], env=env,
+                             capture_output=True, text=True, timeout=15)
+    assert process.returncode == 2 and "BLOCKED" in process.stdout
+    assert "postgresql://" not in process.stdout + process.stderr
+    spec = importlib.util.spec_from_file_location("phase6_acceptance", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    with pytest.raises(module.AcceptanceBlocked):
+        module.connect("postgresql://neondb_owner:fake@example.neon.tech/neondb",
+                       "neondb_owner", module.PRODUCTION)
+
+
+@pytest.mark.parametrize("state", ["42501", "42P01", "55P03", None])
+def test_harness_does_not_confuse_errors_with_security_denials(state):
+    path = ROOT / "ops/paper_phase6_acl_acceptance.py"
+    spec = importlib.util.spec_from_file_location("phase6_denial", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    class DBError(Exception): pass
+    class Connection:
+        def cursor(self): return self
+        def __enter__(self): return self
+        def __exit__(self, *_): pass
+        def execute(self, *_):
+            err = DBError("SENSITIVE")
+            err.sqlstate = state
+            raise err
+        def rollback(self): self.rolled_back = True
+    conn = Connection()
+    if state == "42501":
+        module.denied(conn, "synthetic attack")
+    else:
+        with pytest.raises(module.AcceptanceBlocked):
+            module.denied(conn, "synthetic attack")
+    assert conn.rolled_back

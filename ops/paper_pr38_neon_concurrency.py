@@ -32,6 +32,10 @@ class SafetyBlock(Exception):
 def connect(dsn, expected_role):
     # The Neon acceptance test must use DIRECT endpoints, never pooler DSNs.
     # Parse only in memory; URLs can embed passwords and are never logged.
+    expected_branch = os.environ.get("HDS_PR38_EXPECTED_BRANCH_ID", TARGET)
+    if (not expected_branch.startswith("br-")
+            or expected_branch == "br-restless-sunset-b5s18rj3"):
+        raise SafetyBlock("Explicit nonproduction branch identity required")
     hostname = urlsplit(dsn).hostname if isinstance(dsn, str) else None
     if not hostname or "-pooler" in hostname.lower():
         raise SafetyBlock("A verified direct test-branch PostgreSQL DSN is required")
@@ -47,7 +51,7 @@ def connect(dsn, expected_role):
                 "SELECT current_user,current_database(),"
                 "(SELECT test_branch FROM public.hds_pr38_test_marker)"
             )
-            if cur.fetchone() != (expected_role, "neondb", TARGET):
+            if cur.fetchone() != (expected_role, "neondb", expected_branch):
                 raise SafetyBlock("Isolated branch identity or role mismatch")
             cur.execute("SELECT pg_backend_pid()")
             pid = cur.fetchone()[0]
