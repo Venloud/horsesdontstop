@@ -212,3 +212,109 @@ def test_kill_change_after_reservation_blocks_final_authorization(monkeypatch):
         with j.authorize_reserved_submission(plan):
             pytest.fail("Disabled control permitted POST")
     assert db["intent_status"][plan.client_order_id] == "unknown"
+
+
+def test_restricted_reservation_requires_privileged_row_lock_guard(monkeypatch):
+    from pathlib import Path
+    j, db = journal(monkeypatch, allow=False)
+    with pytest.raises(TradeBlocked, match="kill switch"):
+        j.reserve_if_enabled(sample())
+    checks = [sql for sql, _ in db["queries"]
+              if "SELECT public.paper_reserve_intent_if_enabled(" in sql]
+    assert len(checks) == 1
+    assert "INSERT INTO public.paper_intents" not in checks[0]
+    assert "FOR SHARE" not in checks[0]
+    assert not any("UPDATE public.paper_control" in sql for sql, _ in db["queries"])
+    sqlfile = (Path(__file__).resolve().parents[1] / "sql" /
+               "paper_reservation_control_guard_review_only.sql")
+    migration = sqlfile.read_text(encoding="utf-8")
+    assert "SECURITY DEFINER" in migration
+    assert "CREATE ROLE hds_paper_reservation_guard NOLOGIN NOINHERIT" in migration
+    assert "GRANT SELECT, UPDATE ON TABLE public.paper_control" in migration
+    assert "TO hds_paper_reservation_guard" in migration
+    assert "OWNER TO hds_paper_reservation_guard" in migration
+    assert "REVOKE CREATE ON SCHEMA public FROM hds_paper_reservation_guard" in migration
+    assert "GRANT hds_paper_reservation_guard TO hds_paper_executor" not in migration
+    assert "CREATE UNIQUE INDEX uq_paper_intents_trading_day" in migration
+    assert "REVOKE INSERT ON TABLE public.paper_intents FROM hds_paper_executor" in migration
+    assert "REVOKE EXECUTE ON FUNCTION public.paper_reservation_control_guard()" in migration
+    assert "paper_reserve_intent_if_enabled" in migration
+    assert "pg_advisory_xact_lock" in migration
+    assert "SET search_path = pg_catalog" in migration
+    assert "FOR SHARE" in migration
+    assert "REVOKE ALL ON FUNCTION public.paper_reservation_control_guard() FROM PUBLIC" in migration
+    assert "TO hds_paper_executor" in migration
+    assert "UPDATE public.paper_control" not in migration
+    assert "GRANT UPDATE ON public.paper_control" not in migration
+
+
+@pytest.mark.parametrize("controls", [
+    None, (None, None), (True, False), (False, False), (True, True),
+])
+def test_guard_missing_or_inconsistent_control_row_fails_closed(monkeypatch, controls):
+    j, db = journal(monkeypatch, allow=True)
+    db["controls"] = controls
+    with pytest.raises(TradeBlocked, match="kill switch"):
+        j.reserve_if_enabled(sample())
+    assert db["keys"] == set()
+    assert not any("INSERT INTO public.paper_intents" in statement
+                   for statement, _ in db["queries"])
+
+
+def test_guard_permission_loss_blocks_intent_creation(monkeypatch):
+    j, db = journal(monkeypatch, allow=True)
+
+    class DeniedGuardCursor(Cursor):
+        def execute(self, sql, params=None):
+            if "SELECT public.paper_reserve_intent_if_enabled(" in sql:
+                raise PermissionError("guard execution permission revoked")
+            return super().execute(sql, params)
+
+    class DeniedGuardConn(Conn):
+        def cursor(self):
+            return DeniedGuardCursor(db)
+
+    monkeypatch.setattr(j, "_connect", lambda: DeniedGuardConn(db))
+    with pytest.raises(PermissionError, match="permission revoked"):
+        j.reserve_if_enabled(sample())
+    assert db["keys"] == set()
+    assert not any("INSERT INTO public.paper_intents" in statement
+                   for statement, _ in db["queries"])
+
+
+def test_review_only_definer_rejects_nonfinite_prices_and_raw_insert():
+    from pathlib import Path
+    sql = (Path(__file__).resolve().parents[1] / "sql" /
+           "paper_reservation_control_guard_review_only.sql").read_text()
+    assert "p_expected_entry::text IN ('NaN','Infinity','-Infinity')" in sql
+    assert "p_protective_stop::text IN ('NaN','Infinity','-Infinity')" in sql
+    assert "REVOKE INSERT ON TABLE public.paper_intents FROM hds_paper_executor" in sql
+    assert "CREATE UNIQUE INDEX uq_paper_intents_trading_day" in sql
+    assert "SET search_path TO 'pg_catalog'" in sql or "SET search_path = pg_catalog" in sql
+
+
+def test_duplicate_day_sqlstate_23505_is_not_a_false_or_success(monkeypatch):
+    """Live SQL RAISE 23505 must fail closed, not masquerade as False."""
+    j, db = journal(monkeypatch, allow=True)
+
+    class DuplicateDayViolation(Exception):
+        sqlstate = "23505"
+
+    class DuplicateCursor(Cursor):
+        def execute(self, sql, params=None):
+            if "SELECT public.paper_reserve_intent_if_enabled(" in sql:
+                self.db["queries"].append((sql, params))
+                raise DuplicateDayViolation("synthetic unique-day violation")
+            return super().execute(sql, params)
+
+    class DuplicateConn(Conn):
+        def cursor(self):
+            return DuplicateCursor(db)
+
+    monkeypatch.setattr(j, "_connect", lambda: DuplicateConn(db))
+    with pytest.raises(DuplicateDayViolation) as exc:
+        j.reserve_if_enabled(sample())
+    assert exc.value.sqlstate == "23505"
+    assert not db["keys"]
+    assert not db["days"]
+    assert not db["audits"]
