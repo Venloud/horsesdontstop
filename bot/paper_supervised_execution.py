@@ -211,9 +211,32 @@ def _verify_paper_market_session(trading, clock, *, now):
     return True
 
 
+def _verify_momentum_signal(trading, market_data, symbol, now):
+    """Refetch completed bars; rankings or caller booleans are not signals."""
+    if market_data is None:
+        raise TradeBlocked("Independent completed-bar strategy evidence missing")
+    from zoneinfo import ZoneInfo
+    from alpaca.trading.requests import GetCalendarRequest
+    from .paper_readiness_cli import research_candidates
+    today = now.astimezone(ZoneInfo("America/New_York")).date()
+    try:
+        sessions = trading.get_calendar(GetCalendarRequest(
+            start=today - timedelta(days=14), end=today - timedelta(days=1)))
+        days = [s.date for s in sessions]
+        if (not days or len(set(days)) != len(days)
+                or any(not today - timedelta(days=14) <= d < today for d in days)):
+            raise ValueError
+        candidates = research_candidates(market_data, [symbol], now=now,
+                                         required_session=max(days))
+        if len(candidates) != 1 or candidates[0]["symbol"] != symbol:
+            raise ValueError
+    except Exception:
+        raise TradeBlocked("No verified fresh completed-session momentum signal") from None
+
+
 def submit_paper_once_supervised(
     *, trading, journal, market_quote, preview, safety_state,
-    approval, now: datetime,
+    approval, now: datetime, market_data=None,
 ) -> PaperSubmitResult:
     """ONE broker submission at most, with exact matching reviewed terms.
 
@@ -262,6 +285,7 @@ def submit_paper_once_supervised(
             or positions or orders):
         raise TradeBlocked("Paper market closed, account blocked or exposure exists")
     _verify_paper_market_session(trading, clock, now=now)
+    _verify_momentum_signal(trading, market_data, preview.symbol, now)
     if (abs(money(account.equity) - money(safety_state.equity)) > money(".01")
             or abs(money(account.cash) - money(safety_state.available_cash))
                > money(".01")):
@@ -309,6 +333,22 @@ def submit_paper_once_supervised(
                 symbol=preview.symbol, quote=market_quote, equity=account.equity,
                 available_cash=account.cash, now=final_now, market_open=True)
             _verify_paper_market_session(trading, clock, now=final_now)
+            # Refresh account/exposure again after reservation and lock waits.
+            final_account = trading.get_account()
+            final_clock = trading.get_clock()
+            final_positions = trading.get_all_positions()
+            final_orders = trading.get_orders(filter=GetOrdersRequest(
+                status=QueryOrderStatus.OPEN, nested=True, limit=500))
+            if (getattr(final_clock, "is_open", None) is not True
+                    or getattr(final_account, "trading_blocked", None) is not False
+                    or not isinstance(final_positions, (list, tuple)) or final_positions
+                    or not isinstance(final_orders, (list, tuple)) or final_orders
+                    or money(final_account.equity) != money(account.equity)
+                    or money(final_account.cash) != money(account.cash)
+                    or money(getattr(final_account, "buying_power", None))
+                        < money(plan.estimated_cost)):
+                raise TradeBlocked("PAPER account changed after reservation")
+            _verify_paper_market_session(trading, final_clock, now=final_now)
             attempted = True
             result = trading.submit_order(order_data=order_request)
     except Exception:

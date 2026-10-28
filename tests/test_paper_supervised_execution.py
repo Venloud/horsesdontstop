@@ -98,6 +98,8 @@ class FakeBroker:
 
     def get_calendar(self, filters):
         self.calls.append("get_calendar")
+        if filters.end < NOW.date():
+            return [SimpleNamespace(date=NOW.date() - timedelta(days=3))]
         assert filters.start == NOW.date()
         assert filters.end == NOW.date()
         return [SimpleNamespace(
@@ -158,6 +160,22 @@ class FakeJournal:
         yield
 
 
+class FakeMarketData:
+    def get_stock_bars(self, request):
+        days = []
+        day = NOW.date() - timedelta(days=3)
+        while len(days) < 22:
+            if day.weekday() < 5:
+                days.append(day)
+            day -= timedelta(days=1)
+        rows = [SimpleNamespace(
+            timestamp=datetime.combine(day, datetime.min.time(), timezone.utc),
+            open=20 + i / 10, high=21 + i / 10, low=19 + i / 10,
+            close=20 + i / 10, volume=200 if i == 21 else 100)
+            for i, day in enumerate(reversed(days))]
+        return SimpleNamespace(data={"F": rows})
+
+
 def execute(p=None, *, broker=None, journal=None, state=None,
             approval=None, live_quote=None, now=NOW):
     p = p or preview()
@@ -168,6 +186,7 @@ def execute(p=None, *, broker=None, journal=None, state=None,
         trading=broker, journal=journal, market_quote=live_quote,
         preview=p, safety_state=state or healthy(),
         approval=approval or approved(p), now=now,
+        market_data=FakeMarketData(),
     )
 
 
@@ -243,7 +262,8 @@ def test_missing_approval_stops_entry(monkeypatch):
     with pytest.raises(TradeBlocked, match="approval"):
         entry.submit_paper_once_supervised(
             trading=broker, journal=journal, market_quote=quote(),
-            preview=p, safety_state=healthy(), approval=None, now=NOW)
+            preview=p, safety_state=healthy(), approval=None, now=NOW,
+            market_data=FakeMarketData())
     assert journal.calls == []
     assert not broker.sent
 
