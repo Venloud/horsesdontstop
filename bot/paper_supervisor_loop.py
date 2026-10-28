@@ -232,6 +232,7 @@ DIAGNOSTIC_REASONS = frozenset((
     "COMPETING_LEASE", "LEASE_STALE", "LEASE_UNVERIFIED",
     "PROCESS_NOT_RUNNING", "DUPLICATE_PROCESS", "PROCESS_UNVERIFIED",
     "SUPERVISOR_NOT_RUNNING",
+    "HTTP_400", "HTTP_401", "HTTP_404", "HTTP_409", "HTTP_503",
 ))
 
 
@@ -249,6 +250,10 @@ def _diagnostic_reason(error):
     from requests.exceptions import Timeout as RequestTimeout
     if isinstance(error, DiagnosticFailure):
         return error.reason_code
+    from .paper_external_liveness import ExternalLivenessHTTPError
+    if isinstance(error, ExternalLivenessHTTPError):
+        code = f"HTTP_{error.http_status}"
+        return code if code in DIAGNOSTIC_REASONS else "UNKNOWN"
     if isinstance(error, (TimeoutError, RequestTimeout)):
         return "TIMEOUT"
     if isinstance(error, ssl.SSLError):
@@ -378,7 +383,7 @@ def diagnose_supervisor(*, phase="postopen", collector_instances=None,
     from alpaca.trading.requests import GetOrdersRequest, GetCalendarRequest
     from .paper_store import PostgresPaperJournal
     from .paper_watchdog import run_once, make_paper_readonly_client
-    from .paper_external_liveness import check_liveness_settings
+    from .paper_external_liveness import check_liveness_settings, probe_liveness
 
     required = ("ALPACA_PAPER_API_KEY", "ALPACA_PAPER_SECRET_KEY",
                 "PAPER_JOURNAL_DSN", "PAPER_HEARTBEAT_DSN",
@@ -463,11 +468,10 @@ def diagnose_supervisor(*, phase="postopen", collector_instances=None,
         return True
 
     def liveness_config():
-        # Validate settings only. The continuous supervisor alone posts.
-        check_liveness_settings(
-            os.environ.get("PAPER_EXTERNAL_LIVENESS_URL"),
-            os.environ.get("PAPER_EXTERNAL_LIVENESS_TOKEN"))
-        return True
+        # The GET endpoint cannot contend with either operational lease.
+        return probe_liveness(
+            url=os.environ.get("PAPER_EXTERNAL_LIVENESS_URL"),
+            token=os.environ.get("PAPER_EXTERNAL_LIVENESS_TOKEN"))
 
     def calendar():
         # GET same broker clock/calendar as the existing supervised
