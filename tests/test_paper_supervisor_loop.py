@@ -266,3 +266,21 @@ def test_healthy_second_lease_pulse_never_pages():
         critical_alert_sink=lambda code: notices.append(code) or True)
     assert result.healthy_polls == 2
     assert notices == ["supervisor_poll_or_lease_failed"]
+
+
+def test_failed_external_delivery_receipt_cannot_claim_acknowledgement():
+    events=[]
+    def delivery(**kw):raise RuntimeError("secret transport detail")
+    report=run_supervisor_loop(fetch_read_only_report=safe_report,heartbeat_writer=FakeWriter(),
+        max_ticks=1,external_liveness_sink=delivery,tick_observer=events.append)
+    assert report.external_liveness_failures==1
+    assert events[0]['external_ack'] is False and events[0]['status']=='poll_failed'
+
+
+def test_runtime_receipt_failure_alerts_and_stops_before_next_tick():
+    alarms=[];writer=FakeWriter()
+    def failure(event):raise OSError('sensitive path')
+    with pytest.raises(TradeBlocked,match='receipt persistence failed'):
+        run_supervisor_loop(fetch_read_only_report=safe_report,heartbeat_writer=writer,
+            max_ticks=2,tick_observer=failure,critical_alert_sink=lambda code:alarms.append(code) or True)
+    assert 'runtime_receipt_unavailable' in alarms and len(writer.pulses)==1
