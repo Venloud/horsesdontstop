@@ -106,7 +106,7 @@ def run_supervisor_loop(
     *, fetch_read_only_report, heartbeat_writer, interval_seconds=30,
     max_ticks=0, sleeper=time.sleep, worker_id=None,
     closed_flat_broker_probe=None, external_liveness_sink=None,
-    critical_alert_sink=None,
+    critical_alert_sink=None, tick_observer=None,
 ) -> SupervisorLoopReport:
     """Synthetic tests can supply fake report, pulse and sleeper.
 
@@ -178,12 +178,14 @@ def run_supervisor_loop(
                 alarm("supervisor_poll_or_lease_failed")
                 print("PAPER READ-ONLY SUPERVISOR: unhealthy/unknown; "
                       "NO trading permission.", file=sys.stderr)
+        external_ack = False
         if external_liveness_sink is not None:
             try:
                 if external_liveness_sink(
                     worker_id=worker_id, sequence=ticks,
                     status=external_status) is not True:
                     raise TradeBlocked("External liveness not acknowledged")
+                external_ack = True
             except Exception:
                 # Unauthenticated or missing external heartbeat NEVER proves
                 # safe off-hours idle. No exception details may reach logs.
@@ -192,6 +194,13 @@ def run_supervisor_loop(
                 alarm("external_liveness_unverified")
                 print("PAPER LIVENESS: EXTERNAL SIGNAL UNVERIFIED; "
                       "NO trading permission.", file=sys.stderr)
+        if tick_observer is not None:
+            try:
+                tick_observer(dict(worker_id=worker_id, sequence=ticks,
+                                   status=external_status, external_ack=external_ack))
+            except Exception:
+                alarm("runtime_receipt_unavailable")
+                raise TradeBlocked("Supervisor receipt persistence failed") from None
         if max_ticks == 0 or ticks < max_ticks:
             sleeper(interval_seconds)
     return SupervisorLoopReport(
@@ -641,6 +650,7 @@ def main() -> int:
         description="STAGED read-only PAPER watchdog; no broker orders"
     )
     parser.add_argument("--interval-seconds", type=int, default=30)
+    parser.add_argument("--receipt-file", default=None)
     parser.add_argument("--max-ticks", type=int, default=0,
                         help="0 is continuous; 2-5 for synthetic smoke on a host")
     parser.add_argument(
@@ -721,6 +731,10 @@ def main() -> int:
                 os.environ.get("PAPER_EXTERNAL_LIVENESS_TOKEN"))
             liveness_sink = lambda **details: send_liveness(
                 url=external_url, token=external_token, **details)
+        observer = None
+        if args.receipt_file:
+            from .paper_runtime_receipt import write_runtime_receipt
+            observer = lambda event: write_runtime_receipt(args.receipt_file, event)
         outcome = run_supervisor_loop(
             fetch_read_only_report=lambda: run_once(output=""),
             heartbeat_writer=writer,
@@ -729,6 +743,7 @@ def main() -> int:
             closed_flat_broker_probe=closed_flat_probe,
             external_liveness_sink=liveness_sink,
             critical_alert_sink=send_supervisor_alarm,
+            tick_observer=observer,
         )
     except Exception:
         print("BLOCKED: cannot operate a verified PAPER read-only worker; "
