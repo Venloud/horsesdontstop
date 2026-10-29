@@ -87,7 +87,9 @@ def test_broker_gateway_never_promotes_its_own_ack():
     gateway = inspect.getsource(entry.submit_paper_once_supervised)
     from bot.paper_execution_journal import PaperExecutorJournal
     authorization = inspect.getsource(PaperExecutorJournal.authorize_reserved_submission)
-    assert "with journal.authorize_reserved_submission(plan):" in gateway
+    assert "with journal.authorize_reserved_submission(plan) as assert_lock_alive:" in gateway
+    assert gateway.index("assert_lock_alive()") < gateway.index("send_now =")
+    assert gateway.index("assert_lock_alive()") < gateway.index("trading.submit_order(")
     assert authorization.index("self.mark_uncertain(plan.client_order_id)") < authorization.index("yield")
     assert "journal.record_observed_state(" not in gateway
     assert "PAPER_ORDER_SUBMISSIONS_RELEASED = False" in inspect.getsource(entry)
