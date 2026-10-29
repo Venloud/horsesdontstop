@@ -710,3 +710,27 @@ def test_simulated_order_to_independent_fill_reconciliation_and_restart(monkeypa
     with pytest.raises(TradeBlocked, match="NEVER retry"):
         execute(p, broker=broker, journal=durable)
     assert len(broker.sent) == 1
+
+
+def test_backend_loss_during_final_broker_reads_prevents_post(monkeypatch):
+    monkeypatch.setattr(entry,"PAPER_ORDER_SUBMISSIONS_RELEASED",True)
+    p=preview(); broker=FakeBroker(p); journal=FakeJournal()
+    alive=[True]; reads=[]
+    get_account=broker.get_account
+    def account():
+        reads.append(True)
+        if len(reads)>1:
+            alive[0]=False
+        return get_account()
+    broker.get_account=account
+    @contextmanager
+    def authorization(plan):
+        journal.mark_uncertain(plan.client_order_id)
+        def guard():
+            if not alive[0]:
+                raise ConnectionError("lost DB backend")
+        yield guard
+    journal.authorize_reserved_submission=authorization
+    with pytest.raises(TradeBlocked,match="before POST"):
+        execute(p,broker=broker,journal=journal)
+    assert len(reads)>1 and broker.sent==[]

@@ -414,3 +414,19 @@ def test_terminal_canceled_sell_limit_does_not_compete_with_valid_child():
     assert result.uncovered_symbols == ()
     assert "multiple_active_sell_exits_for_position" not in result.blockers
     assert "open_broker_positions" in result.blockers
+
+
+@pytest.mark.parametrize("expiry,protected",[
+    ("2000-01-01T00:00:00Z",False),("not-a-timestamp",False),
+    ("2099-01-01T00:00:00",False),(123,False),
+    ("2099-01-01T00:00:00Z",True),(None,True),
+])
+def test_monitor_rejects_expired_or_unverifiable_gtc_stop(expiry,protected):
+    child=order("stop",side="sell",kind="stop",qty=2,parent="parent",
+                tif="gtc",stop_price=24)
+    child.expires_at=expiry
+    entry=order("parent",kind="limit",qty=2,filled=2,status="filled",
+                klass="oto",cid="approved",legs=[child])
+    report=reconcile_observation([position(qty=2)],[entry],[],order_fetch_complete=True,
+        approved_stops=[("approved","filled","F",2,24,"parent")])
+    assert (report.uncovered_symbols==()) is protected

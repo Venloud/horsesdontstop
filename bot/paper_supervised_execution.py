@@ -353,6 +353,9 @@ def submit_paper_once_supervised(
                         < money(plan.estimated_cost)):
                 raise TradeBlocked("PAPER account changed after reservation")
             _verify_paper_market_session(trading, final_clock, now=final_now)
+            if not callable(assert_lock_alive):
+                raise TradeBlocked("PAPER control lock liveness check unavailable")
+            assert_lock_alive()
             # Network reads can themselves stall. Approval and quote freshness
             # must still hold immediately before the POST boundary.
             send_now = now + timedelta(seconds=monotonic() - started)
@@ -364,9 +367,6 @@ def submit_paper_once_supervised(
                 raise TradeBlocked("PAPER final broker verification exceeded freshness budget")
             if send_now >= final_clock.next_close - timedelta(minutes=30):
                 raise TradeBlocked("PAPER entry deadline passed during verification")
-            if not callable(assert_lock_alive):
-                raise TradeBlocked("PAPER control lock liveness check unavailable")
-            assert_lock_alive()
             # A remote DB and broker cannot share an atomic transaction. A
             # backend can still die after this acknowledgement; submission
             # release stays disabled until that residual risk is reviewed.

@@ -326,3 +326,21 @@ def test_duplicate_day_sqlstate_23505_is_not_a_false_or_success(monkeypatch):
     assert not db["keys"]
     assert not db["days"]
     assert not db["audits"]
+
+
+def test_same_authorization_connection_loss_is_detected_before_send(monkeypatch):
+    j, db = journal(monkeypatch, allow=True)
+    plan = sample(); j.reserve_if_enabled(plan)
+    original = Cursor.execute
+    def interrupted(self, sql, params=None):
+        if db.get("backend_dead") and "SELECT kill_switch_active" in sql:
+            raise ConnectionError("lost authorization backend")
+        return original(self, sql, params)
+    monkeypatch.setattr(Cursor, "execute", interrupted)
+    with j.authorize_reserved_submission(plan) as guard:
+        guard()
+        db["backend_dead"] = True
+        with pytest.raises(ConnectionError):
+            guard()
+    assert db["intent_status"][plan.client_order_id] == "unknown"
+    assert (plan.client_order_id,"submission_authorization_consumed") in db["audits"]

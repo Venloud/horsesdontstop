@@ -241,7 +241,7 @@ class PaperExecutorJournal(PostgresPaperJournal):
                     # Use this SAME connection: a fresh connection could hide
                     # termination of the backend holding the control lock.
                     cur.execute("SELECT kill_switch_active,submissions_enabled "
-                                "FROM public.paper_control WHERE singleton=TRUE FOR SHARE")
+                                "FROM public.paper_control WHERE singleton=TRUE")
                     if cur.fetchone() != (False, True):
                         raise TradeBlocked("PAPER control lock no longer verified")
                 yield assert_lock_alive
