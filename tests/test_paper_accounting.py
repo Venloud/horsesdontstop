@@ -1,4 +1,5 @@
 import copy,hashlib
+from decimal import Decimal
 from datetime import datetime,timezone,timedelta
 from types import SimpleNamespace
 import pytest
@@ -16,8 +17,8 @@ def evidence():
 
 def test_authentic_cash_only_lifetime_explains_funding_not_trading_profit():
  r=reconcile_cash_lifetime(**evidence())
- assert r['net_external_funding']=='500.000000' and r['realized_pnl']=='0'
- assert r['nominal_peak_equity']=='500.000000' and r['daily_trading_loss_pct']=='0'
+ assert Decimal(r['net_external_funding'])==500 and r['realized_pnl']=='0'
+ assert Decimal(r['nominal_peak_equity'])==500 and r['daily_trading_loss_pct']=='0'
  assert not r['can_submit_orders']
 
 

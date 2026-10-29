@@ -85,7 +85,8 @@ def reconcile_cash_lifetime(*, account, activities, history, positions, orders,
         kind, amount = item.get("activity_type"), money(item.get("net_amount"))
         if kind == "JNLC":
             journal_count += 1
-            if len(flows) or journal_count != 1 or amount <= 0:
+            if (len(flows) or journal_count != 1 or amount <= 0
+                    or (at - created).total_seconds() > 15 * 60):
                 raise TradeBlocked("Unexplained broker journal adjustment")
         elif kind == "CSD":
             if amount <= 0:
@@ -156,7 +157,9 @@ def verify_fresh_baseline(witnesses, *, authorization_reference, prior_history_d
             or not isinstance(witnesses, list) or len(witnesses) != 2):
         raise TradeBlocked("Fresh baseline authorization/evidence missing")
     a, b = witnesses
-    if (not a.get("principal") or a.get("principal") == b.get("principal")
+    if (any(not isinstance(w.get("principal"), str) or not w["principal"].strip()
+            or len(w["principal"]) > 128 for w in witnesses)
+            or a.get("principal") == b.get("principal")
             or any(w.get("authenticated") is not True
                    or any(type(w.get(k)) is not int or w[k] != 0
                           for k in ("positions", "open_orders", "unresolved_intents")) for w in witnesses)
