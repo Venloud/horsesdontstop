@@ -160,7 +160,7 @@ class FakeJournal:
     @contextmanager
     def authorize_reserved_submission(self, plan):
         self.mark_uncertain(plan.client_order_id)
-        yield
+        yield lambda: None
 
 
 class FakeMarketData:

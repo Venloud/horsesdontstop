@@ -5,6 +5,7 @@ unknown broker information blocks readiness. This is a diagnostic check,
 NOT execution approval or a real-time protective-stop watchdog.
 """
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Iterable, Sequence
 
@@ -217,6 +218,16 @@ def reconcile_observation(
                        not in PROTECTIVE_ACTIVE_STATUSES
                     or value(getattr(order, "time_in_force", None)) != "gtc"):
                 continue
+            expiry = getattr(order, "expires_at", None)
+            if expiry is not None:
+                try:
+                    if isinstance(expiry, str):
+                        expiry = datetime.fromisoformat(expiry.replace("Z", "+00:00"))
+                    if (not isinstance(expiry, datetime) or expiry.tzinfo is None
+                            or expiry <= datetime.now(timezone.utc)):
+                        continue
+                except (ValueError, TypeError, OverflowError):
+                    continue
             parent = observed_oto_parents.get(
                 str(getattr(order, "parent_order_id", "")))
             durable = durable_approvals.get(

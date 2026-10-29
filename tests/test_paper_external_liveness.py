@@ -121,3 +121,32 @@ def test_liveness_source_does_not_import_broker_clients_or_submit_orders():
     assert ".submit_order(" not in src
     assert ".cancel_order(" not in src
     assert "PAPER_ORDER_SUBMISSIONS_RELEASED = True" not in src
+
+
+@pytest.mark.parametrize("status", [204,400,401,404,409,503])
+def test_nonmutating_diagnostic_preserves_exact_http_outcome(status):
+    from bot.paper_external_liveness import probe_liveness, ExternalLivenessHTTPError
+    from bot.paper_supervisor_loop import _diagnostic_reason
+    calls=[]
+    def get(url, **kwargs):
+        calls.append((url,kwargs))
+        return Reply(status)
+    if status==204:
+        assert probe_liveness(url=HOST,token=TOKEN,get=get) is True
+    else:
+        with pytest.raises(ExternalLivenessHTTPError) as exc:
+            probe_liveness(url=HOST,token=TOKEN,get=get)
+        assert exc.value.http_status==status
+        assert _diagnostic_reason(exc.value)==f"HTTP_{status}"
+        assert TOKEN not in str(exc.value)
+    assert calls==[(HOST.removesuffix("/heartbeat")+"/diagnostic",{
+        "headers":{"Authorization":"Bearer "+TOKEN},"timeout":5,"allow_redirects":False})]
+
+
+def test_nonmutating_diagnostic_network_failure_is_sanitized():
+    from bot.paper_external_liveness import probe_liveness
+    def fail(*a,**kw):
+        raise RuntimeError("PRIVATE_SECRET")
+    with pytest.raises(TradeBlocked,match="diagnostic delivery failed") as exc:
+        probe_liveness(url=HOST,token=TOKEN,get=fail)
+    assert "PRIVATE_SECRET" not in str(exc.value)

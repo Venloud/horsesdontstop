@@ -237,7 +237,14 @@ class PaperExecutorJournal(PostgresPaperJournal):
                 # Separate committed receipt survives rollback of this lock
                 # transaction, including a broker timeout or lost connection.
                 self.consume_submission_authorization(plan.client_order_id)
-                yield
+                def assert_lock_alive():
+                    # Use this SAME connection: a fresh connection could hide
+                    # termination of the backend holding the control lock.
+                    cur.execute("SELECT kill_switch_active,submissions_enabled "
+                                "FROM public.paper_control WHERE singleton=TRUE FOR SHARE")
+                    if cur.fetchone() != (False, True):
+                        raise TradeBlocked("PAPER control lock no longer verified")
+                yield assert_lock_alive
 
     def consume_submission_authorization(self, client_order_id):
         with self._connect() as conn:

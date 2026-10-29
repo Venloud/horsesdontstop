@@ -328,7 +328,7 @@ def submit_paper_once_supervised(
 
     attempted = False
     try:
-        with journal.authorize_reserved_submission(plan):
+        with journal.authorize_reserved_submission(plan) as assert_lock_alive:
             # Reservation is consumed durably before entering this context.
             # Recheck time-sensitive evidence after any DB lock wait.
             final_now = now + timedelta(seconds=monotonic() - started)
@@ -364,6 +364,12 @@ def submit_paper_once_supervised(
                 raise TradeBlocked("PAPER final broker verification exceeded freshness budget")
             if send_now >= final_clock.next_close - timedelta(minutes=30):
                 raise TradeBlocked("PAPER entry deadline passed during verification")
+            if not callable(assert_lock_alive):
+                raise TradeBlocked("PAPER control lock liveness check unavailable")
+            assert_lock_alive()
+            # A remote DB and broker cannot share an atomic transaction. A
+            # backend can still die after this acknowledgement; submission
+            # release stays disabled until that residual risk is reviewed.
             attempted = True
             result = trading.submit_order(order_data=order_request)
     except Exception:

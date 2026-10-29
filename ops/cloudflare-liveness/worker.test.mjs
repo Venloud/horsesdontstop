@@ -168,3 +168,33 @@ test("missing topic and D1 failure fail closed on critical cron",async()=>{
   e.DB.fail=true;
   await assert.rejects(worker.scheduled(null,e),/Liveness read failed/);
 });
+
+
+test("authenticated diagnostic repeats without changing active lease or alarms", async()=>{
+  Date.now=()=>1000000;
+  const e=env(); await post(e);
+  const previous=structuredClone(e.DB.liveness);
+  e.DB.alarm={code:"stale_heartbeat",delivered_ms:123};
+  const alarm=structuredClone(e.DB.alarm);
+  for(let i=0;i<3;i++){
+    const r=await worker.fetch(new Request("https://stage.workers.dev/v1/diagnostic",{
+      headers:{authorization:"Bearer "+TOKEN}}),e);
+    assert.equal(r.status,204);assert.equal(await r.text(),"");
+    assert.deepEqual(e.DB.liveness,previous);assert.deepEqual(e.DB.alarm,alarm);
+  }
+  assert.equal((await post(e)).status,409);
+  assert.equal((await post(e,{body:{worker_id:W2,sequence:1,status:"poll_failed"}})).status,409);
+  assert.equal((await post(e,{body:{worker_id:W1,sequence:2,status:"closed_flat_idle"}})).status,204);
+});
+
+test("diagnostic auth, method, storage failures cannot write or report health", async()=>{
+  const e=env();
+  const url="https://stage.workers.dev/v1/diagnostic";
+  for(const headers of [{},{authorization:"Bearer bad"}]){
+    assert.equal((await worker.fetch(new Request(url,{headers}),e)).status,401);
+  }
+  assert.equal((await worker.fetch(req({url}),e)).status,404);
+  e.DB.fail=true;
+  assert.equal((await worker.fetch(new Request(url,{headers:{authorization:"Bearer "+TOKEN}}),e)).status,503);
+  assert.equal(e.DB.liveness,null);assert.equal(e.DB.alarm,null);
+});
