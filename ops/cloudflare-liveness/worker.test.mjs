@@ -198,3 +198,20 @@ test("diagnostic auth, method, storage failures cannot write or report health", 
   assert.equal((await worker.fetch(new Request(url,{headers:{authorization:"Bearer "+TOKEN}}),e)).status,503);
   assert.equal(e.DB.liveness,null);assert.equal(e.DB.alarm,null);
 });
+
+
+test("stale diagnostic cannot renew a lease or permit old positive sequences", async()=>{
+  let now=1000000;Date.now=()=>now;
+  const e=env();await post(e);
+  await post(e,{body:{worker_id:W1,sequence:2,status:"closed_flat_idle"}});
+  assert.equal((await post(e,{body:{worker_id:W1,sequence:1,status:"poll_failed"}})).status,409);
+  now+=120001;
+  const before=structuredClone(e.DB.liveness);
+  const probe=await worker.fetch(new Request("https://stage.workers.dev/v1/diagnostic",{headers:{authorization:"Bearer "+TOKEN}}),e);
+  assert.equal(probe.status,204);assert.deepEqual(e.DB.liveness,before);
+  assert.equal(classifyLiveness(e.DB.liveness,now),"stale_heartbeat");
+  assert.equal((await post(e,{body:{worker_id:W1,sequence:2,status:"closed_flat_idle"}})).status,409);
+  const malformed=new Request("https://stage.workers.dev/v1/heartbeat",{method:"POST",headers:{authorization:"Bearer "+TOKEN},body:"{"});
+  assert.equal((await worker.fetch(malformed,e)).status,400);
+  assert.deepEqual(e.DB.liveness,before);
+});

@@ -1,6 +1,6 @@
 # STAGED external PAPER worker liveness, Cloudflare Workers + D1
 
-**STATUS: CODE ONLY. NOT DEPLOYED. NOT A BROKER WATCHDOG OR A TRADING RELEASE.**
+**Phase7: the legacy receiver is deployed; the new non-mutating diagnostic route is NOT deployed. This is not trading readiness.**
 
 This is a second, out-of-band signal to distinguish a crashed Python
 supervisor from intentional off-hours Neon idle. A Cloudflare Worker with
@@ -36,7 +36,7 @@ For **one** process ticking every 30 seconds:
 | Authenticated Cloudflare Worker POST requests | 2,880/day |
 | Cloudflare scheduled invocations, 1-minute cron | 1,440/day |
 | D1 singleton writes, excluding critical alert receipts | 2,880/day |
-| D1 monitoring reads | 1,440–2,880/day |
+| D1 monitoring reads | 1,440â€“2,880/day |
 
 These are within the publicized *per-account* free quotas for one dedicated
 worker, **if the account has capacity left**. Other workloads, retry storms,
@@ -114,3 +114,27 @@ watchdog gate or create broker order permission.
   to suppressing unconfirmed alerts.
 - This is a diagnostic and escalation aid. No financial safety system
   should rely solely on free Cron Trigger timing for a strict deadline.
+
+
+## Phase7 authenticated, non-mutating diagnostic
+
+`GET /v1/diagnostic` uses the existing bearer authentication and performs one
+SELECT-only D1 reachability check. HTTP204 proves authentication and storage
+reachability only: it does not renew a heartbeat, change identity/sequence,
+modify alarm receipts, or prove operational supervision. Missing authentication
+returns401; unavailable storage returns503. Operational POST still requires
+monotonic sequence and rejects duplicate/competing workers409.
+
+The actual deployed endpoint returned404 on October28; authenticated malformed
+heartbeat returned400 without an operational payload. The historical diagnostic
+saved only HTTP_4XX; its original exact status cannot be recovered from that log.
+409 is a plausible collision, not confirmed historical evidence.
+
+Deploy this reviewed receiver to the existing Worker only after authenticated
+Cloudflare deployment access is available. Preserve current Worker version,
+D1 schema/binding, cron and secret bindings; do not rotate or print secrets.
+No D1 schema migration is needed. Retain the previous Worker version for rollback.
+Verify authenticated GET204, unauthenticated GET401 and unchanged D1 heartbeat
+AND alarm rows before/after repeated probes. Verify cron alert receipts through
+authorized read-only dashboard/log access. Never send a synthetic operational
+beacon just to make the monitor green or treat409 as success.

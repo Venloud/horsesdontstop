@@ -110,7 +110,7 @@ claim this unexecuted harness has established real denial or race safety.
 Windows probe at **2026-10-28T02:28:37Z** (October 27 Eastern) used existing DPAPI
 credentials in memory. Broker PAPER GETs succeeded: equity/cash/buying power each
 $500; trading_blocked false; positions 0; open orders 0; market CLOSED. Authentic
-Alpaca calendar reports October 29 09:30–16:00 New York.
+Alpaca calendar reports October 29 09:30â€“16:00 New York.
 
 Monitor-only Neon login `hds_paper_win_monitor` succeeded. Kill ON, submissions
 OFF, intents 0. Current genuine opening equity: October 27 **13:30:16.216309Z**;
@@ -195,3 +195,36 @@ replay is denied by a partial unique audit index. A broker acknowledgement still
 does not establish filled quantity or protective-stop coverage. No trade is
 ready: actual overnight stop lifecycle, trusted deployed reconciler, fresh
 market-open monitoring and exact owner-approved order remain required.
+
+
+## Phase7 independent engineering review and residual release gates
+
+A separate non-author agent reviewed baseline2c1e56e and subsequent repairs.
+The requested independent AI engineering review is complete; this is not human
+signoff or permission to trade. The same authorization connection is checked
+again after final broker reads, then approval/quote/deadline freshness is checked
+after that round trip. Actual isolated PostgreSQL backend termination was
+observed before the send boundary, and the durable consumption receipt survived.
+A backend can still disappear after its final acknowledgement and before the
+separate broker POST. That distributed race is mitigated, not atomically solved;
+order submission remains hard-disabled pending an explicitly reviewed release
+policy and all other gates. No SQL or grants changed in production.
+
+Monitor reconciliation now rejects expired, malformed and naive stop-expiry
+evidence. Post-fill confirmation already enforced expiry. Genuine overnight
+broker lifecycle remains unproved; no real order was used to validate it.
+
+Stable runtime received only reviewed monitoring files (supervisor loop,
+external-liveness client, alert module, reconciliation, Windows launcher), with
+hash manifest and rollback archive in Vandam. Collector files and all running
+processes were preserved. Repeated actual diagnostics left the Neon lease
+identical, sent one critical failure alert and suppressed its duplicate.
+The running continuous process retains its previously imported code.
+
+External diagnostic GET currently returns404 because the new Worker route has
+not been deployed; Cloudflare deployment credentials/session access are not
+available in this environment. Original historical HTTP_4XX cannot be recovered
+as an exact status. Closed-flat offhours intentionally skips Neon pulses, so the
+stored failed/stale lease cannot certify continuous runtime health. Production
+cutover remains blocked on external deployment and verified runtime rollout,
+including compatible opening-equity permissions and restricted service identity.
