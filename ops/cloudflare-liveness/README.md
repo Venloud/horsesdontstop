@@ -36,7 +36,7 @@ For **one** process ticking every 30 seconds:
 | Authenticated Cloudflare Worker POST requests | 2,880/day |
 | Cloudflare scheduled invocations, 1-minute cron | 1,440/day |
 | D1 singleton writes, excluding critical alert receipts | 2,880/day |
-| D1 monitoring reads | 1,440â€“2,880/day |
+| D1 monitoring reads | 1,440–2,880/day |
 
 These are within the publicized *per-account* free quotas for one dedicated
 worker, **if the account has capacity left**. Other workloads, retry storms,

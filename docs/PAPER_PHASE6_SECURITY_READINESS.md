@@ -110,7 +110,7 @@ claim this unexecuted harness has established real denial or race safety.
 Windows probe at **2026-10-28T02:28:37Z** (October 27 Eastern) used existing DPAPI
 credentials in memory. Broker PAPER GETs succeeded: equity/cash/buying power each
 $500; trading_blocked false; positions 0; open orders 0; market CLOSED. Authentic
-Alpaca calendar reports October 29 09:30â€“16:00 New York.
+Alpaca calendar reports October 29 09:30–16:00 New York.
 
 Monitor-only Neon login `hds_paper_win_monitor` succeeded. Kill ON, submissions
 OFF, intents 0. Current genuine opening equity: October 27 **13:30:16.216309Z**;
