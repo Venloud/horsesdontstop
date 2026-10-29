@@ -46,11 +46,11 @@ def fetch_account_history(trading):
         raise TradeBlocked("Accounting activity history incomplete")
     history = trading.get("/account/portfolio/history", {
         "start": account.created_at.isoformat(), "timeframe": "1D", "cashflow_types": "ALL"})
-    return account, rows, history
+    return account, rows, history, True
 
 
 def reconcile_cash_lifetime(*, account, activities, history, positions, orders,
-                            expected_account_hash, observed_at):
+                            expected_account_hash, observed_at, activities_complete=False):
     """Prove the actual pre-trade cash account without inventing past P&L.
 
     JNLC is accepted only as the single initial funding journal, independently
@@ -58,6 +58,9 @@ def reconcile_cash_lifetime(*, account, activities, history, positions, orders,
     fills, transfers of securities and other activity require full accounting.
     """
     now = timestamp(observed_at)
+    if (activities_complete is not True
+            or not 0 <= (datetime.now(timezone.utc) - now).total_seconds() <= 120):
+        raise TradeBlocked("Accounting completeness or freshness unverified")
     created = timestamp(account.created_at)
     identity = hashlib.sha256(str(account.id).encode()).hexdigest()
     if identity != expected_account_hash or created > now or getattr(account, "currency", None) != "USD":
@@ -70,7 +73,8 @@ def reconcile_cash_lifetime(*, account, activities, history, positions, orders,
     ids, flows, last_time = set(), [], created
     journal_count = 0
     for item in activities:
-        if (not isinstance(item, dict) or not item.get("id") or item["id"] in ids
+        if (not isinstance(item, dict) or not isinstance(item.get("id"), str)
+                or not item["id"] or item["id"] in ids
                 or item.get("status") != "executed" or item.get("currency") != "USD"):
             raise TradeBlocked("Accounting activity unverified")
         ids.add(item["id"])
@@ -123,10 +127,18 @@ def reconcile_cash_lifetime(*, account, activities, history, positions, orders,
     if equity != cash or cash != total or equity <= 0:
         raise TradeBlocked("Current cash equity does not reconcile")
     evidence = json.dumps({"activities": activities, "history": history}, sort_keys=True)
+    running, peak = Decimal("0"), Decimal("0")
+    for _, _, amount in flows:
+        running += amount
+        if running < 0:
+            raise TradeBlocked("Historical cash balance unexplained")
+        peak = max(peak, running)
     return dict(account_id_sha256=identity, observed_at_utc=now.isoformat(),
                 history_scope="authenticated cash-only account lifetime",
                 equity=str(equity), cash=str(cash), realized_pnl="0", unrealized_pnl="0",
                 net_external_funding=str(total), historical_trading_drawdown_pct="0",
+                nominal_peak_equity=str(peak), daily_trading_loss_pct="0",
+                daily_loss_limit_breached=False, trading_drawdown_limit_breached=False,
                 equity_history_explained=True, cashflows_reconciled=True,
                 evidence_sha256=hashlib.sha256(evidence.encode()).hexdigest(),
                 can_submit_orders=False)
