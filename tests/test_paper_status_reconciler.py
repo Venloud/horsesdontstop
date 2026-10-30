@@ -144,6 +144,16 @@ def test_missing_or_unreliable_stop_never_promotes_fill(leg):
     assert journal.modified == []
 
 
+@pytest.mark.parametrize('status,filled', [('partially_filled',1),('filled',PLAN.whole_shares)])
+def test_held_oto_child_is_not_live_protection_even_with_matching_quantity(status,filled):
+    leg=stop(status='held')
+    leg.qty=str(filled)
+    journal=FakeJournal(status='submitted')
+    broker=FakeBroker(parent(status=status,filled=filled,legs=[leg]),exposure=filled)
+    with pytest.raises(TradeBlocked):run(broker=broker,journal=journal)
+    assert journal.modified==[]
+
+
 @pytest.mark.parametrize("status,filled,exposure", [
     ("partially_filled", 1, 1),
     ("filled", PLAN.whole_shares, 0),

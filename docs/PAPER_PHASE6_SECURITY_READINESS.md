@@ -435,3 +435,22 @@ independent reconciliation mitigate uncertainty but cannot make those systems
 atomic. Strict cross-system kill semantics remain a release blocker; adding an
 extra check does not solve this. Never retry an ambiguous intent or weaken the
 kill-switch policy. Both real release constants remain False.
+
+### Broker protection contract remains a pre-entry release blocker
+
+[Alpaca's order documentation](https://docs.alpaca.markets/us/docs/orders-at-alpaca)
+describes OTO as a bracket variant and says bracket exit legs become active only
+after the entry is completely filled. Applying its stated common requirements
+to OTO, immediate coverage of a partial entry cannot be assumed. The current
+request uses a DAY parent and does not encode a separate child time-in-force;
+that request alone does not establish overnight GTC protection. A held child
+is rejected as protection even when its quantity matches the actual position.
+
+These documented constraints make protection-capability qualification a
+pre-entry release gate, not a promise to repair exposure after submission.
+The existing hard-disabled gateway enforces NO ENTRY while this is unresolved.
+No automatic switch to a GTC parent or separate stop POST is justified: either
+would need a reviewed policy for overnight entries or unprotected fill gaps.
+Genuine broker lifecycle acceptance and a policy satisfying both partial-fill
+and overnight requirements remain necessary; the synthetic tests do not prove
+the broker can supply that guarantee.
