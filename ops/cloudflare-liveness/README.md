@@ -1,6 +1,15 @@
 # STAGED external PAPER worker liveness, Cloudflare Workers + D1
 
-**Phase7: the legacy receiver is deployed; the new non-mutating diagnostic route is NOT deployed. This is not trading readiness.**
+**October29: the existing GitHub-linked Worker deployed the merged main diagnostic route. Authenticated repeated GET returned204; missing/invalid authentication returned401; the actual Neon lease was unchanged. This is not trading readiness.**
+
+The successful Cloudflare Workers Builds check on merge commit
+`9f1f80975d79857579972460b6fc738a31d2da00` identifies deployment account
+`96dc1a6a8ae1020c1c6f61530e230c09`. Wrangler login now works with Windows-keychain
+storage, but its current account is a different account and cannot inspect this
+Worker. Do not deploy or create resources in that other account. Current cron,
+remote version, D1 alarm rows and secret types still need read-only control-plane
+verification with the correct existing account. Operational supervisor POSTs
+are acknowledged; this does not establish alert timing or phone delivery.
 
 This is a second, out-of-band signal to distinguish a crashed Python
 supervisor from intentional off-hours Neon idle. A Cloudflare Worker with
@@ -18,7 +27,7 @@ resting, that a broker API response was real, or that trading may start.
   alert classifier. No Alpaca or Neon credentials.
 - `schema.sql`: two singleton Cloudflare **D1** tables. No changes to Neon.
 - `worker.test.mjs`: Node native offline tests, mock D1/HTTP, no secrets.
-- `wrangler.toml`: placeholders only, no live deployment or API token.
+- `wrangler.toml`: existing Worker/D1 target; no API token or secret values.
 - `../../bot/paper_external_liveness.py`: opt-in Python POST sender,
   bound to the Cloudflare workers.dev HTTPS endpoint.
 - `../../bot/paper_supervisor_loop.py`: optional
@@ -59,7 +68,7 @@ Another independent heartbeat watcher/endpoint may be required, or the
 detect an outage of its OWN infrastructure or prove that ntfy delivered
 the message to the owner's phone.
 
-## Optional future Cloudflare setup, NOT performed here
+## Historical setup procedure: do not recreate the existing resources
 
 1. User must authorize Cloudflare account connection, any plan and its
    billing terms. Deploy only on a Free plan with enough remaining quota.

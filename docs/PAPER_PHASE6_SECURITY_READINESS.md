@@ -322,3 +322,67 @@ production backup and data refresh, migration receipt, security catalog,
 restricted acceptance, reconciler deployment/restart/alert, authentic risk and
 fresh runtime acceptance. Earlier Phase7 statements that production was not
 migrated describe historical state; this section supersedes current status.
+
+
+### Post-merge verification and Cloudflare update, October29 eveningET
+
+PR41 merged after independent engineering approval and green exact-head checks:
+merge `9f1f80975d79857579972460b6fc738a31d2da00`. All four main-commit GitHub
+Actions runs succeeded:40980653048,40980652906,40980652893,40980652881.
+Stable runtime synchronized to that exact clean main tree without restarting
+healthy services or changing their PIDs. PR38 closed as superseded after source
+and runtime dependency verification; its branch and all recovery history remain.
+Three GitHub branches/two Neon branches retained; no new cleanup/deletion.
+An autosync committed a generated Wrangler account-selection cache containing
+only an account object (no token/password/secret);369f8be removed it from source
+tracking and added `.wrangler/` ignore, preserving history and local cache.
+
+Separate reviewer independently queried actual production after cutover:
+all six live SQL function bodies match reviewed source, SECURITYDEFINER owners
+and search_path=pg_catalog are correct, no PUBLIC EXECUTE, effective executor
+and reconciler column/table/function grants are narrow, required daily and
+single-use receipt uniqueness indexes exist, no escalation path found in the
+reviewed boundary. This independently corroborates the nine42501 denial probes.
+Observe-only runtime hashes/processes and advancing receipts independently
+verified. Production security acceptance PASS; broker/status-writing release
+NOT approved by that finding.
+
+The existing Cloudflare GitHub integration DID deploy merged main automatically.
+GitHub Workers Builds check (app cloudflare-workers-and-pages) is SUCCESS:
+https://dash.cloudflare.com/96dc1a6a8ae1020c1c6f61530e230c09/workers/services/view/horsesdontstop-liveness-staging/production/builds/d10d1d80-9320-4c1c-977b-c2930ba27fe8
+Actual production requests transport: authenticated diagnostic GET204 twice,
+missing/invalid auth401; exact Neon lease unchanged, zero HTTP writes/broker
+operations. A separate urllib test returns403 at the edge and is classified as
+failure, never converted to204. This does not recover the original historical
+HTTP4xx or establish409 as its cause.
+
+Wrangler4.156 login now succeeds, with scoped Worker/D1 permissions and encrypted
+credential storage keyed by Windows Credential Manager (@napi-rs/keyring1.3).
+Authenticated account2f757eedde8dbeac7746fd77b501d666 has no targetWorker or D1.
+The actual deployment account is96dc1a6a8ae1020c1c6f61530e230c09; its API denies
+the current token with10000. Correct existing account access is required for
+remote-version/cron/secret-type/D1-alarm-row verification. No duplicate Worker,
+account, D1 or paid service was created. Wrangler config is pinned to the verified
+real account to prevent accidentally deploying a duplicate in another account.
+
+A real offhours diagnostic exposed misleading stale-lease wording: a stale
+stored Neon lease was reported as SUPERVISOR_NOT_RUNNING even though process
+and external heartbeat were current. The correction reports LEASE_STALE and
+retains FAIL/nonhealthy; it does not renew a lease or grant trading permission.
+Independent narrow source review approved;92focused tests passed. Current live
+closed-flat receipts prove process/broker/external activity, not market-open
+Neon acceptance. Calendar MARKET_CLOSED remains an expected failed trading gate.
+
+Latest evidence: hds-final-production-security-catalog.json,
+hds-final-production-restricted-acceptance.json,hds-final-runtime-main-sync.json,
+hds-final-runtime-acceptance.json,hds-final-reconciler-restart.json,
+hds-final-reconciler-alert-acceptance.json,hds-final-cloudflare-live-diagnostic.json.
+The global Vandam validator still reports exactly12 preexisting archival
+preservation mismatches (11byte-identical,186Git-equivalent,4retained,213baseline
+paths); no baseline was weakened or unrelated historical source rewritten.
+
+NO TRADE. The earlier section's unmergedPR/Cloudflare404/no-auth current-state
+statements are historical and superseded above. Remaining release gates include
+correct Cloudflare account control-plane acceptance, residual DB/broker race,
+genuine protection/partial-exit/overnight lifecycle, general posttrade risk
+accounting and separately qualified status-writing/owner-order authorization.

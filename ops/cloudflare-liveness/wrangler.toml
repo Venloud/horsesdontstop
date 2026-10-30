@@ -1,7 +1,9 @@
-# STAGED: Cloudflare D1 database provisioned manually, Worker NOT YET DEPLOYED.
+# Existing GitHub-linked Worker and D1. Do not create replacement resources.
+# Verified deployment account: 96dc1a6a8ae1020c1c6f61530e230c09.
 # No Cloudflare deployment, account signup, secrets or bills are authorized
 # by this file alone. CF Free plan has quotas and no guaranteed 120s SLA.
 name = "horsesdontstop-liveness-staging"
+account_id = "96dc1a6a8ae1020c1c6f61530e230c09"
 main = "worker.mjs"
 compatibility_date = "2026-10-16"
 workers_dev = true
