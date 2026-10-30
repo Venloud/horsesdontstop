@@ -41,4 +41,3 @@ def test_executor_cannot_write_approval_or_dispatch_tables_directly():
     assert "GRANT EXECUTE ON FUNCTION public.paper_approve_bounded_pilot" not in SQL
     assert "GRANT INSERT, UPDATE ON public.paper_pilot_approvals TO neondb_owner" not in SQL
     assert "REVOKE EXECUTE ON FUNCTION public.paper_authorize_unknown_submission" in SQL
-
