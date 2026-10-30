@@ -100,8 +100,8 @@ def journal(monkeypatch, *, allow=False, permissions=None):
     db = {
         "roles": (permissions if permissions is not None else
                   (False, False, False, False, False, False, False, False,
-                   False, True, True, True, False, False, False, False,
-                   False, False, False)),
+                   False, True, True, True, False, False, False, True,
+                   True, False, False, False, False, False, False, False)),
         "controls": (False, True) if allow else (True, False),
         "queries": [], "keys": set(), "days": [], "intent_status": {}, "audits": [],
     }
@@ -131,11 +131,11 @@ def test_atomic_unique_reservation_stops_duplicate_order_id(monkeypatch):
                    for sql, _ in db["queries"])
 
 
-@pytest.mark.parametrize("blocked_index", list(range(19)))
+@pytest.mark.parametrize("blocked_index", list(range(24)))
 def test_privileged_or_incomplete_writer_role_refused(monkeypatch, blocked_index):
     baseline = (False, False, False, False, False, False, False, False,
-                False, True, True, True, False, False, False, False,
-                False, False, False)
+                False, True, True, True, False, False, False, True,
+                True, False, False, False, False, False, False, False)
     changed = list(baseline)
     changed[blocked_index] = not baseline[blocked_index]
     j, db = journal(monkeypatch, allow=True, permissions=tuple(changed))
@@ -179,7 +179,7 @@ def test_unknown_order_submission_records_durable_no_retry(monkeypatch):
 
 def test_readonly_monitor_dsn_cannot_reserve(monkeypatch):
     j, db = journal(monkeypatch, allow=True,
-                    permissions=(False,) * 19)
+                    permissions=(False,) * 24)
     with pytest.raises(TradeBlocked, match="role"):
         j.reserve_if_enabled(sample())
     assert not db["keys"]

@@ -69,7 +69,7 @@ class FakeIEX:
     def get_stock_latest_quote(self, request):
         self.calls.append(request.symbol_or_symbols)
         return {"F": SimpleNamespace(
-            bid_price=25, ask_price=25.02, bid_size=30, ask_size=30,
+            bid_price=1.50, ask_price=1.51, bid_size=30, ask_size=30,
             timestamp=NOW - timedelta(seconds=self.age)
         )}
 

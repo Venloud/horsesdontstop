@@ -64,7 +64,7 @@ class PaperExecutorJournal(PostgresPaperJournal):
                 )
                 row = cur.fetchone()
                 if not isinstance(row, tuple) or len(row) != 24:
-                    raise TradeBlocked("PAPER executor privilege attestation incomplete")
+                    raise TradeBlocked("Unsafe or incomplete PAPER executor role privilege attestation")
                 bounded_installed = row[17]
                 expected_api = ((False, False, False, True, True, False, False)
                                 if bounded_installed else
@@ -76,7 +76,7 @@ class PaperExecutorJournal(PostgresPaperJournal):
                     raise TradeBlocked("Unsafe or incomplete post-cutover PAPER executor role")
                 assert_journal_acl_boundary(cur)
         if not isinstance(row, tuple) or len(row) != 24:
-            raise TradeBlocked("Unsafe or incomplete post-cutover PAPER executor role")
+            raise TradeBlocked("Unsafe or incomplete PAPER executor role privilege attestation")
 
     def record_opening_equity(self, *, session_open_utc: datetime,
                               equity, cash) -> bool:
