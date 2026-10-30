@@ -278,3 +278,66 @@ def test_terminal_sell_child_does_not_count_as_active_competitor():
         position_qty=PLAN.whole_shares)
     assert "unexpected_active_sell_exit_count" not in audit.blockers
     assert audit.has_verified_protective_stop is True
+
+
+@pytest.mark.parametrize("position,leg_qty,leg_fill,status", [
+    (1, 5, 0, "new"),  # confirmed Phase 5.9 false verification
+    (1, 1, 0, "new"),  # resizing alone cannot explain missing shares
+    (1, 5, 3, "partially_filled"),
+    (1, 5, 4, "new"),  # fill counter contradicts status
+    (0, 5, 4, "filled"),
+    (1, 5, 5, "partially_filled"),
+    (6, 5, 0, "new"),
+])
+def test_unexplained_position_or_stop_quantity_never_verifies(
+        position, leg_qty, leg_fill, status):
+    plan = replace(PLAN, whole_shares=5)
+    audit = inspect_nested_oto(
+        plan, parent(qty=5, fill=5, legs=[
+            stop(qty=leg_qty, filled=leg_fill, status=status)]),
+        position_qty=position)
+    assert audit.blockers
+    assert not audit.has_verified_protective_stop
+
+
+def test_linked_partial_stop_execution_accounts_for_reduced_exposure():
+    plan = replace(PLAN, whole_shares=5)
+    audit = inspect_nested_oto(plan, parent(qty=5, fill=5, legs=[
+        stop(qty=5, filled=4, status="partially_filled")]), position_qty=1)
+    assert audit.blockers == ()
+    assert audit.has_verified_protective_stop
+
+
+@pytest.mark.parametrize("status", ["held", "pending_cancel", "pending_replace", "unknown"])
+def test_uncertain_competing_exit_cannot_be_ignored(status):
+    other = stop(status=status)
+    other.id = "uncertain-exit"
+    audit = inspect_nested_oto(PLAN, parent(legs=[stop(), other]),
+                               position_qty=PLAN.whole_shares)
+    assert not audit.has_verified_protective_stop
+    assert "unexpected_active_sell_exit_count" in audit.blockers
+
+
+@pytest.mark.parametrize("expiry", ["bad-date", "2000-01-01T00:00:00+00:00",
+                                    "2099-01-01T00:00:00", 10])
+def test_expired_or_unverifiable_stop_expiry_is_not_protection(expiry):
+    child = stop()
+    child.expires_at = expiry
+    audit = inspect_nested_oto(PLAN, parent(legs=[child]),
+                               position_qty=PLAN.whole_shares)
+    assert not audit.has_verified_protective_stop
+
+
+def test_stop_cannot_reuse_its_parent_order_id():
+    child = stop()
+    child.id = "safe-paper-parent"
+    audit = inspect_nested_oto(PLAN, parent(legs=[child]), position_qty=PLAN.whole_shares)
+    assert "invalid_or_duplicate_broker_child_identity" in audit.blockers
+    assert not audit.has_verified_protective_stop
+
+
+def test_conflicting_terminal_child_cannot_reuse_active_stop_identity():
+    audit = inspect_nested_oto(PLAN, parent(legs=[stop(), stop(status="canceled")]),
+                               position_qty=PLAN.whole_shares)
+    assert "invalid_or_duplicate_broker_child_identity" in audit.blockers
+    assert not audit.has_verified_protective_stop

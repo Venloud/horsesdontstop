@@ -27,7 +27,7 @@ from .robustness_cli import BROADER_SYMBOLS
 from .strategies import DailyBar, signal_score
 
 
-def research_candidates(market_data_client, symbols, now=None):
+def research_candidates(market_data_client, symbols, now=None, *, required_session=None):
     """Return signal candidates based on prior completed UTC-calendar day.
 
     This is deliberately NOT market-open real-time data. Before order submission,
@@ -49,6 +49,10 @@ def research_candidates(market_data_client, symbols, now=None):
                      float(b.low), float(b.close), float(b.volume))
             for b in raw if b.timestamp < end
         ]
+        if required_session is not None and (
+                not series or series[-1].day != required_session
+                or len({b.day for b in series}) != len(series)):
+            continue
         score = signal_score("momentum_volume", series)
         if score is not None and score > 0:
             candidates.append({

@@ -106,7 +106,7 @@ def run_supervisor_loop(
     *, fetch_read_only_report, heartbeat_writer, interval_seconds=30,
     max_ticks=0, sleeper=time.sleep, worker_id=None,
     closed_flat_broker_probe=None, external_liveness_sink=None,
-    critical_alert_sink=None,
+    critical_alert_sink=None, tick_observer=None,
 ) -> SupervisorLoopReport:
     """Synthetic tests can supply fake report, pulse and sleeper.
 
@@ -178,12 +178,14 @@ def run_supervisor_loop(
                 alarm("supervisor_poll_or_lease_failed")
                 print("PAPER READ-ONLY SUPERVISOR: unhealthy/unknown; "
                       "NO trading permission.", file=sys.stderr)
+        external_ack = False
         if external_liveness_sink is not None:
             try:
                 if external_liveness_sink(
                     worker_id=worker_id, sequence=ticks,
                     status=external_status) is not True:
                     raise TradeBlocked("External liveness not acknowledged")
+                external_ack = True
             except Exception:
                 # Unauthenticated or missing external heartbeat NEVER proves
                 # safe off-hours idle. No exception details may reach logs.
@@ -192,6 +194,13 @@ def run_supervisor_loop(
                 alarm("external_liveness_unverified")
                 print("PAPER LIVENESS: EXTERNAL SIGNAL UNVERIFIED; "
                       "NO trading permission.", file=sys.stderr)
+        if tick_observer is not None:
+            try:
+                tick_observer(dict(worker_id=worker_id, sequence=ticks,
+                                   status=external_status, external_ack=external_ack))
+            except Exception:
+                alarm("runtime_receipt_unavailable")
+                raise TradeBlocked("Supervisor receipt persistence failed") from None
         if max_ticks == 0 or ticks < max_ticks:
             sleeper(interval_seconds)
     return SupervisorLoopReport(
@@ -232,6 +241,7 @@ DIAGNOSTIC_REASONS = frozenset((
     "COMPETING_LEASE", "LEASE_STALE", "LEASE_UNVERIFIED",
     "PROCESS_NOT_RUNNING", "DUPLICATE_PROCESS", "PROCESS_UNVERIFIED",
     "SUPERVISOR_NOT_RUNNING",
+    "HTTP_400", "HTTP_401", "HTTP_404", "HTTP_409", "HTTP_503",
 ))
 
 
@@ -249,6 +259,10 @@ def _diagnostic_reason(error):
     from requests.exceptions import Timeout as RequestTimeout
     if isinstance(error, DiagnosticFailure):
         return error.reason_code
+    from .paper_external_liveness import ExternalLivenessHTTPError
+    if isinstance(error, ExternalLivenessHTTPError):
+        code = f"HTTP_{error.http_status}"
+        return code if code in DIAGNOSTIC_REASONS else "UNKNOWN"
     if isinstance(error, (TimeoutError, RequestTimeout)):
         return "TIMEOUT"
     if isinstance(error, ssl.SSLError):
@@ -378,7 +392,7 @@ def diagnose_supervisor(*, phase="postopen", collector_instances=None,
     from alpaca.trading.requests import GetOrdersRequest, GetCalendarRequest
     from .paper_store import PostgresPaperJournal
     from .paper_watchdog import run_once, make_paper_readonly_client
-    from .paper_external_liveness import check_liveness_settings
+    from .paper_external_liveness import check_liveness_settings, probe_liveness
 
     required = ("ALPACA_PAPER_API_KEY", "ALPACA_PAPER_SECRET_KEY",
                 "PAPER_JOURNAL_DSN", "PAPER_HEARTBEAT_DSN",
@@ -463,11 +477,10 @@ def diagnose_supervisor(*, phase="postopen", collector_instances=None,
         return True
 
     def liveness_config():
-        # Validate settings only. The continuous supervisor alone posts.
-        check_liveness_settings(
-            os.environ.get("PAPER_EXTERNAL_LIVENESS_URL"),
-            os.environ.get("PAPER_EXTERNAL_LIVENESS_TOKEN"))
-        return True
+        # The GET endpoint cannot contend with either operational lease.
+        return probe_liveness(
+            url=os.environ.get("PAPER_EXTERNAL_LIVENESS_URL"),
+            token=os.environ.get("PAPER_EXTERNAL_LIVENESS_TOKEN"))
 
     def calendar():
         # GET same broker clock/calendar as the existing supervised
@@ -637,6 +650,7 @@ def main() -> int:
         description="STAGED read-only PAPER watchdog; no broker orders"
     )
     parser.add_argument("--interval-seconds", type=int, default=30)
+    parser.add_argument("--receipt-file", default=None)
     parser.add_argument("--max-ticks", type=int, default=0,
                         help="0 is continuous; 2-5 for synthetic smoke on a host")
     parser.add_argument(
@@ -717,6 +731,10 @@ def main() -> int:
                 os.environ.get("PAPER_EXTERNAL_LIVENESS_TOKEN"))
             liveness_sink = lambda **details: send_liveness(
                 url=external_url, token=external_token, **details)
+        observer = None
+        if args.receipt_file:
+            from .paper_runtime_receipt import write_runtime_receipt
+            observer = lambda event: write_runtime_receipt(args.receipt_file, event)
         outcome = run_supervisor_loop(
             fetch_read_only_report=lambda: run_once(output=""),
             heartbeat_writer=writer,
@@ -725,6 +743,7 @@ def main() -> int:
             closed_flat_broker_probe=closed_flat_probe,
             external_liveness_sink=liveness_sink,
             critical_alert_sink=send_supervisor_alarm,
+            tick_observer=observer,
         )
     except Exception:
         print("BLOCKED: cannot operate a verified PAPER read-only worker; "

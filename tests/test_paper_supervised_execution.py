@@ -5,6 +5,7 @@ The module code release switch is OFF except inside explicitly patched
 synthetic test cases.
 """
 from dataclasses import replace
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
@@ -16,6 +17,7 @@ from bot.paper_safety import (
     PAPER_ENDPOINT, PaperSafetyState, TradeBlocked,
 )
 from bot import paper_supervised_execution as entry
+from bot.paper_broker_transport import BoundedPaperSession
 
 
 NOW = datetime(2026, 10, 12, 14, 45, tzinfo=timezone.utc)
@@ -73,6 +75,8 @@ class FakeBroker:
                  clock_open=True, balance=500, positions=()):
         self.p = p
         self._base_url = PAPER_ENDPOINT
+        self._retry = 0
+        self._session = BoundedPaperSession()
         self.calls = []
         self.existing = existing
         self.failure = failure
@@ -85,7 +89,7 @@ class FakeBroker:
         self.calls.append("get_account")
         return SimpleNamespace(
             equity=str(self.balance), cash=str(self.balance),
-            trading_blocked=False,
+            buying_power=str(self.balance), trading_blocked=False,
         )
 
     def get_clock(self):
@@ -97,6 +101,8 @@ class FakeBroker:
 
     def get_calendar(self, filters):
         self.calls.append("get_calendar")
+        if filters.end < NOW.date():
+            return [SimpleNamespace(date=NOW.date() - timedelta(days=3))]
         assert filters.start == NOW.date()
         assert filters.end == NOW.date()
         return [SimpleNamespace(
@@ -145,11 +151,32 @@ class FakeJournal:
 
     def mark_uncertain(self, cid):
         self.calls.append(("unknown", cid))
-
-    def record_observed_state(self, cid, status, oid):
-        self.calls.append(("observe", cid, status, oid))
         if self.fail_record:
             raise RuntimeError("Neon unavailable")
+
+    def record_observed_state(self, cid, status, oid):
+        raise AssertionError("Executor must not attest broker status")
+
+    @contextmanager
+    def authorize_reserved_submission(self, plan):
+        self.mark_uncertain(plan.client_order_id)
+        yield lambda: None
+
+
+class FakeMarketData:
+    def get_stock_bars(self, request):
+        days = []
+        day = NOW.date() - timedelta(days=3)
+        while len(days) < 22:
+            if day.weekday() < 5:
+                days.append(day)
+            day -= timedelta(days=1)
+        rows = [SimpleNamespace(
+            timestamp=datetime.combine(day, datetime.min.time(), timezone.utc),
+            open=20 + i / 10, high=21 + i / 10, low=19 + i / 10,
+            close=20 + i / 10, volume=200 if i == 21 else 100)
+            for i, day in enumerate(reversed(days))]
+        return SimpleNamespace(data={"F": rows})
 
 
 def execute(p=None, *, broker=None, journal=None, state=None,
@@ -162,6 +189,7 @@ def execute(p=None, *, broker=None, journal=None, state=None,
         trading=broker, journal=journal, market_quote=live_quote,
         preview=p, safety_state=state or healthy(),
         approval=approval or approved(p), now=now,
+        market_data=FakeMarketData(),
     )
 
 
@@ -182,7 +210,7 @@ def test_mock_only_happy_path_one_protected_paper_order(monkeypatch):
     result = execute(p, broker=broker, journal=journal)
     assert result.client_order_id == p.client_order_id
     assert result.broker_order_id == "mock-paper-id"
-    assert result.result == "submitted_unreconciled_stop_not_proven"
+    assert result.result == "broker_acknowledged_unreconciled_stop_not_proven"
     assert len(broker.sent) == 1
     order = broker.sent[0]
     assert order.client_order_id == p.client_order_id
@@ -191,8 +219,7 @@ def test_mock_only_happy_path_one_protected_paper_order(monkeypatch):
     assert order.stop_loss.stop_price == p.stop_usd
     assert broker.calls.index("get_order_by_client_id") < broker.calls.index("submit_order")
     assert journal.calls[0][0] == "reserve"
-    assert journal.calls[1] == ("observe", p.client_order_id,
-                                "submitted", "mock-paper-id")
+    assert journal.calls[1] == ("unknown", p.client_order_id)
 
 
 def test_fake_timeout_marked_unknown_never_retried(monkeypatch):
@@ -238,7 +265,8 @@ def test_missing_approval_stops_entry(monkeypatch):
     with pytest.raises(TradeBlocked, match="approval"):
         entry.submit_paper_once_supervised(
             trading=broker, journal=journal, market_quote=quote(),
-            preview=p, safety_state=healthy(), approval=None, now=NOW)
+            preview=p, safety_state=healthy(), approval=None, now=NOW,
+            market_data=FakeMarketData())
     assert journal.calls == []
     assert not broker.sent
 
@@ -318,13 +346,13 @@ def test_quoted_buy_limit_change_blocks_prior_approval(monkeypatch):
     assert broker.sent == []
 
 
-def test_journal_update_failure_after_submit_never_triggers_retry(monkeypatch):
+def test_durable_unknown_failure_blocks_before_submit(monkeypatch):
     monkeypatch.setattr(entry, "PAPER_ORDER_SUBMISSIONS_RELEASED", True)
     p = preview()
     broker, journal = FakeBroker(p), FakeJournal(fail_record=True)
-    with pytest.raises(TradeBlocked, match="durable journal update failed"):
+    with pytest.raises(TradeBlocked, match="reauthorization failed before POST"):
         execute(p, broker=broker, journal=journal)
-    assert len(broker.sent) == 1
+    assert broker.sent == []
 
 
 def test_untrusted_broker_exception_not_exposed(monkeypatch):
@@ -540,3 +568,169 @@ def test_real_alpaca_sdk_calendar_date_must_match_local_market_day():
             broker, SimpleNamespace(next_close=datetime(
                 2026, 11, 30, 16, 0, tzinfo=local)),
             now=datetime(2026, 11, 30, 10, 0, tzinfo=local))
+
+
+def test_kill_switch_changed_during_reservation_never_posts(monkeypatch):
+    monkeypatch.setattr(entry, "PAPER_ORDER_SUBMISSIONS_RELEASED", True)
+    p = preview()
+    broker = FakeBroker(p)
+    class KilledJournal(FakeJournal):
+        @contextmanager
+        def authorize_reserved_submission(self, plan):
+            self.mark_uncertain(plan.client_order_id)
+            raise TradeBlocked("Kill changed after reservation")
+            yield  # pragma: no cover -- context manager protocol
+    with pytest.raises(TradeBlocked, match="before POST"):
+        execute(p, broker=broker, journal=KilledJournal())
+    assert broker.sent == []
+
+
+def test_lock_wait_cannot_extend_approval_or_quote_lifetime(monkeypatch):
+    monkeypatch.setattr(entry, "PAPER_ORDER_SUBMISSIONS_RELEASED", True)
+    times = iter([100, 221])
+    monkeypatch.setattr(entry, "monotonic", lambda: next(times))
+    p = preview()
+    broker = FakeBroker(p)
+    with pytest.raises(TradeBlocked, match="before POST"):
+        execute(p, broker=broker)
+    assert not broker.sent
+
+
+def test_account_change_after_reservation_cannot_post(monkeypatch):
+    monkeypatch.setattr(entry, "PAPER_ORDER_SUBMISSIONS_RELEASED", True)
+    p = preview()
+    broker = FakeBroker(p)
+    class ChangedJournal(FakeJournal):
+        @contextmanager
+        def authorize_reserved_submission(self, plan):
+            self.mark_uncertain(plan.client_order_id)
+            broker.balance = 100
+            yield
+    with pytest.raises(TradeBlocked, match="before POST"):
+        execute(p, broker=broker, journal=ChangedJournal())
+    assert not broker.sent
+
+
+def test_missing_buying_power_evidence_cannot_reserve(monkeypatch):
+    monkeypatch.setattr(entry, "PAPER_ORDER_SUBMISSIONS_RELEASED", True)
+    p = preview()
+    broker, journal = FakeBroker(p), FakeJournal()
+    broker.get_account = lambda: SimpleNamespace(equity="500", cash="500", trading_blocked=False)
+    with pytest.raises(TradeBlocked):
+        execute(p, broker=broker, journal=journal)
+    assert not broker.sent and not journal.calls
+
+
+@pytest.mark.parametrize("bad_history", ["missing", "stale", "duplicate", "no_signal"])
+def test_strategy_must_have_fresh_unique_eligible_completed_bars(monkeypatch, bad_history):
+    monkeypatch.setattr(entry, "PAPER_ORDER_SUBMISSIONS_RELEASED", True)
+    p = preview()
+    broker = FakeBroker(p)
+    class BadData(FakeMarketData):
+        def get_stock_bars(self, request):
+            response = super().get_stock_bars(request)
+            rows = response.data["F"]
+            if bad_history == "missing": response.data["F"] = []
+            elif bad_history == "stale": rows.pop()
+            elif bad_history == "duplicate": rows.append(rows[-1])
+            else: rows[-1].volume = 50
+            return response
+    with pytest.raises(TradeBlocked, match="momentum signal"):
+        entry.submit_paper_once_supervised(
+            trading=broker, journal=FakeJournal(), market_quote=quote(),
+            preview=p, safety_state=healthy(), approval=approved(p), now=NOW,
+            market_data=BadData())
+    assert not broker.sent
+
+
+def test_early_close_deadline_crossed_during_final_reads_blocks(monkeypatch):
+    monkeypatch.setattr(entry, "PAPER_ORDER_SUBMISSIONS_RELEASED", True)
+    monkeypatch.setattr(entry, "_verify_paper_market_session", lambda *_a, **_kw: True)
+    times = iter([100, 100, 102])
+    monkeypatch.setattr(entry, "monotonic", lambda: next(times))
+    p = preview()
+    broker = FakeBroker(p)
+    broker.get_clock = lambda: SimpleNamespace(
+        is_open=True, next_close=NOW + timedelta(minutes=30, seconds=1))
+    with pytest.raises(TradeBlocked, match="before POST"):
+        execute(p, broker=broker)
+    assert not broker.sent
+
+
+def test_simulated_order_to_independent_fill_reconciliation_and_restart(monkeypatch):
+    from datetime import date
+    from bot.paper_status_reconciler import reconcile_pending_once
+    monkeypatch.setattr(entry, "PAPER_ORDER_SUBMISSIONS_RELEASED", True)
+    p = preview()
+    class Durable(FakeJournal):
+        status = None
+        def reserve_if_enabled(self, plan):
+            if self.status is not None:
+                return False
+            self.plan, self.status = plan, "reserved"
+            return True
+        def mark_uncertain(self, cid):
+            assert self.status == "reserved" and cid == self.plan.client_order_id
+            self.status = "unknown"
+    durable = Durable()
+    broker = FakeBroker(p)
+    result = execute(p, broker=broker, journal=durable)
+    assert result.submitted_to_paper_broker and durable.status == "unknown"
+    assert len(broker.sent) == 1
+    # New independent process/role reconstructs the intent from durable terms.
+    class IndependentJournal:
+        def read_pending_plans(self): return [durable.plan]
+        def assert_reconciler_permissions(self): pass  # isolated-role fake only
+        def get_durable_intent_terms(self, cid):
+            plan = durable.plan
+            return (durable.status, None, plan.strategy, plan.symbol,
+                    date.fromisoformat(plan.trading_day), plan.whole_shares,
+                    plan.estimated_entry, plan.protective_stop)
+        def record_broker_verified_state(self, cid, old, new, broker_id):
+            assert durable.status == old and broker_id == "mock-paper-id"
+            durable.status = new
+    child = SimpleNamespace(
+        id="linked-stop", parent_order_id="mock-paper-id", symbol=p.symbol,
+        side="sell", type="stop", status="new", time_in_force="gtc",
+        qty=str(p.shares), filled_qty="0", stop_price=str(p.stop_usd))
+    nested = SimpleNamespace(
+        id="mock-paper-id", client_order_id=p.client_order_id, symbol=p.symbol,
+        side="buy", type="limit", order_class="oto", time_in_force="day",
+        status="filled", qty=str(p.shares), filled_qty=str(p.shares),
+        limit_price=str(p.buy_limit_usd), legs=[child])
+    broker.get_order_by_client_id = lambda cid: nested
+    broker.get_order_by_id = lambda pid, **kw: nested
+    broker.get_all_positions = lambda: [SimpleNamespace(symbol=p.symbol, qty=str(p.shares))]
+    states = reconcile_pending_once(trading=broker, journal=IndependentJournal())
+    assert states == ((p.client_order_id, "filled"),)
+    assert durable.status == "filled" and len(broker.sent) == 1
+    # Restart cannot interpret a subsequent broker 404 as resubmission permission.
+    broker.get_all_positions = lambda: []
+    broker.get_order_by_client_id = FakeBroker(p).get_order_by_client_id
+    with pytest.raises(TradeBlocked, match="NEVER retry"):
+        execute(p, broker=broker, journal=durable)
+    assert len(broker.sent) == 1
+
+
+def test_backend_loss_during_final_broker_reads_prevents_post(monkeypatch):
+    monkeypatch.setattr(entry,"PAPER_ORDER_SUBMISSIONS_RELEASED",True)
+    p=preview(); broker=FakeBroker(p); journal=FakeJournal()
+    alive=[True]; reads=[]
+    get_account=broker.get_account
+    def account():
+        reads.append(True)
+        if len(reads)>1:
+            alive[0]=False
+        return get_account()
+    broker.get_account=account
+    @contextmanager
+    def authorization(plan):
+        journal.mark_uncertain(plan.client_order_id)
+        def guard():
+            if not alive[0]:
+                raise ConnectionError("lost DB backend")
+        yield guard
+    journal.authorize_reserved_submission=authorization
+    with pytest.raises(TradeBlocked,match="before POST"):
+        execute(p,broker=broker,journal=journal)
+    assert len(reads)>1 and broker.sent==[]

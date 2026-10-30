@@ -29,6 +29,26 @@ def test_empty_broker_and_empty_neon_journal_reconcile():
     assert report.open_broker_orders == 0
 
 
+@pytest.mark.parametrize("held,stop_qty,stop_filled,status,protected", [
+    (1, 5, 0, "new", False),
+    (1, 1, 0, "new", False),
+    (1, 5, 4, "new", False),
+    (1, 5, 4, "partially_filled", True),
+    (6, 5, 0, "new", False),
+])
+def test_monitor_requires_executions_to_explain_position_change(
+        held, stop_qty, stop_filled, status, protected):
+    child = order("stop", side="sell", kind="stop", qty=stop_qty,
+                  filled=stop_filled, status=status, parent="parent",
+                  tif="gtc", stop_price=24)
+    entry = order("parent", kind="limit", qty=5, filled=5, status="filled",
+                  klass="oto", cid="approved", legs=[child])
+    report = reconcile_observation(
+        [position(qty=held)], [entry], [], order_fetch_complete=True,
+        approved_stops=[("approved", "filled", "F", 5, 24, "parent")])
+    assert (not report.uncovered_symbols) is protected
+
+
 def test_truncated_broker_list_fails_closed():
     report = reconcile_observation([], [], [], order_fetch_complete=False)
     assert not report.consistent
@@ -394,3 +414,19 @@ def test_terminal_canceled_sell_limit_does_not_compete_with_valid_child():
     assert result.uncovered_symbols == ()
     assert "multiple_active_sell_exits_for_position" not in result.blockers
     assert "open_broker_positions" in result.blockers
+
+
+@pytest.mark.parametrize("expiry,protected",[
+    ("2000-01-01T00:00:00Z",False),("not-a-timestamp",False),
+    ("2099-01-01T00:00:00",False),(123,False),
+    ("2099-01-01T00:00:00Z",True),(None,True),
+])
+def test_monitor_rejects_expired_or_unverifiable_gtc_stop(expiry,protected):
+    child=order("stop",side="sell",kind="stop",qty=2,parent="parent",
+                tif="gtc",stop_price=24)
+    child.expires_at=expiry
+    entry=order("parent",kind="limit",qty=2,filled=2,status="filled",
+                klass="oto",cid="approved",legs=[child])
+    report=reconcile_observation([position(qty=2)],[entry],[],order_fetch_complete=True,
+        approved_stops=[("approved","filled","F",2,24,"parent")])
+    assert (report.uncovered_symbols==()) is protected

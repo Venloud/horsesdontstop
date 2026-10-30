@@ -4,18 +4,24 @@ NO Alpaca submit_order() calls. This layer only prepares for a
 future supervised worker with independently verified live order safety.
 """
 from datetime import date, datetime, timedelta, timezone
+from contextlib import contextmanager
 
 from .paper_safety import (
     PaperOrderPlan, TradeBlocked, make_client_order_id, money,
 )
 from .paper_store import PostgresPaperJournal
+from .paper_role_boundary import assert_journal_acl_boundary
 
 
 class PaperExecutorJournal(PostgresPaperJournal):
     """Must use dedicated narrowly scoped PAPER writer role, never monitor."""
 
-    def assert_executor_permissions(self):
-        """Fail closed for Neon owner/admin and switch-changing DB accounts."""
+    def assert_executor_permissions(self, *, reservation=False):
+        """Post-PR38 + status cutover only, never allow legacy direct writes.
+
+        This intentionally fails against unmigrated production. The existing
+        collector running from main is NOT changed by a review-only branch.
+        """
         with self._connect() as conn:
             with conn.cursor() as cur:
                 cur.execute(
@@ -27,13 +33,35 @@ class PaperExecutorJournal(PostgresPaperJournal):
                     "has_table_privilege(current_user,'public.paper_control','UPDATE'), "
                     "has_table_privilege(current_user,'public.paper_intents','INSERT'), "
                     "has_column_privilege(current_user,'public.paper_intents','status','UPDATE'), "
+                    "has_column_privilege(current_user,'public.paper_intents','broker_order_id','UPDATE'), "
+                    "has_column_privilege(current_user,'public.paper_intents','updated_at','UPDATE'), "
                     "has_table_privilege(current_user,'public.paper_intents','DELETE'), "
                     "has_table_privilege(current_user,'public.paper_audit_events','INSERT'), "
-                    "has_table_privilege(current_user,'public.paper_equity_snapshots','INSERT')"
+                    "has_table_privilege(current_user,'public.paper_equity_snapshots','INSERT'), "
+                    "has_function_privilege(current_user,"
+                    "'public.paper_reserve_intent_if_enabled("
+                    "text,text,text,date,integer,numeric,numeric)','EXECUTE'), "
+                    "has_function_privilege(current_user,"
+                    "'public.paper_mark_reserved_intent_unknown(text)','EXECUTE'), "
+                    "has_function_privilege(current_user,"
+                    "'public.paper_record_reconciled_intent_status("
+                    "text,text,text,text)','EXECUTE'), "
+                    "pg_has_role(current_user,'hds_paper_reconciler','MEMBER'), "
+                    "pg_has_role(current_user,'hds_paper_status_owner','MEMBER'), "
+                    "pg_has_role(current_user,'hds_paper_reservation_guard','MEMBER'), "
+                    "pg_has_role(current_user,'neondb_owner','MEMBER'), "
+                    "has_schema_privilege(current_user,'public','CREATE'), "
+                    "has_database_privilege(current_user,current_database(),'CREATE')"
                 )
                 row = cur.fetchone()
-        if row != (False, False, False, True, True, False, True, True):
-            raise TradeBlocked("Unrestricted or improperly granted writer role")
+                if row == (False, False, False, False, False, False, False,
+                           False, False, True, True, True, False, False, False,
+                           False, False, False, False):
+                    assert_journal_acl_boundary(cur)
+        expected = (False, False, False, False, False, False, False,
+                    False, False, True, True, True, False, False, False, False, False, False, False)
+        if row != expected:
+            raise TradeBlocked("Unsafe or incomplete post-cutover PAPER executor role")
 
     def record_opening_equity(self, *, session_open_utc: datetime,
                               equity, cash) -> bool:
@@ -142,63 +170,86 @@ class PaperExecutorJournal(PostgresPaperJournal):
             raise TradeBlocked("Unprotected or over-budget order intent")
 
     def reserve_if_enabled(self, plan: PaperOrderPlan) -> bool:
-        """Atomic kill-switch+idempotency check, only when paper allowed.
+        """PR38 atomic reservation: no executor direct INSERT privilege.
 
-        False means order ID already reserved. Neither True nor False
-        authorizes a broker submission by itself. If the broker call
-        later becomes ambiguous, the supervisor must perform client-ID
-        reconciliation before taking any further trading action.
+        Refuse if the DB guard and corresponding post-cutover role have not
+        both been installed. Duplicate-day SQLSTATE 23505 is not a permit
+        to send another order; errors must fail closed.
         """
         self.validate_protected_intent(plan)
-        self.assert_executor_permissions()
+        self.assert_executor_permissions(reservation=True)
         with self._connect() as conn:
             with conn.cursor() as cur:
                 cur.execute("SET LOCAL statement_timeout = '3000ms'")
-                # Account-wide advisory lock serializes different symbols
-                # across simultaneously started scheduled jobs.
                 cur.execute(
-                    "SELECT pg_advisory_xact_lock("
-                    "hashtext('horsesdontstop-paper-exclusive-intent'))")
-                cur.fetchone()
-                cur.execute(
-                    "SELECT kill_switch_active, submissions_enabled "
-                    "FROM public.paper_control WHERE singleton=TRUE FOR SHARE"
-                )
-                if cur.fetchone() != (False, True):
-                    raise TradeBlocked("Paper kill switch active or not approved")
-                cur.execute(
-                    "SELECT COUNT(*) FROM public.paper_intents "
-                    "WHERE trading_day=%s", (plan.trading_day,))
-                today = cur.fetchone()
-                if today is None or today[0] != 0:
-                    raise TradeBlocked(
-                        "Only one protected PAPER order intent per NY trading day"
-                    )
-                cur.execute(
-                    "INSERT INTO public.paper_intents "
-                    "(client_order_id,strategy,symbol,trading_day,whole_shares,"
-                    "expected_entry,protective_stop) "
-                    "VALUES (%s,%s,%s,%s,%s,%s,%s) "
-                    "ON CONFLICT (client_order_id) DO NOTHING "
-                    "RETURNING client_order_id",
+                    "SELECT public.paper_reserve_intent_if_enabled("
+                    "%s,%s,%s,%s,%s,%s,%s)",
                     (plan.client_order_id, plan.strategy, plan.symbol,
-                     plan.trading_day, plan.whole_shares,
-                     plan.estimated_entry, plan.protective_stop))
-                return cur.fetchone() is not None
+                     date.fromisoformat(plan.trading_day), plan.whole_shares,
+                     money(plan.estimated_entry), money(plan.protective_stop)))
+                row = cur.fetchone()
+                if (not isinstance(row, tuple) or len(row) != 1
+                        or type(row[0]) is not bool):
+                    raise TradeBlocked("Unverifiable protected reservation")
+                return row[0]
 
     def mark_uncertain(self, client_order_id):
-        """Record an unknown submit outcome, NEVER blindly resubmit."""
+        """Atomically mark reserved -> unknown, audit, NEVER blindly retry.
+
+        Requires the separately reviewed PAPER status prepare migration.
+        This is staged behind the unreleased broker gateway and MUST NOT
+        be enabled against an unmigrated database.
+        """
+        if not isinstance(client_order_id, str) or not client_order_id:
+            raise TradeBlocked("Missing PAPER client ID")
         with self._connect() as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    "UPDATE public.paper_intents SET status='unknown',"
-                    "updated_at=now() WHERE client_order_id=%s "
-                    "AND status='reserved' RETURNING client_order_id",
+                    "SELECT public.paper_mark_reserved_intent_unknown(%s)",
                     (client_order_id,))
-                if not cur.fetchone():
+                if cur.fetchone() != (True,):
                     raise TradeBlocked("Cannot mark nonreserved intent unknown")
+
+    @contextmanager
+    def authorize_reserved_submission(self, plan):
+        """Consume the reservation before POST, then hold the control row lock.
+
+        UNKNOWN is committed separately first: a crash or transaction rollback
+        after sending cannot restore a reusable reserved permit. The second
+        transaction locks controls until the one attempted POST completes.
+        Requires the separately approved Phase6 reauthorization migration.
+        """
+        self.validate_protected_intent(plan)
+        self.assert_executor_permissions(reservation=True)
+        self.mark_uncertain(plan.client_order_id)
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SET LOCAL statement_timeout = '3000ms'")
+                cur.execute("SET LOCAL lock_timeout = '3000ms'")
                 cur.execute(
-                    "INSERT INTO public.paper_audit_events "
-                    "(client_order_id,kind,summary) VALUES (%s,%s,%s)",
-                    (client_order_id, "submission_outcome_unknown",
-                     "Broker response unavailable; do not blind retry"))
+                    "SELECT public.paper_authorize_unknown_submission("
+                    "%s,%s,%s,%s,%s,%s,%s)",
+                    (plan.client_order_id, plan.strategy, plan.symbol,
+                     date.fromisoformat(plan.trading_day), plan.whole_shares,
+                     money(plan.estimated_entry), money(plan.protective_stop)))
+                if cur.fetchone() != (True,):
+                    raise TradeBlocked("PAPER final submission authorization denied")
+                # Separate committed receipt survives rollback of this lock
+                # transaction, including a broker timeout or lost connection.
+                self.consume_submission_authorization(plan.client_order_id)
+                def assert_lock_alive():
+                    # Use this SAME connection: a fresh connection could hide
+                    # termination of the backend holding the control lock.
+                    cur.execute("SELECT kill_switch_active,submissions_enabled "
+                                "FROM public.paper_control WHERE singleton=TRUE")
+                    if cur.fetchone() != (False, True):
+                        raise TradeBlocked("PAPER control lock no longer verified")
+                yield assert_lock_alive
+
+    def consume_submission_authorization(self, client_order_id):
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT public.paper_consume_submission_authorization(%s)",
+                            (client_order_id,))
+                if cur.fetchone() != (True,):
+                    raise TradeBlocked("PAPER submission authorization consumption failed")

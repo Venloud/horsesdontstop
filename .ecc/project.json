@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "repository": "Venloud/horsesdontstop",
+  "skills": [
+    "agent-security-hardening",
+    "python-testing",
+    "ai-regression-testing"
+  ],
+  "restrictions": "Read-only offline/paper safety work only. Never submit orders, change trading permissions, apply migrations or bypass the kill switch.",
+  "upstream": "v2.2.3",
+  "memory": "Vandam canonical; no automatic observation or separate memory store"
+}

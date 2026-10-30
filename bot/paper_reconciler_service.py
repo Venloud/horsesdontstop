@@ -1,0 +1,98 @@
+"""Staged independent PAPER GET reconciler, observe-only by default.
+
+Status-writing service release is hard-disabled until
+separate approval, migration acceptance and independent identity deployment.
+The database login is distinct. The Windows launcher uses the existing PAPER
+broker API principal with a GET-only transport; it does not provision a new key.
+"""
+import argparse
+import hashlib
+import os
+import time
+
+from .paper_broker_transport import make_reconciler_paper_client
+from .paper_status_reconciler import PaperStatusReconcilerJournal, reconcile_pending_once
+from .paper_safety import TradeBlocked
+
+PAPER_RECONCILIATION_SERVICE_RELEASED = False
+
+
+def run_service(*, trading, journal, apply_status=False, max_ticks=1,
+                interval_seconds=30, sleeper=time.sleep, alert=None,
+                expected_account_hash=None, tick_observer=None):
+    if apply_status is True and PAPER_RECONCILIATION_SERVICE_RELEASED is not True:
+        raise TradeBlocked("PAPER status-writing service NOT RELEASED")
+    if type(max_ticks) is not int or max_ticks < 0 or type(interval_seconds) is not int or interval_seconds < 30:
+        raise TradeBlocked("Invalid independent reconciler supervision settings")
+    if max_ticks == 0 and alert is None:
+        raise TradeBlocked("Continuous reconciler requires critical alert transport")
+    ticks = 0
+    while max_ticks == 0 or ticks < max_ticks:
+        try:
+            if expected_account_hash is not None:
+                account = trading.get_account()
+                actual = hashlib.sha256(str(account.id).encode()).hexdigest()
+                if actual != expected_account_hash:
+                    raise TradeBlocked("Independent reconciler account identity changed")
+            reconcile_pending_once(trading=trading, journal=journal, record=apply_status)
+            if tick_observer is not None:
+                tick_observer(ticks + 1)
+        except Exception:
+            if alert is not None:
+                try:
+                    if alert() is not True:
+                        raise TradeBlocked("Independent reconciler alert unacknowledged")
+                except Exception:
+                    raise TradeBlocked("Independent reconciler critical alert failed") from None
+            raise TradeBlocked("Independent reconciliation unresolved; block new submissions") from None
+        ticks += 1
+        if max_ticks == 0 or ticks < max_ticks:
+            sleeper(interval_seconds)
+    return ticks
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--apply-status", action="store_true")
+    parser.add_argument("--continuous", action="store_true")
+    parser.add_argument("--receipt-file")
+    args = parser.parse_args(argv)
+    if args.apply_status and PAPER_RECONCILIATION_SERVICE_RELEASED is not True:
+        print("BLOCKED: PAPER status-writing service NOT RELEASED")
+        return 2
+    names = ("PAPER_RECONCILER_DSN", "ALPACA_RECONCILER_PAPER_API_KEY", "ALPACA_RECONCILER_PAPER_SECRET_KEY")
+    if any(not os.environ.get(name) for name in names):
+        print("BLOCKED: independent reconciler credentials required")
+        return 2
+    account_hash = os.environ.get("PAPER_RECONCILER_ACCOUNT_SHA256", "")
+    if (len(account_hash) != 64 or any(c not in "0123456789abcdef" for c in account_hash)
+            or args.continuous and not args.receipt_file):
+        print("BLOCKED: pinned account identity and continuous receipt required")
+        return 2
+    try:
+        from .monitor_notify import send_critical_ntfy, validate_topic
+        from .monitor_policy import make_incident
+        topic = validate_topic(os.environ.get("PAPER_MONITOR_NTFY_TOPIC"))
+        alert = lambda: send_critical_ntfy(
+            make_incident("critical", "unverifiable", ("independent_reconciler_failed",)), topic=topic)
+        trading = make_reconciler_paper_client(os.environ[names[1]], os.environ[names[2]])
+        journal = PaperStatusReconcilerJournal(os.environ[names[0]])
+        from .paper_runtime_receipt import write_runtime_receipt
+        from uuid import uuid4
+        worker_id = "paper-" + uuid4().hex
+        observer = (lambda sequence: write_runtime_receipt(args.receipt_file, {
+            "worker_id": worker_id, "sequence": sequence,
+            "status": "read_only_poll_ok", "external_ack": False,
+        })) if args.receipt_file else None
+        ticks = run_service(trading=trading, journal=journal, apply_status=args.apply_status,
+                            max_ticks=0 if args.continuous else 1, alert=alert,
+                            expected_account_hash=account_hash, tick_observer=observer)
+        print(f"PAPER reconciler completed {ticks} ticks; broker writes=0; observe_only={not args.apply_status}")
+        return 0
+    except Exception:
+        print("BLOCKED: independent reconciler identity/evidence/alert unavailable; broker writes=0")
+        return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

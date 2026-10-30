@@ -83,14 +83,20 @@ class FakeConnection:
         return FakeCursor(self.state)
 
 
-def test_idempotency_reservation_stops_retries(monkeypatch):
+def test_legacy_direct_intent_reservation_fails_before_any_sql(monkeypatch):
     db = PostgresPaperJournal("postgresql://fake.invalid/research")
-    state = {"keys": set()}
-    monkeypatch.setattr(db, "_connect", lambda: FakeConnection(state))
+    def no_connection():
+        raise AssertionError("Legacy direct INSERT must never contact database")
+    monkeypatch.setattr(db, "_connect", no_connection)
     plan = plan_paper_entry("F", date(2026, 10, 13), 25, 500, 500, .01)
-    assert db.reserve_intent(plan) is True
-    # Same order id is reserved forever unless reconciled, never blindly retry.
-    assert db.reserve_intent(plan) is False
-    ctrl = db.read_control()
-    assert ctrl.kill_switch_active is True
-    assert ctrl.submissions_enabled is False
+    with pytest.raises(TradeBlocked, match="Direct PAPER intent INSERT forbidden"):
+        db.reserve_intent(plan)
+
+
+def test_legacy_status_observation_cannot_forge_fill(monkeypatch):
+    db = PostgresPaperJournal("postgresql://fake.invalid/research")
+    def no_connection():
+        raise AssertionError("Legacy status writer must never contact database")
+    monkeypatch.setattr(db, "_connect", no_connection)
+    with pytest.raises(TradeBlocked, match="Direct PAPER status"):
+        db.record_observed_state("fabricated", "filled", "fabricated-broker")

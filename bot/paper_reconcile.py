@@ -5,6 +5,7 @@ unknown broker information blocks readiness. This is a diagnostic check,
 NOT execution approval or a real-time protective-stop watchdog.
 """
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Iterable, Sequence
 
@@ -217,6 +218,16 @@ def reconcile_observation(
                        not in PROTECTIVE_ACTIVE_STATUSES
                     or value(getattr(order, "time_in_force", None)) != "gtc"):
                 continue
+            expiry = getattr(order, "expires_at", None)
+            if expiry is not None:
+                try:
+                    if isinstance(expiry, str):
+                        expiry = datetime.fromisoformat(expiry.replace("Z", "+00:00"))
+                    if (not isinstance(expiry, datetime) or expiry.tzinfo is None
+                            or expiry <= datetime.now(timezone.utc)):
+                        continue
+                except (ValueError, TypeError, OverflowError):
+                    continue
             parent = observed_oto_parents.get(
                 str(getattr(order, "parent_order_id", "")))
             durable = durable_approvals.get(
@@ -236,16 +247,23 @@ def reconcile_observation(
             try:
                 parent_qty = number(getattr(parent, "qty", None))
                 parent_filled = number(getattr(parent, "filled_qty", None))
-                remaining = (number(getattr(order, "qty", None))
-                             - number(getattr(order, "filled_qty", None)))
+                stop_qty = number(getattr(order, "qty", None))
+                stop_filled = number(getattr(order, "filled_qty", None))
+                remaining = stop_qty - stop_filled
                 trigger = number(getattr(order, "stop_price", None))
             except TradeBlocked:
                 continue
             # Protective order may not be larger than the durable order,
             # and its trigger must equal the originally stored stop price.
+            fill_consistent = (
+                (value(getattr(order, "status", None)) == "partially_filled"
+                 and 0 < stop_filled < stop_qty)
+                or (value(getattr(order, "status", None))
+                    in PROTECTIVE_ACTIVE_STATUSES - {"partially_filled"}
+                    and stop_filled == 0))
             if (parent_qty == durable[2] and parent_filled == parent_qty
-                    and 0 < remaining <= durable[2]
-                    and remaining >= qty and trigger == durable[3]):
+                    and stop_qty == parent_filled and fill_consistent
+                    and 0 < remaining == qty and trigger == durable[3]):
                 valid_child_count += 1
         if not (valid_child_count == 1 and len(all_active_sell_exits) == 1):
             uncovered.append(symbol)
