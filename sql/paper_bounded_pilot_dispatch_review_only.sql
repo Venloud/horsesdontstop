@@ -19,8 +19,8 @@ BEGIN
     PERFORM pg_advisory_xact_lock(hashtext('horsesdontstop-paper-exclusive-intent'));
     SELECT kill_switch_active,submissions_enabled INTO v_kill,v_enabled
       FROM public.paper_reservation_control_guard();
-    IF NOT FOUND OR v_kill IS DISTINCT FROM FALSE OR v_enabled IS DISTINCT FROM TRUE THEN
-        RAISE EXCEPTION 'PAPER reservation blocked by control state' USING ERRCODE='42501';
+    IF NOT FOUND OR v_kill IS DISTINCT FROM TRUE OR v_enabled IS DISTINCT FROM FALSE THEN
+        RAISE EXCEPTION 'PAPER preparation requires kill switch ON and submissions OFF' USING ERRCODE='42501';
     END IF;
     IF p_strategy IS DISTINCT FROM 'momentum_volume'
        OR p_symbol IS NULL OR p_symbol !~ '^[A-Z]{1,5}$'
@@ -68,13 +68,13 @@ CREATE TABLE public.paper_pilot_approvals (
     consumed_at timestamptz,
     CHECK (expires_at > approved_at AND expires_at <= approved_at + interval '120 seconds')
 );
+ALTER TABLE public.paper_pilot_approvals OWNER TO neondb_owner;
 REVOKE ALL ON public.paper_pilot_approvals FROM PUBLIC, hds_paper_executor,
     hds_paper_reconciler, hds_paper_heartbeat, hds_paper_win_monitor;
 GRANT SELECT ON public.paper_pilot_approvals TO hds_paper_reservation_guard,
     hds_paper_status_owner, hds_paper_reconciler;
 GRANT UPDATE (consumed_at) ON public.paper_pilot_approvals
     TO hds_paper_reservation_guard;
-GRANT INSERT, UPDATE ON public.paper_pilot_approvals TO neondb_owner;
 
 CREATE TABLE public.paper_pilot_dispatch_receipts (
     client_order_id text PRIMARY KEY REFERENCES public.paper_pilot_approvals(client_order_id),
@@ -82,6 +82,7 @@ CREATE TABLE public.paper_pilot_dispatch_receipts (
     request_sha256 text NOT NULL CHECK (request_sha256 ~ '^[0-9a-f]{64}$'),
     committed_at timestamptz NOT NULL DEFAULT clock_timestamp()
 );
+ALTER TABLE public.paper_pilot_dispatch_receipts OWNER TO neondb_owner;
 REVOKE ALL ON public.paper_pilot_dispatch_receipts FROM PUBLIC, hds_paper_executor,
     hds_paper_reconciler, hds_paper_heartbeat, hds_paper_win_monitor;
 GRANT SELECT, INSERT ON public.paper_pilot_dispatch_receipts
@@ -89,13 +90,12 @@ GRANT SELECT, INSERT ON public.paper_pilot_dispatch_receipts
 GRANT EXECUTE ON FUNCTION public.paper_mark_reserved_intent_unknown(text)
     TO hds_paper_reservation_guard;
 
-GRANT CREATE ON SCHEMA public TO neondb_owner;
 CREATE FUNCTION public.paper_approve_bounded_pilot(
     p_client_order_id text, p_symbol text, p_whole_shares integer,
     p_limit_price numeric, p_stop_price numeric, p_request_sha256 text,
     p_account_id_sha256 text,
     p_expires_at timestamptz)
-RETURNS boolean LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog
+RETURNS boolean LANGUAGE plpgsql SECURITY INVOKER SET search_path = pg_catalog
 AS $approve$
 DECLARE v_cost numeric;
 BEGIN
@@ -132,7 +132,6 @@ END;
 $approve$;
 ALTER FUNCTION public.paper_approve_bounded_pilot(text,text,integer,numeric,numeric,text,text,timestamptz)
     OWNER TO neondb_owner;
-REVOKE CREATE ON SCHEMA public FROM neondb_owner;
 REVOKE ALL ON FUNCTION public.paper_approve_bounded_pilot(text,text,integer,numeric,numeric,text,text,timestamptz) FROM PUBLIC;
 
 GRANT CREATE ON SCHEMA public TO hds_paper_reservation_guard;
@@ -187,6 +186,17 @@ REVOKE CREATE ON SCHEMA public FROM hds_paper_reservation_guard;
 REVOKE ALL ON FUNCTION public.paper_commit_bounded_pilot_dispatch(text,text,text,uuid) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION public.paper_commit_bounded_pilot_dispatch(text,text,text,uuid)
     TO hds_paper_executor;
+
+-- The old APIs are intentionally withdrawn from the executor so it cannot
+-- reserve above the cap or consume a submission without this owner receipt.
+REVOKE EXECUTE ON FUNCTION public.paper_reserve_intent_if_enabled(text,text,text,date,integer,numeric,numeric)
+    FROM hds_paper_executor;
+REVOKE EXECUTE ON FUNCTION public.paper_authorize_unknown_submission(text,text,text,date,integer,numeric,numeric)
+    FROM hds_paper_executor;
+REVOKE EXECUTE ON FUNCTION public.paper_consume_submission_authorization(text)
+    FROM hds_paper_executor;
+REVOKE EXECUTE ON FUNCTION public.paper_mark_reserved_intent_unknown(text)
+    FROM hds_paper_executor;
 COMMIT;
 
 -- Semantics: the kill switch prevents a NEW dispatch commit. A durable

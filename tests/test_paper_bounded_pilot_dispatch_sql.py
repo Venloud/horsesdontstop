@@ -8,6 +8,7 @@ SQL = (Path(__file__).resolve().parents[1] / "sql" /
 def test_pilot_migration_binds_gtc_terms_and_hard_purchase_fee_caps():
     assert "ADD COLUMN IF NOT EXISTS time_in_force" in SQL
     assert "p_expected_entry * p_whole_shares > 5.00" in SQL
+    assert "kill switch ON and submissions OFF" in SQL
     assert "fee_reserve = 0.50" in SQL
     assert "i.time_in_force='gtc'" in SQL
     assert "v_cost > 5.00" in SQL
@@ -37,4 +38,6 @@ def test_executor_cannot_write_approval_or_dispatch_tables_directly():
     assert "TO hds_paper_executor;" in SQL
     assert "GRANT EXECUTE ON FUNCTION public.paper_commit_bounded_pilot_dispatch" in SQL
     assert "GRANT EXECUTE ON FUNCTION public.paper_approve_bounded_pilot" not in SQL
+    assert "GRANT INSERT, UPDATE ON public.paper_pilot_approvals TO neondb_owner" not in SQL
+    assert "REVOKE EXECUTE ON FUNCTION public.paper_authorize_unknown_submission" in SQL
 

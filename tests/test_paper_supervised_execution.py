@@ -166,10 +166,11 @@ class FakeJournal:
 
     @contextmanager
     def authorize_reserved_submission(self, plan, *, request_sha256=None,
-                                      attempt_id=None):
+                                      attempt_id=None, account_id_sha256=None):
         self.mark_uncertain(plan.client_order_id)
         assert isinstance(request_sha256, str) and len(request_sha256) == 64
         assert isinstance(attempt_id, str) and len(attempt_id) == 36
+        assert account_id_sha256 == PAPER_ACCOUNT_SHA256
         yield lambda: None
 
 
@@ -190,7 +191,8 @@ class FakeMarketData:
 
 
 def execute(p=None, *, broker=None, journal=None, state=None,
-            approval=None, live_quote=None, now=NOW):
+            approval=None, live_quote=None, now=NOW, prepare_only=False,
+            intent_already_reserved=False):
     p = p or preview()
     broker = broker or FakeBroker(p)
     journal = journal or FakeJournal()
@@ -201,6 +203,8 @@ def execute(p=None, *, broker=None, journal=None, state=None,
         approval=approval or approved(p), now=now,
         expected_account_sha256=PAPER_ACCOUNT_SHA256,
         market_data=FakeMarketData(),
+        prepare_only=prepare_only,
+        intent_already_reserved=intent_already_reserved,
     )
 
 
@@ -231,6 +235,38 @@ def test_mock_only_happy_path_one_protected_paper_order(monkeypatch):
     assert broker.calls.index("get_order_by_client_id") < broker.calls.index("submit_order")
     assert journal.calls[0][0] == "reserve"
     assert journal.calls[1] == ("unknown", p.client_order_id)
+
+
+def test_disarmed_preparation_returns_exact_order_without_broker_write():
+    p = preview()
+    broker, journal = FakeBroker(p), FakeJournal()
+    prepared = execute(
+        p, broker=broker, journal=journal, approval=None, prepare_only=True,
+        state=healthy(kill_switch_active=True,
+                      order_submissions_explicitly_enabled=False),
+    )
+    proposal = prepared.to_dict()
+    assert proposal["symbol"] == "F" and proposal["side"] == "buy"
+    assert proposal["quantity"] == p.shares
+    assert proposal["time_in_force"] == "gtc"
+    assert proposal["purchase_cost_cap"] <= 5.00
+    assert proposal["fee_reserve"] == .50
+    assert proposal["stop_price"] == p.stop_usd
+    assert proposal["submitted"] is False
+    assert len(proposal["request_sha256"]) == 64
+    assert proposal["account_id_sha256"] == PAPER_ACCOUNT_SHA256
+    assert len(broker.sent) == 0
+    assert journal.calls[0][0] == "reserve"
+    assert len(journal.calls) == 1
+
+
+def test_gtc_dispatch_requires_existing_prepared_intent(monkeypatch):
+    monkeypatch.setattr(entry, "PAPER_ORDER_SUBMISSIONS_RELEASED", True)
+    p = preview()
+    broker, journal = FakeBroker(p), FakeJournal()
+    with pytest.raises(TradeBlocked, match="separately prepared"):
+        execute(p, broker=broker, journal=journal)
+    assert journal.calls == [] and broker.sent == []
 
 
 def test_fake_timeout_marked_unknown_never_retried(monkeypatch):
@@ -277,6 +313,7 @@ def test_missing_approval_stops_entry(monkeypatch):
         entry.submit_paper_once_supervised(
             trading=broker, journal=journal, market_quote=quote(),
             preview=p, safety_state=healthy(), approval=None, now=NOW,
+            expected_account_sha256=PAPER_ACCOUNT_SHA256,
             market_data=FakeMarketData())
     assert journal.calls == []
     assert not broker.sent
@@ -284,7 +321,8 @@ def test_missing_approval_stops_entry(monkeypatch):
 
 @pytest.mark.parametrize("field,value", [
     ("shares", 99), ("symbol", "NVDA"), ("max_buy_limit_usd", 100),
-    ("protective_stop_usd", 0),
+    ("protective_stop_usd", 0), ("order_time_in_force", "day"),
+    ("account_id_sha256", "0" * 64),
 ])
 def test_approval_must_match_exact_paper_trade(monkeypatch, field, value):
     monkeypatch.setattr(entry, "PAPER_ORDER_SUBMISSIONS_RELEASED", True)
@@ -343,6 +381,16 @@ def test_updated_paper_account_blocks_pre_submission(monkeypatch, condition):
         execute(p, broker=broker, journal=journal)
     assert journal.calls == []
     assert broker.sent == []
+
+
+def test_account_identity_must_match_runtime_pin_before_reservation(monkeypatch):
+    monkeypatch.setattr(entry, "PAPER_ORDER_SUBMISSIONS_RELEASED", True)
+    p = preview()
+    broker = FakeBroker(p, account_id="87654321-4321-8765-4321-876543218765")
+    journal = FakeJournal()
+    with pytest.raises(TradeBlocked, match="pinned account"):
+        execute(p, broker=broker, journal=journal)
+    assert journal.calls == [] and broker.sent == []
 
 
 def test_quoted_buy_limit_change_blocks_prior_approval(monkeypatch):

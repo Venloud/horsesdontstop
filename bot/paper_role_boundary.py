@@ -53,7 +53,7 @@ def assert_journal_acl_boundary(cursor, *, reconciler=False):
     if reconciler:
         sql += """ AND NOT EXISTS (
           SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
-          WHERE n.nspname='public' AND p.proname IN
+   WHERE n.nspname='public' AND p.proname IN
             ('paper_reserve_intent_if_enabled','paper_reserve_bounded_pilot_intent',
              'paper_commit_bounded_pilot_dispatch','paper_mark_reserved_intent_unknown',
              'paper_consume_submission_authorization',

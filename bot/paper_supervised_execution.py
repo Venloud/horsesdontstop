@@ -58,6 +58,34 @@ class PaperSubmitResult:
     submitted_to_paper_broker: bool
 
 
+@dataclass(frozen=True)
+class PreparedPaperOrder:
+    """Durably reserved exact request awaiting owner approval; never submitted."""
+    plan: PaperOrderPlan
+    preview: LivePaperEntryPreview
+    request_sha256: str
+    account_id_sha256: str
+    fee_reserve_usd: float = 0.50
+    submitted_to_paper_broker: bool = False
+
+    def to_dict(self):
+        return {
+            "client_order_id": self.plan.client_order_id,
+            "symbol": self.plan.symbol,
+            "side": "buy",
+            "quantity": self.plan.whole_shares,
+            "order_class": self.plan.order_class,
+            "time_in_force": self.plan.time_in_force,
+            "limit_price": self.plan.estimated_entry,
+            "purchase_cost_cap": self.plan.estimated_cost,
+            "stop_price": self.plan.protective_stop,
+            "fee_reserve": self.fee_reserve_usd,
+            "request_sha256": self.request_sha256,
+            "account_id_sha256": self.account_id_sha256,
+            "submitted": False,
+        }
+
+
 def _validate_approval(approval, preview, now, expected_account_sha256):
     if not isinstance(approval, ExplicitPaperTradeApproval):
         raise TradeBlocked("Specific owner review/approval not supplied")
@@ -278,14 +306,20 @@ def _verify_momentum_signal(trading, market_data, symbol, now):
 def submit_paper_once_supervised(
     *, trading, journal, market_quote, preview, safety_state,
     approval, now: datetime, expected_account_sha256=None, market_data=None,
-) -> PaperSubmitResult:
+    prepare_only=False, intent_already_reserved=False,
+) -> PaperSubmitResult | PreparedPaperOrder:
     """ONE broker submission at most, with exact matching reviewed terms.
 
     No executable entrypoint calls this function. Production release
     switch remains False. The journal must atomically reserve first.
     An API timeout always records UNKNOWN and aborts; never retry.
     """
-    if PAPER_ORDER_SUBMISSIONS_RELEASED is not True:
+    if type(prepare_only) is not bool or type(intent_already_reserved) is not bool:
+        raise TradeBlocked("Invalid PAPER pilot mode")
+    if prepare_only and intent_already_reserved:
+        raise TradeBlocked("Preparation cannot reuse a prior intent")
+    if PAPER_ORDER_SUBMISSIONS_RELEASED is not True and not (
+            prepare_only or intent_already_reserved):
         raise TradeBlocked("PAPER broker submissions NOT RELEASED")
     if not isinstance(now, datetime) or now.tzinfo is None:
         raise TradeBlocked("Missing trustworthy timezone-aware clock")
@@ -293,6 +327,12 @@ def submit_paper_once_supervised(
     if not isinstance(safety_state, PaperSafetyState):
         raise TradeBlocked("Required independent persistent supervisor missing")
     blockers = execution_blockers(safety_state)
+    if prepare_only:
+        if (safety_state.kill_switch_active is not True
+                or safety_state.order_submissions_explicitly_enabled is not False):
+            raise TradeBlocked("Preparation requires kill switch ON and submissions OFF")
+        blockers = [x for x in blockers if x not in
+                    {"kill_switch_active", "paper_order_submission_disabled"}]
     if blockers:
         raise TradeBlocked("Execution readiness blocked: " + ",".join(blockers))
     if safety_state.broker_endpoint != PAPER_ENDPOINT:
@@ -354,7 +394,8 @@ def submit_paper_once_supervised(
     observed = datetime.fromisoformat(preview.observed_at_utc)
     if observed.tzinfo is None or not -3 <= (now - observed).total_seconds() <= 45:
         raise TradeBlocked("Reviewed live order preview is stale")
-    _validate_approval(approval, recomputed, now, expected_account_sha256)
+    if not prepare_only:
+        _validate_approval(approval, recomputed, now, expected_account_sha256)
     plan = _plan_from_quoted_preview(recomputed)
     from .paper_execution_journal import PaperExecutorJournal
     PaperExecutorJournal.validate_protected_intent(plan)
@@ -370,7 +411,19 @@ def submit_paper_once_supervised(
     # lookup/race failures cannot cause a duplicate post: stable client
     # id + journal uniqueness + explicit no-repeat rule.
     _broker_did_not_find_order(trading, plan.client_order_id)
-    if journal.reserve_if_enabled(plan) is not True:
+    if prepare_only:
+        if journal.reserve_if_enabled(plan) is not True:
+            raise TradeBlocked("Durable order already reserved: NEVER reuse")
+        return PreparedPaperOrder(
+            plan=plan, preview=recomputed, request_sha256=request_digest,
+            account_id_sha256=expected_account_sha256,
+        )
+    if plan.time_in_force == "gtc":
+        if intent_already_reserved is not True:
+            raise TradeBlocked("GTC pilot dispatch requires separately prepared owner-approved intent")
+    elif intent_already_reserved:
+        raise TradeBlocked("Pre-reserved dispatch is only supported by bounded GTC pilot")
+    elif journal.reserve_if_enabled(plan) is not True:
         raise TradeBlocked("Durable order already reserved: NEVER retry")
 
     attempted = False
@@ -382,7 +435,7 @@ def submit_paper_once_supervised(
             # Reservation is consumed durably before entering this context.
             # Recheck time-sensitive evidence after any DB lock wait.
             final_now = now + timedelta(seconds=monotonic() - started)
-            _validate_approval(approval, recomputed, final_now,
+                _validate_approval(approval, recomputed, final_now,
                                expected_account_sha256)
             preview_live_paper_entry(
                 symbol=preview.symbol, quote=market_quote, equity=account.equity,
@@ -411,7 +464,8 @@ def submit_paper_once_supervised(
             # Network reads can themselves stall. Approval and quote freshness
             # must still hold immediately before the POST boundary.
             send_now = now + timedelta(seconds=monotonic() - started)
-            _validate_approval(approval, recomputed, send_now)
+            _validate_approval(approval, recomputed, send_now,
+                               expected_account_sha256)
             preview_live_paper_entry(
                 symbol=preview.symbol, quote=market_quote, equity=final_account.equity,
                 available_cash=final_account.cash, now=send_now, market_open=True)

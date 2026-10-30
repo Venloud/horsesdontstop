@@ -17,11 +17,7 @@ class PaperExecutorJournal(PostgresPaperJournal):
     """Must use dedicated narrowly scoped PAPER writer role, never monitor."""
 
     def assert_executor_permissions(self, *, reservation=False):
-        """Post-PR38 + status cutover only, never allow legacy direct writes.
-
-        This intentionally fails against unmigrated production. The existing
-        collector running from main is NOT changed by a review-only branch.
-        """
+        """Attest the active order API without breaking equity collection during rollout."""
         with self._connect() as conn:
             with conn.cursor() as cur:
                 cur.execute(
@@ -46,6 +42,19 @@ class PaperExecutorJournal(PostgresPaperJournal):
                     "has_function_privilege(current_user,"
                     "'public.paper_record_reconciled_intent_status("
                     "text,text,text,text)','EXECUTE'), "
+                    "COALESCE(has_function_privilege(current_user,to_regprocedure("
+                    "'public.paper_reserve_bounded_pilot_intent(text,text,text,date,integer,numeric,numeric)'),"
+                    "'EXECUTE'),FALSE), "
+                    "COALESCE(has_function_privilege(current_user,to_regprocedure("
+                    "'public.paper_commit_bounded_pilot_dispatch(text,text,text,uuid)'),"
+                    "'EXECUTE'),FALSE), "
+                    "COALESCE(has_function_privilege(current_user,to_regprocedure("
+                    "'public.paper_authorize_unknown_submission(text,text,text,date,integer,numeric,numeric)'),"
+                    "'EXECUTE'),FALSE), "
+                    "COALESCE(has_function_privilege(current_user,to_regprocedure("
+                    "'public.paper_consume_submission_authorization(text)'),"
+                    "'EXECUTE'),FALSE), "
+                    "to_regprocedure('public.paper_reserve_bounded_pilot_intent(text,text,text,date,integer,numeric,numeric)') IS NOT NULL, "
                     "pg_has_role(current_user,'hds_paper_reconciler','MEMBER'), "
                     "pg_has_role(current_user,'hds_paper_status_owner','MEMBER'), "
                     "pg_has_role(current_user,'hds_paper_reservation_guard','MEMBER'), "
@@ -54,13 +63,20 @@ class PaperExecutorJournal(PostgresPaperJournal):
                     "has_database_privilege(current_user,current_database(),'CREATE')"
                 )
                 row = cur.fetchone()
-                if row == (False, False, False, False, False, False, False,
-                           False, False, True, True, True, False, False, False,
-                           False, False, False, False):
+                if not isinstance(row, tuple) or len(row) != 24:
+                    raise TradeBlocked("PAPER executor privilege attestation incomplete")
+                bounded_installed = row[17]
+                expected_api = ((False, False, False, True, True, False, False)
+                                if bounded_installed else
+                                (True, True, False, False, False, True, True))
+                if (row[:10] != (False, False, False, False, False, False,
+                                 False, False, False, True)
+                        or row[10:17] != expected_api
+                        or row[18:] != (False, False, False, False, False, False)):
+                    raise TradeBlocked("Unsafe or incomplete post-cutover PAPER executor role")
+                if bounded_installed or not reservation:
                     assert_journal_acl_boundary(cur)
-        expected = (False, False, False, False, False, False, False,
-                    False, False, True, True, True, False, False, False, False, False, False, False)
-        if row != expected:
+        if not isinstance(row, tuple) or len(row) != 24:
             raise TradeBlocked("Unsafe or incomplete post-cutover PAPER executor role")
 
     def record_opening_equity(self, *, session_open_utc: datetime,
