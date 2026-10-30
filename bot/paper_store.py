@@ -198,12 +198,19 @@ class PostgresPaperJournal:
         with self._connect() as conn:
             with conn.cursor() as cur:
                 cur.execute(
+                    "SELECT EXISTS (SELECT 1 FROM information_schema.columns "
+                    "WHERE table_schema='public' AND table_name='paper_intents' "
+                    "AND column_name='time_in_force')")
+                has_tif = cur.fetchone() == (True,)
+                tif = ", time_in_force" if has_tif else ""
+                cur.execute(
                     "SELECT client_order_id, status, symbol, whole_shares, "
-                    "protective_stop, broker_order_id "
+                    "protective_stop, broker_order_id" + tif + " "
                     "FROM paper_intents "
                     "WHERE status IN ('accepted','filled') "
                     "ORDER BY created_at ASC LIMIT %s", (limit,))
-                return cur.fetchall()
+                rows = cur.fetchall()
+                return rows if has_tif else [tuple(row) + ("day",) for row in rows]
 
     def read_equity_references(self, day_start_utc, as_of_utc):
         """Read only. Require an equity sample very near the NYSE opening.

@@ -185,10 +185,11 @@ def reconcile_observation(
     if positions and approved_stops is None:
         blockers.append("approved_stop_intents_not_observed")
     for record in approved_stops or ():
-        if not isinstance(record, (tuple, list)) or len(record) != 6:
+        if not isinstance(record, (tuple, list)) or len(record) not in (6, 7):
             blockers.append("invalid_approved_stop_intent")
             continue
-        client_id, status, symbol, shares, stop, parent_id = record
+        client_id, status, symbol, shares, stop, parent_id = record[:6]
+        approved_tif = record[6] if len(record) == 7 else "day"
         try:
             quantity = number(shares)
             stop_price = number(stop)
@@ -202,7 +203,11 @@ def reconcile_observation(
                 or client_id in durable_approvals):
             blockers.append("invalid_approved_stop_intent")
             continue
-        durable_approvals[client_id] = (str(parent_id), symbol, quantity, stop_price)
+        if approved_tif not in {"day", "gtc"}:
+            blockers.append("invalid_approved_stop_intent")
+            continue
+        durable_approvals[client_id] = (
+            str(parent_id), symbol, quantity, stop_price, approved_tif)
 
     by_id = {str(getattr(o, "id", "")): o for o in nested}
     known_clients = ids | set(durable_approvals)
@@ -284,6 +289,7 @@ def reconcile_observation(
                     # Partial parent fills cannot prove Alpaca has
                     # activated a stop leg for an unfinished OTO entry.
                     or value(getattr(parent, "status", None)) != "filled"
+                    or value(getattr(parent, "time_in_force", None)) != durable[4]
                     or not any(
                         str(getattr(leg, "id", "")) == str(getattr(order, "id", ""))
                         for leg in (getattr(parent, "legs", None) or [])

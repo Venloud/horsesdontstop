@@ -29,8 +29,10 @@ SELECT /* paper_acl_boundary */
                         ('public.paper_control'),
                         ('public.paper_pilot_approvals'),
                         ('public.paper_pilot_dispatch_receipts')) AS t(tbl)
-   WHERE has_any_column_privilege(current_user,t.tbl,'INSERT,UPDATE,REFERENCES')
-      OR has_table_privilege(current_user,t.tbl,'DELETE,TRUNCATE,TRIGGER'))
+   WHERE CASE WHEN to_regclass(t.tbl) IS NULL THEN FALSE ELSE
+       has_any_column_privilege(current_user,to_regclass(t.tbl),'INSERT,UPDATE,REFERENCES')
+       OR has_table_privilege(current_user,to_regclass(t.tbl),'DELETE,TRUNCATE,TRIGGER')
+       END)
  AND NOT EXISTS (
    SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
    WHERE n.nspname !~ '^pg_' AND n.nspname <> 'information_schema' AND p.prosecdef
@@ -38,7 +40,7 @@ SELECT /* paper_acl_boundary */
      AND p.oid::regprocedure::text NOT IN
        ('paper_reserve_intent_if_enabled(text,text,text,date,integer,numeric,numeric)',
         'paper_reserve_bounded_pilot_intent(text,text,text,date,integer,numeric,numeric)',
-        'paper_commit_bounded_pilot_dispatch(text,text,uuid)',
+        'paper_commit_bounded_pilot_dispatch(text,text,text,uuid)',
         'paper_mark_reserved_intent_unknown(text)',
         'paper_consume_submission_authorization(text)',
         'paper_record_reconciled_intent_status(text,text,text,text)',

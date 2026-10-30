@@ -69,11 +69,18 @@ class PaperStatusReconcilerJournal(PostgresPaperJournal):
         with self._connect() as conn:
             with conn.cursor() as cur:
                 cur.execute(
+                    "SELECT EXISTS (SELECT 1 FROM information_schema.columns "
+                    "WHERE table_schema='public' AND table_name='paper_intents' "
+                    "AND column_name='time_in_force')")
+                has_tif = cur.fetchone() == (True,)
+                tif = ", time_in_force" if has_tif else ""
+                cur.execute(
                     "SELECT status, broker_order_id, strategy, symbol, trading_day, "
-                    "whole_shares, expected_entry, protective_stop, time_in_force "
+                    "whole_shares, expected_entry, protective_stop" + tif + " "
                     "FROM public.paper_intents WHERE client_order_id=%s",
                     (client_order_id,))
-                return cur.fetchone()
+                row = cur.fetchone()
+                return (tuple(row) + ("day",)) if row is not None and not has_tif else row
 
     def read_pending_plans(self):
         """Rebuild reconciliation inputs after a restart; never reserve/send."""
@@ -81,11 +88,19 @@ class PaperStatusReconcilerJournal(PostgresPaperJournal):
         with self._connect() as conn:
             with conn.cursor() as cur:
                 cur.execute(
+                    "SELECT EXISTS (SELECT 1 FROM information_schema.columns "
+                    "WHERE table_schema='public' AND table_name='paper_intents' "
+                    "AND column_name='time_in_force')")
+                has_tif = cur.fetchone() == (True,)
+                tif = ",time_in_force" if has_tif else ""
+                cur.execute(
                     "SELECT client_order_id,strategy,symbol,trading_day,whole_shares,"
-                    "expected_entry,protective_stop,time_in_force FROM public.paper_intents "
+                    "expected_entry,protective_stop" + tif + " FROM public.paper_intents "
                     "WHERE status IN ('reserved','submitted','accepted','unknown') "
                     "ORDER BY created_at LIMIT 501")
                 rows = cur.fetchall()
+        if not has_tif:
+            rows = [tuple(row) + ("day",) for row in rows]
         if len(rows) >= 501:
             raise TradeBlocked("Pending reconciler intent list incomplete")
         plans = []

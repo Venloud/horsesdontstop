@@ -47,6 +47,7 @@ class ExplicitPaperTradeApproval:
     order_class: str = "oto"
     maximum_purchase_cost_usd: float = 5.00
     fee_reserve_usd: float = 0.50
+    account_id_sha256: str = ""
 
 
 @dataclass(frozen=True)
@@ -57,7 +58,7 @@ class PaperSubmitResult:
     submitted_to_paper_broker: bool
 
 
-def _validate_approval(approval, preview, now):
+def _validate_approval(approval, preview, now, expected_account_sha256):
     if not isinstance(approval, ExplicitPaperTradeApproval):
         raise TradeBlocked("Specific owner review/approval not supplied")
     if (approval.approved_at_utc.tzinfo is None
@@ -85,6 +86,21 @@ def _validate_approval(approval, preview, now):
             or money(approval.fee_reserve_usd) != money("0.50")
             or money(preview.max_limit_purchase_usd) > money("5.00")):
         raise TradeBlocked("Approval does not match bounded GTC OTO pilot policy")
+    if (not isinstance(expected_account_sha256, str)
+            or len(expected_account_sha256) != 64
+            or any(c not in "0123456789abcdef" for c in expected_account_sha256)
+            or approval.account_id_sha256 != expected_account_sha256):
+        raise TradeBlocked("Approval does not match pinned PAPER account")
+
+
+def _paper_account_sha256(account):
+    from uuid import UUID
+    raw = getattr(account, "id", None)
+    try:
+        normalized = str(UUID(str(raw))).lower()
+    except (ValueError, TypeError, AttributeError):
+        raise TradeBlocked("Authenticated PAPER account identity unavailable") from None
+    return sha256(normalized.encode("ascii")).hexdigest()
 
 
 def _request_sha256(order_request):
@@ -261,7 +277,7 @@ def _verify_momentum_signal(trading, market_data, symbol, now):
 
 def submit_paper_once_supervised(
     *, trading, journal, market_quote, preview, safety_state,
-    approval, now: datetime, market_data=None,
+    approval, now: datetime, expected_account_sha256=None, market_data=None,
 ) -> PaperSubmitResult:
     """ONE broker submission at most, with exact matching reviewed terms.
 
@@ -312,6 +328,9 @@ def submit_paper_once_supervised(
             or not isinstance(orders, (list, tuple))
             or positions or orders):
         raise TradeBlocked("Paper market closed, account blocked or exposure exists")
+    if (not isinstance(expected_account_sha256, str)
+            or _paper_account_sha256(account) != expected_account_sha256):
+        raise TradeBlocked("Authenticated PAPER account does not match pinned account")
     _verify_paper_market_session(trading, clock, now=now)
     _verify_momentum_signal(trading, market_data, preview.symbol, now)
     if (abs(money(account.equity) - money(safety_state.equity)) > money(".01")
@@ -335,7 +354,7 @@ def submit_paper_once_supervised(
     observed = datetime.fromisoformat(preview.observed_at_utc)
     if observed.tzinfo is None or not -3 <= (now - observed).total_seconds() <= 45:
         raise TradeBlocked("Reviewed live order preview is stale")
-    _validate_approval(approval, recomputed, now)
+    _validate_approval(approval, recomputed, now, expected_account_sha256)
     plan = _plan_from_quoted_preview(recomputed)
     from .paper_execution_journal import PaperExecutorJournal
     PaperExecutorJournal.validate_protected_intent(plan)
@@ -357,12 +376,14 @@ def submit_paper_once_supervised(
     attempted = False
     try:
         with journal.authorize_reserved_submission(
-                plan, request_sha256=request_digest, attempt_id=attempt_id
+                plan, request_sha256=request_digest, attempt_id=attempt_id,
+                account_id_sha256=expected_account_sha256,
                 ) as assert_lock_alive:
             # Reservation is consumed durably before entering this context.
             # Recheck time-sensitive evidence after any DB lock wait.
             final_now = now + timedelta(seconds=monotonic() - started)
-            _validate_approval(approval, recomputed, final_now)
+            _validate_approval(approval, recomputed, final_now,
+                               expected_account_sha256)
             preview_live_paper_entry(
                 symbol=preview.symbol, quote=market_quote, equity=account.equity,
                 available_cash=account.cash, now=final_now, market_open=True)
@@ -379,6 +400,7 @@ def submit_paper_once_supervised(
                     or not isinstance(final_orders, (list, tuple)) or final_orders
                     or money(final_account.equity) != money(account.equity)
                     or money(final_account.cash) != money(account.cash)
+                    or _paper_account_sha256(final_account) != expected_account_sha256
                     or money(getattr(final_account, "buying_power", None))
                     < money(plan.estimated_cost) + PILOT_FEE_RESERVE_USD):
                 raise TradeBlocked("PAPER account changed after reservation")

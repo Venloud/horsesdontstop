@@ -224,7 +224,7 @@ class PaperExecutorJournal(PostgresPaperJournal):
 
     @contextmanager
     def authorize_reserved_submission(self, plan, *, request_sha256=None,
-                                      attempt_id=None):
+                                      attempt_id=None, account_id_sha256=None):
         """Consume the reservation before POST, then hold the control row lock.
 
         UNKNOWN is committed separately first: a crash or transaction rollback
@@ -238,15 +238,18 @@ class PaperExecutorJournal(PostgresPaperJournal):
             if (not isinstance(request_sha256, str)
                     or len(request_sha256) != 64
                     or not isinstance(attempt_id, str)
-                    or len(attempt_id) != 36):
+                    or len(attempt_id) != 36
+                    or not isinstance(account_id_sha256, str)
+                    or len(account_id_sha256) != 64):
                 raise TradeBlocked("Missing exact GTC pilot dispatch receipt terms")
             with self._connect() as conn:
                 with conn.cursor() as cur:
                     cur.execute("SET LOCAL statement_timeout='3000ms'")
                     cur.execute(
                         "SELECT public.paper_commit_bounded_pilot_dispatch("
-                        "%s,%s,%s::uuid)",
-                        (plan.client_order_id, request_sha256, attempt_id))
+                        "%s,%s,%s,%s::uuid)",
+                        (plan.client_order_id, request_sha256,
+                         account_id_sha256, attempt_id))
                     if cur.fetchone() != (True,):
                         raise TradeBlocked("Bounded PAPER dispatch commit denied")
             # The transaction committed a single-use owner-approved receipt

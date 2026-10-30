@@ -7,6 +7,7 @@ synthetic test cases.
 from dataclasses import replace
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
+from hashlib import sha256
 from types import SimpleNamespace
 
 import pytest
@@ -21,6 +22,8 @@ from bot.paper_broker_transport import BoundedPaperSession
 
 
 NOW = datetime(2026, 10, 12, 14, 45, tzinfo=timezone.utc)
+PAPER_ACCOUNT_ID = "12345678-1234-5678-1234-567812345678"
+PAPER_ACCOUNT_SHA256 = sha256(PAPER_ACCOUNT_ID.encode("ascii")).hexdigest()
 
 
 def quote(age=2):
@@ -48,6 +51,7 @@ def approved(p):
         protective_stop_usd=p.stop_usd,
         approved_at_utc=NOW - timedelta(seconds=15),
         expires_at_utc=NOW + timedelta(seconds=45),
+        account_id_sha256=PAPER_ACCOUNT_SHA256,
     )
 
 
@@ -72,7 +76,8 @@ def healthy(**updates):
 
 class FakeBroker:
     def __init__(self, p, *, existing=False, failure=None,
-                 clock_open=True, balance=500, positions=()):
+                 clock_open=True, balance=500, positions=(),
+                 account_id=PAPER_ACCOUNT_ID):
         self.p = p
         self._base_url = PAPER_ENDPOINT
         self._retry = 0
@@ -83,11 +88,13 @@ class FakeBroker:
         self.clock_open = clock_open
         self.balance = balance
         self.positions = positions
+        self.account_id = account_id
         self.sent = []
 
     def get_account(self):
         self.calls.append("get_account")
         return SimpleNamespace(
+            id=self.account_id,
             equity=str(self.balance), cash=str(self.balance),
             buying_power=str(self.balance), trading_blocked=False,
         )
@@ -158,8 +165,11 @@ class FakeJournal:
         raise AssertionError("Executor must not attest broker status")
 
     @contextmanager
-    def authorize_reserved_submission(self, plan):
+    def authorize_reserved_submission(self, plan, *, request_sha256=None,
+                                      attempt_id=None):
         self.mark_uncertain(plan.client_order_id)
+        assert isinstance(request_sha256, str) and len(request_sha256) == 64
+        assert isinstance(attempt_id, str) and len(attempt_id) == 36
         yield lambda: None
 
 
@@ -189,6 +199,7 @@ def execute(p=None, *, broker=None, journal=None, state=None,
         trading=broker, journal=journal, market_quote=live_quote,
         preview=p, safety_state=state or healthy(),
         approval=approval or approved(p), now=now,
+        expected_account_sha256=PAPER_ACCOUNT_SHA256,
         market_data=FakeMarketData(),
     )
 
@@ -576,7 +587,7 @@ def test_kill_switch_changed_during_reservation_never_posts(monkeypatch):
     broker = FakeBroker(p)
     class KilledJournal(FakeJournal):
         @contextmanager
-        def authorize_reserved_submission(self, plan):
+        def authorize_reserved_submission(self, plan, **kwargs):
             self.mark_uncertain(plan.client_order_id)
             raise TradeBlocked("Kill changed after reservation")
             yield  # pragma: no cover -- context manager protocol
@@ -602,7 +613,7 @@ def test_account_change_after_reservation_cannot_post(monkeypatch):
     broker = FakeBroker(p)
     class ChangedJournal(FakeJournal):
         @contextmanager
-        def authorize_reserved_submission(self, plan):
+        def authorize_reserved_submission(self, plan, **kwargs):
             self.mark_uncertain(plan.client_order_id)
             broker.balance = 100
             yield
@@ -685,7 +696,8 @@ def test_simulated_order_to_independent_fill_reconciliation_and_restart(monkeypa
             plan = durable.plan
             return (durable.status, None, plan.strategy, plan.symbol,
                     date.fromisoformat(plan.trading_day), plan.whole_shares,
-                    plan.estimated_entry, plan.protective_stop)
+                    plan.estimated_entry, plan.protective_stop,
+                    plan.time_in_force)
         def record_broker_verified_state(self, cid, old, new, broker_id):
             assert durable.status == old and broker_id == "mock-paper-id"
             durable.status = new
@@ -724,7 +736,7 @@ def test_backend_loss_during_final_broker_reads_prevents_post(monkeypatch):
         return get_account()
     broker.get_account=account
     @contextmanager
-    def authorization(plan):
+    def authorization(plan, **kwargs):
         journal.mark_uncertain(plan.client_order_id)
         def guard():
             if not alive[0]:
@@ -748,7 +760,7 @@ def test_fatal_process_crash_and_delayed_visibility_never_reuse_durable_id(monke
         def mark_uncertain(self,cid):
             assert state.read_text()=='reserved';state.write_text('unknown')
         @contextmanager
-        def authorize_reserved_submission(self,plan):
+        def authorize_reserved_submission(self,plan,**kwargs):
             self.mark_uncertain(plan.client_order_id)
             def guard():
                 if window=='before_post':raise ProcessDied()
@@ -771,7 +783,7 @@ def test_last_database_ack_cannot_make_a_remote_broker_post_atomic(monkeypatch):
     p=preview();broker=FakeBroker(p);state={'db_alive':True,'kill':False}
     journal=FakeJournal()
     @contextmanager
-    def authorization(plan):
+    def authorization(plan, **kwargs):
         journal.mark_uncertain(plan.client_order_id)
         def guard():
             assert state['db_alive'] and state['kill'] is False

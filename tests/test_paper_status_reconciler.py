@@ -88,6 +88,7 @@ class FakeJournal:
             self.status, self.broker_id, PLAN.strategy,
             PLAN.symbol, date.fromisoformat(PLAN.trading_day),
             PLAN.whole_shares, PLAN.estimated_entry, PLAN.protective_stop,
+            PLAN.time_in_force,
         )
 
     def record_broker_verified_state(self, cid, old, new, broker_id):
@@ -190,7 +191,7 @@ def test_data_mismatch_aborts_before_any_broker_get():
     journal.get_durable_intent_terms = lambda _cid: (
         "reserved", None, PLAN.strategy, PLAN.symbol,
         date.fromisoformat(PLAN.trading_day), PLAN.whole_shares + 1,
-        PLAN.estimated_entry, PLAN.protective_stop,
+        PLAN.estimated_entry, PLAN.protective_stop, PLAN.time_in_force,
     )
     broker = FakeBroker()
     with pytest.raises(TradeBlocked, match="mismatch"):

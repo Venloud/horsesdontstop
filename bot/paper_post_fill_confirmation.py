@@ -33,7 +33,7 @@ def confirm_nested_filled_stops(trading, positions, approvals):
             if len(matching) != 1:
                 raise ValueError("No unique durable approved stop")
             approved = matching[0]
-            client_id, _status, _symbol, qty, stop, parent_id = approved
+            client_id, _status, _symbol, qty, stop, parent_id = approved[:6]
             approved_tif = approved[6] if len(approved) == 7 else "day"
             if (not isinstance(client_id, str) or not client_id
                     or not parent_id or money(qty) <= 0 or money(stop) <= 0):

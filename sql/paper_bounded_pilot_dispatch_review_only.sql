@@ -62,6 +62,7 @@ CREATE TABLE public.paper_pilot_approvals (
     purchase_cost numeric(18,6) NOT NULL CHECK (purchase_cost > 0 AND purchase_cost <= 5.00),
     fee_reserve numeric(18,6) NOT NULL CHECK (fee_reserve = 0.50),
     request_sha256 text NOT NULL CHECK (request_sha256 ~ '^[0-9a-f]{64}$'),
+    account_id_sha256 text NOT NULL CHECK (account_id_sha256 ~ '^[0-9a-f]{64}$'),
     approved_at timestamptz NOT NULL,
     expires_at timestamptz NOT NULL,
     consumed_at timestamptz,
@@ -92,6 +93,7 @@ GRANT CREATE ON SCHEMA public TO neondb_owner;
 CREATE FUNCTION public.paper_approve_bounded_pilot(
     p_client_order_id text, p_symbol text, p_whole_shares integer,
     p_limit_price numeric, p_stop_price numeric, p_request_sha256 text,
+    p_account_id_sha256 text,
     p_expires_at timestamptz)
 RETURNS boolean LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog
 AS $approve$
@@ -102,6 +104,7 @@ BEGIN
        OR p_limit_price IS NULL OR p_limit_price <= 0
        OR p_stop_price IS NULL OR p_stop_price <= 0 OR p_stop_price >= p_limit_price
        OR p_request_sha256 !~ '^[0-9a-f]{64}$'
+       OR p_account_id_sha256 !~ '^[0-9a-f]{64}$'
        OR p_expires_at <= clock_timestamp()
        OR p_expires_at > clock_timestamp() + interval '120 seconds' THEN
         RAISE EXCEPTION 'Invalid bounded PAPER approval' USING ERRCODE='22023';
@@ -121,20 +124,21 @@ BEGIN
     END IF;
     INSERT INTO public.paper_pilot_approvals
       (client_order_id,symbol,whole_shares,limit_price,stop_price,purchase_cost,
-       fee_reserve,request_sha256,approved_at,expires_at)
+       fee_reserve,request_sha256,account_id_sha256,approved_at,expires_at)
     VALUES(p_client_order_id,p_symbol,p_whole_shares,p_limit_price,p_stop_price,
-       v_cost,0.50,p_request_sha256,clock_timestamp(),p_expires_at);
+       v_cost,0.50,p_request_sha256,p_account_id_sha256,clock_timestamp(),p_expires_at);
     RETURN TRUE;
 END;
 $approve$;
-ALTER FUNCTION public.paper_approve_bounded_pilot(text,text,integer,numeric,numeric,text,timestamptz)
+ALTER FUNCTION public.paper_approve_bounded_pilot(text,text,integer,numeric,numeric,text,text,timestamptz)
     OWNER TO neondb_owner;
 REVOKE CREATE ON SCHEMA public FROM neondb_owner;
-REVOKE ALL ON FUNCTION public.paper_approve_bounded_pilot(text,text,integer,numeric,numeric,text,timestamptz) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.paper_approve_bounded_pilot(text,text,integer,numeric,numeric,text,text,timestamptz) FROM PUBLIC;
 
 GRANT CREATE ON SCHEMA public TO hds_paper_reservation_guard;
 CREATE FUNCTION public.paper_commit_bounded_pilot_dispatch(
-    p_client_order_id text, p_request_sha256 text, p_attempt_id uuid)
+    p_client_order_id text, p_request_sha256 text,
+    p_account_id_sha256 text, p_attempt_id uuid)
 RETURNS boolean LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog
 AS $dispatch$
 DECLARE v_kill boolean; v_enabled boolean; v_approval public.paper_pilot_approvals%ROWTYPE;
@@ -150,6 +154,7 @@ BEGIN
     IF NOT FOUND OR v_approval.consumed_at IS NOT NULL
        OR v_approval.expires_at <= clock_timestamp()
        OR v_approval.request_sha256 IS DISTINCT FROM p_request_sha256
+       OR v_approval.account_id_sha256 IS DISTINCT FROM p_account_id_sha256
        OR p_attempt_id IS NULL THEN
         RAISE EXCEPTION 'PAPER approval absent, expired or consumed' USING ERRCODE='42501';
     END IF;
@@ -176,11 +181,11 @@ BEGIN
     RETURN TRUE;
 END;
 $dispatch$;
-ALTER FUNCTION public.paper_commit_bounded_pilot_dispatch(text,text,uuid)
+ALTER FUNCTION public.paper_commit_bounded_pilot_dispatch(text,text,text,uuid)
     OWNER TO hds_paper_reservation_guard;
 REVOKE CREATE ON SCHEMA public FROM hds_paper_reservation_guard;
-REVOKE ALL ON FUNCTION public.paper_commit_bounded_pilot_dispatch(text,text,uuid) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION public.paper_commit_bounded_pilot_dispatch(text,text,uuid)
+REVOKE ALL ON FUNCTION public.paper_commit_bounded_pilot_dispatch(text,text,text,uuid) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.paper_commit_bounded_pilot_dispatch(text,text,text,uuid)
     TO hds_paper_executor;
 COMMIT;
 
