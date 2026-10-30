@@ -74,8 +74,7 @@ class PaperExecutorJournal(PostgresPaperJournal):
                         or row[10:17] != expected_api
                         or row[18:] != (False, False, False, False, False, False)):
                     raise TradeBlocked("Unsafe or incomplete post-cutover PAPER executor role")
-                if bounded_installed or not reservation:
-                    assert_journal_acl_boundary(cur)
+                assert_journal_acl_boundary(cur)
         if not isinstance(row, tuple) or len(row) != 24:
             raise TradeBlocked("Unsafe or incomplete post-cutover PAPER executor role")
 

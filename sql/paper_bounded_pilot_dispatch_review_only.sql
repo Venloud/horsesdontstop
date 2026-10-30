@@ -119,6 +119,7 @@ BEGIN
           AND i.symbol=p_symbol AND i.whole_shares=p_whole_shares
           AND i.expected_entry=p_limit_price AND i.protective_stop=p_stop_price
           AND i.time_in_force='gtc'
+          AND i.trading_day=(clock_timestamp() AT TIME ZONE 'America/New_York')::date
     ) THEN
         RAISE EXCEPTION 'No matching reserved GTC OTO intent' USING ERRCODE='42501';
     END IF;
@@ -168,6 +169,7 @@ BEGIN
           AND i.symbol=v_approval.symbol AND i.whole_shares=v_approval.whole_shares
           AND i.expected_entry=v_approval.limit_price
           AND i.protective_stop=v_approval.stop_price AND i.time_in_force='gtc'
+          AND i.trading_day=(clock_timestamp() AT TIME ZONE 'America/New_York')::date
     ) THEN
         RAISE EXCEPTION 'Reserved GTC order differs from owner approval' USING ERRCODE='42501';
     END IF;

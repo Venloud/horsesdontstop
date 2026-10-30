@@ -318,8 +318,7 @@ def submit_paper_once_supervised(
         raise TradeBlocked("Invalid PAPER pilot mode")
     if prepare_only and intent_already_reserved:
         raise TradeBlocked("Preparation cannot reuse a prior intent")
-    if PAPER_ORDER_SUBMISSIONS_RELEASED is not True and not (
-            prepare_only or intent_already_reserved):
+    if PAPER_ORDER_SUBMISSIONS_RELEASED is not True and not prepare_only:
         raise TradeBlocked("PAPER broker submissions NOT RELEASED")
     if not isinstance(now, datetime) or now.tzinfo is None:
         raise TradeBlocked("Missing trustworthy timezone-aware clock")
@@ -435,7 +434,7 @@ def submit_paper_once_supervised(
             # Reservation is consumed durably before entering this context.
             # Recheck time-sensitive evidence after any DB lock wait.
             final_now = now + timedelta(seconds=monotonic() - started)
-                _validate_approval(approval, recomputed, final_now,
+            _validate_approval(approval, recomputed, final_now,
                                expected_account_sha256)
             preview_live_paper_entry(
                 symbol=preview.symbol, quote=market_quote, equity=account.equity,

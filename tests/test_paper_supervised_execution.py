@@ -192,7 +192,7 @@ class FakeMarketData:
 
 def execute(p=None, *, broker=None, journal=None, state=None,
             approval=None, live_quote=None, now=NOW, prepare_only=False,
-            intent_already_reserved=False):
+            intent_already_reserved=True):
     p = p or preview()
     broker = broker or FakeBroker(p)
     journal = journal or FakeJournal()
@@ -233,8 +233,7 @@ def test_mock_only_happy_path_one_protected_paper_order(monkeypatch):
     assert order.limit_price == p.buy_limit_usd
     assert order.stop_loss.stop_price == p.stop_usd
     assert broker.calls.index("get_order_by_client_id") < broker.calls.index("submit_order")
-    assert journal.calls[0][0] == "reserve"
-    assert journal.calls[1] == ("unknown", p.client_order_id)
+    assert journal.calls == [("unknown", p.client_order_id)]
 
 
 def test_disarmed_preparation_returns_exact_order_without_broker_write():
@@ -242,6 +241,7 @@ def test_disarmed_preparation_returns_exact_order_without_broker_write():
     broker, journal = FakeBroker(p), FakeJournal()
     prepared = execute(
         p, broker=broker, journal=journal, approval=None, prepare_only=True,
+        intent_already_reserved=False,
         state=healthy(kill_switch_active=True,
                       order_submissions_explicitly_enabled=False),
     )
@@ -265,7 +265,8 @@ def test_gtc_dispatch_requires_existing_prepared_intent(monkeypatch):
     p = preview()
     broker, journal = FakeBroker(p), FakeJournal()
     with pytest.raises(TradeBlocked, match="separately prepared"):
-        execute(p, broker=broker, journal=journal)
+        execute(p, broker=broker, journal=journal,
+                intent_already_reserved=False)
     assert journal.calls == [] and broker.sent == []
 
 
@@ -277,7 +278,7 @@ def test_fake_timeout_marked_unknown_never_retried(monkeypatch):
     with pytest.raises(TradeBlocked, match="outcome UNKNOWN"):
         execute(p, broker=broker, journal=journal)
     assert len(broker.sent) == 1
-    assert journal.calls[0][0] == "reserve"
+    assert journal.calls[0][0] == "unknown"
     assert journal.calls[-1] == ("unknown", p.client_order_id)
     # One lookup before submission, one additional lookup after timeout.
     assert broker.calls.count("get_order_by_client_id") == 2
@@ -299,8 +300,11 @@ def test_journal_unique_conflict_prevents_second_broker_submit(monkeypatch):
     p = preview()
     broker = FakeBroker(p)
     journal = FakeJournal(reservation=False)
-    with pytest.raises(TradeBlocked, match="NEVER retry"):
-        execute(p, broker=broker, journal=journal)
+    with pytest.raises(TradeBlocked, match="NEVER reuse"):
+        execute(p, broker=broker, journal=journal, prepare_only=True,
+                intent_already_reserved=False, approval=None,
+                state=healthy(kill_switch_active=True,
+                              order_submissions_explicitly_enabled=False))
     assert broker.sent == []
     assert journal.calls[0][0] == "reserve"
 
@@ -698,6 +702,7 @@ def test_strategy_must_have_fresh_unique_eligible_completed_bars(monkeypatch, ba
         entry.submit_paper_once_supervised(
             trading=broker, journal=FakeJournal(), market_quote=quote(),
             preview=p, safety_state=healthy(), approval=approved(p), now=NOW,
+            expected_account_sha256=PAPER_ACCOUNT_SHA256,
             market_data=BadData())
     assert not broker.sent
 
@@ -732,6 +737,7 @@ def test_simulated_order_to_independent_fill_reconciliation_and_restart(monkeypa
             assert self.status == "reserved" and cid == self.plan.client_order_id
             self.status = "unknown"
     durable = Durable()
+    durable.plan, durable.status = entry._plan_from_quoted_preview(p), "reserved"
     broker = FakeBroker(p)
     result = execute(p, broker=broker, journal=durable)
     assert result.submitted_to_paper_broker and durable.status == "unknown"
@@ -815,7 +821,8 @@ def test_fatal_process_crash_and_delayed_visibility_never_reuse_durable_id(monke
             yield guard
             if window=='after_ack':raise ProcessDied()
     monkeypatch.setattr(entry,'PAPER_ORDER_SUBMISSIONS_RELEASED',True)
-    p=preview();broker=FakeBroker(p,failure=ProcessDied() if window=='after_post' else None)
+    p=preview();state.write_text('reserved')
+    broker=FakeBroker(p,failure=ProcessDied() if window=='after_post' else None)
     with pytest.raises(ProcessDied):execute(p,broker=broker,journal=Durable())
     assert state.read_text()=='unknown'
     assert len(broker.sent)==(0 if window=='before_post' else 1)
