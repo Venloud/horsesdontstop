@@ -70,6 +70,38 @@ def order_legs(orders: Iterable, max_depth: int = 4):
     return flat
 
 
+def nested_parent_ids(orders: Iterable, max_depth: int = 4):
+    """Derive parent edges from nested responses, never from a lone claim.
+
+    Alpaca SDK Order has no parent_order_id field. Authenticated nesting is
+    the relationship evidence; an optional explicit field must agree with it.
+    A child attached to two parents is contradictory and fails closed.
+    """
+    parents = {}
+    visited = set()
+    def visit(order, parent, depth):
+        if depth > max_depth:
+            raise TradeBlocked("Order legs exceed safe nesting limit")
+        oid = value(getattr(order, "id", None))
+        if not oid:
+            raise TradeBlocked("Broker order without id")
+        if parent is not None:
+            claimed = value(getattr(order, "parent_order_id", None))
+            if (claimed and claimed != parent or oid == parent
+                    or oid in parents and parents[oid] != parent):
+                raise TradeBlocked("Conflicting nested broker parent")
+            parents[oid] = parent
+        key = (oid, parent)
+        if key in visited:
+            return
+        visited.add(key)
+        for leg in getattr(order, "legs", None) or []:
+            visit(leg, oid, depth + 1)
+    for order in orders:
+        visit(order, None, 0)
+    return parents
+
+
 @dataclass(frozen=True)
 class Reconciliation:
     consistent: bool
@@ -108,8 +140,10 @@ def reconcile_observation(
         blockers.append("broker_order_history_incomplete")
     try:
         nested = order_legs(orders)
+        parent_ids = nested_parent_ids(orders)
     except TradeBlocked:
         nested = []
+        parent_ids = {}
         blockers.append("malformed_broker_order_tree")
     open_orders = [o for o in nested if value(getattr(o, "status", None)) in OPEN_STATUSES]
     if positions:
@@ -137,10 +171,6 @@ def reconcile_observation(
             blockers.append("invalid_journal_quantity")
     if unresolved:
         blockers.append("unresolved_order_intent_requires_broker_lookup")
-    for order in open_orders:
-        client_id = getattr(order, "client_order_id", None)
-        if client_id not in ids and not getattr(order, "parent_order_id", None):
-            blockers.append("open_order_not_in_durable_journal")
     # A complete durable stop record must be read under the restricted
     # SELECT-only monitor role. Unresolved intents alone omit FILLED orders.
     # A parent/child with a convincing broker shape is not approved merely
@@ -167,6 +197,15 @@ def reconcile_observation(
             blockers.append("invalid_approved_stop_intent")
             continue
         durable_approvals[client_id] = (str(parent_id), symbol, quantity, stop_price)
+
+    by_id = {str(getattr(o, "id", "")): o for o in nested}
+    known_clients = ids | set(durable_approvals)
+    for order in open_orders:
+        client_id = getattr(order, "client_order_id", None)
+        parent = by_id.get(parent_ids.get(str(getattr(order, "id", ""))))
+        if client_id not in known_clients and (
+                parent is None or getattr(parent, "client_order_id", None) not in known_clients):
+            blockers.append("open_order_not_in_durable_journal")
 
     # Only a genuinely nested child belonging to an observed BUY LIMIT
     # OTO parent is even a candidate for coverage. An unrelated manual
@@ -229,7 +268,7 @@ def reconcile_observation(
                 except (ValueError, TypeError, OverflowError):
                     continue
             parent = observed_oto_parents.get(
-                str(getattr(order, "parent_order_id", "")))
+                parent_ids.get(str(getattr(order, "id", "")), ""))
             durable = durable_approvals.get(
                 str(getattr(parent, "client_order_id", ""))) if parent else None
             if (parent is None or durable is None

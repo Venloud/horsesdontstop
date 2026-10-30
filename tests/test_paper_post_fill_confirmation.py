@@ -53,6 +53,18 @@ def test_actual_broker_get_is_required_for_current_coverage():
                             ("by_id", "parent-1", True)]
 
 
+def test_real_sdk_nested_order_without_parent_attribute_verifies_relationship():
+    from alpaca.trading.models import Order
+    from uuid import UUID
+    now=datetime.now(timezone.utc)
+    common=dict(created_at=now,updated_at=now,submitted_at=now,order_class='oto',extended_hours=False,symbol='F',qty='2')
+    child=Order(**common,id=UUID(int=2),client_order_id='broker-child',side='sell',type='stop',time_in_force='gtc',status='new',filled_qty='0',stop_price='24')
+    parent=Order(**common,id=UUID(int=1),client_order_id='hds-F',side='buy',type='limit',time_in_force='day',status='filled',filled_qty='2',limit_price='25',legs=[child])
+    assert not hasattr(child,'parent_order_id')
+    approval=('hds-F','filled','F',2,24,str(parent.id))
+    assert confirm_nested_filled_stops(PaperFake(parent),[item(symbol='F',qty='2')],[approval])==()
+
+
 def test_unknown_approval_and_orphan_position_fail_closed():
     p, positions = example()
     assert confirm_nested_filled_stops(PaperFake(p), positions, []) == ("F",)

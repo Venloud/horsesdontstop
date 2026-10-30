@@ -29,6 +29,29 @@ def test_empty_broker_and_empty_neon_journal_reconcile():
     assert report.open_broker_orders == 0
 
 
+def test_nested_sdk_shape_needs_no_invented_parent_field():
+    child=order('child',side='sell',kind='stop',qty=2,tif='gtc',stop_price=24)
+    del child.parent_order_id
+    entry=order('entry',kind='limit',qty=2,filled=2,status='filled',cid='approved',klass='oto',legs=[child])
+    report=reconcile_observation([position(qty=2)],[entry],[],order_fetch_complete=True,
+        approved_stops=[('approved','filled','F',2,24,'entry')])
+    assert report.uncovered_symbols==()
+    assert 'open_order_not_in_durable_journal' not in report.blockers
+
+
+@pytest.mark.parametrize('wrong',['explicit_conflict','two_parents','unattached'])
+def test_nested_relationship_cannot_be_forged_or_reused(wrong):
+    child=order('child',side='sell',kind='stop',qty=2,tif='gtc',stop_price=24)
+    entry=order('entry',kind='limit',qty=2,filled=2,status='filled',cid='approved',klass='oto',legs=[child])
+    orders=[entry]
+    if wrong=='explicit_conflict':child.parent_order_id='unrelated'
+    if wrong=='two_parents':orders.append(order('other',kind='limit',qty=2,filled=2,status='filled',klass='oto',cid='other',legs=[child]))
+    if wrong=='unattached':entry.legs=[];child.parent_order_id='entry';orders.append(child)
+    report=reconcile_observation([position(qty=2)],orders,[],order_fetch_complete=True,
+        approved_stops=[('approved','filled','F',2,24,'entry')])
+    assert report.uncovered_symbols==('F',) and not report.consistent
+
+
 @pytest.mark.parametrize("held,stop_qty,stop_filled,status,protected", [
     (1, 5, 0, "new", False),
     (1, 1, 0, "new", False),
