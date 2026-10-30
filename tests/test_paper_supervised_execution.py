@@ -25,7 +25,7 @@ NOW = datetime(2026, 10, 12, 14, 45, tzinfo=timezone.utc)
 
 def quote(age=2):
     return SimpleNamespace(
-        bid_price=25, ask_price=25.02,
+        bid_price=1.50, ask_price=1.51,
         bid_size=50, ask_size=50,
         timestamp=NOW - timedelta(seconds=age),
     )
@@ -340,7 +340,7 @@ def test_quoted_buy_limit_change_blocks_prior_approval(monkeypatch):
     broker = FakeBroker(p)
     live = SimpleNamespace(
         timestamp=NOW - timedelta(seconds=1),
-        bid_price=25, ask_price=25.15, bid_size=50, ask_size=50)
+        bid_price=1.50, ask_price=1.505, bid_size=50, ask_size=50)
     with pytest.raises(TradeBlocked, match="changed"):
         execute(p, broker=broker, live_quote=live)
     assert broker.sent == []
@@ -695,7 +695,7 @@ def test_simulated_order_to_independent_fill_reconciliation_and_restart(monkeypa
         qty=str(p.shares), filled_qty="0", stop_price=str(p.stop_usd))
     nested = SimpleNamespace(
         id="mock-paper-id", client_order_id=p.client_order_id, symbol=p.symbol,
-        side="buy", type="limit", order_class="oto", time_in_force="day",
+        side="buy", type="limit", order_class="oto", time_in_force="gtc",
         status="filled", qty=str(p.shares), filled_qty=str(p.shares),
         limit_price=str(p.buy_limit_usd), legs=[child])
     broker.get_order_by_client_id = lambda cid: nested

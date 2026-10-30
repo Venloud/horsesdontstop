@@ -6,6 +6,7 @@ import pytest
 from alpaca.trading.enums import OrderClass, OrderSide, TimeInForce
 
 from bot.live_quotes import (
+    PILOT_FEE_RESERVE_USD, PILOT_MAX_PURCHASE_USD,
     build_live_protected_oto_request, preview_live_paper_entry,
 )
 from bot.paper_safety import TradeBlocked
@@ -23,7 +24,7 @@ def quote(*, bid=25, ask=25.02, bsize=20, asize=20, age=2):
 
 
 def plan(q=None, **overrides):
-    vals = dict(symbol="F", quote=q or quote(), equity=500,
+    vals = dict(symbol="F", quote=q or quote(bid=1.50, ask=1.51), equity=500,
                 available_cash=500, now=NOW, market_open=True)
     vals.update(overrides)
     return preview_live_paper_entry(**vals)
@@ -36,13 +37,15 @@ def test_fresh_quote_creates_unsent_one_percent_protected_limit_oto():
     assert p.shares > 0
     assert p.risk_budget_usd == 5.00
     assert p.stop_distance_risk_usd <= 5.0
-    assert p.max_limit_purchase_usd <= 500.0
+    assert p.max_limit_purchase_usd <= PILOT_MAX_PURCHASE_USD
+    assert p.fee_reserve_usd == PILOT_FEE_RESERVE_USD
+    assert p.order_time_in_force == "gtc"
     assert p.buy_limit_usd > p.ask_usd
     assert p.stop_usd < p.bid_usd
     request = build_live_protected_oto_request(p)
     assert request.order_class == OrderClass.OTO
     assert request.side == OrderSide.BUY
-    assert request.time_in_force == TimeInForce.DAY
+    assert request.time_in_force == TimeInForce.GTC
     assert request.extended_hours is False
     assert request.stop_loss.stop_price == p.stop_usd
     assert request.limit_price == p.buy_limit_usd
@@ -57,13 +60,24 @@ def test_max_one_percent_budget_strict_no_two_percent_default():
     larger = plan(equity=600, available_cash=600)
     assert smaller.risk_budget_usd == 4.0
     assert larger.risk_budget_usd == 6.0
-    assert larger.shares > smaller.shares
+    assert smaller.max_limit_purchase_usd <= 4.0
+    assert larger.max_limit_purchase_usd <= 5.0
 
 
 def test_quote_liquidity_constrains_whole_shares():
-    p = plan(quote(asize=1))
+    p = plan(quote(bid=1.50, ask=1.51, asize=1))
     assert p.shares == 1
-    assert p.max_limit_purchase_usd <= 500
+    assert p.max_limit_purchase_usd <= PILOT_MAX_PURCHASE_USD
+
+
+def test_first_pilot_purchase_cap_is_five_dollars_plus_separate_fee_reserve():
+    p = plan(equity=500, available_cash=500)
+    assert p.max_limit_purchase_usd <= 5.00
+    assert p.fee_reserve_usd == .50
+    assert p.max_limit_purchase_usd + p.fee_reserve_usd <= 5.50
+    with pytest.raises(TradeBlocked, match="No affordable whole"):
+        plan(quote=quote(bid=5.00, ask=5.01), equity=500,
+             available_cash=500)
 
 
 def test_market_closed_rejected_even_with_recent_price():
@@ -112,7 +126,7 @@ def test_deterministic_new_york_session_cid():
     y = plan()
     assert x.client_order_id == y.client_order_id
     z = plan(now=NOW + timedelta(days=1),
-             quote=quote(age=-86400))
+             quote=quote(bid=1.50, ask=1.51, age=-86400))
     assert z.client_order_id != x.client_order_id
 
 
@@ -124,7 +138,7 @@ def test_modified_nonpreview_request_denied():
             replace(p, order_submission_enabled=True))
     with pytest.raises(TradeBlocked):
         build_live_protected_oto_request(
-            replace(p, order_time_in_force="gtc"))
+            replace(p, order_time_in_force="day"))
 
 
 @pytest.mark.parametrize("hour,minute", [
@@ -135,7 +149,7 @@ def test_preview_refuses_last_regular_half_hour_or_premarket(hour, minute):
     local = datetime(2026, 10, 21, hour, minute,
                      tzinfo=ZoneInfo("America/New_York"))
     at = local.astimezone(timezone.utc)
-    q = SimpleNamespace(timestamp=at, bid_price=49.98, ask_price=50.00,
+    q = SimpleNamespace(timestamp=at, bid_price=4.78, ask_price=4.80,
                         bid_size=5, ask_size=5)
     with pytest.raises(TradeBlocked, match="safe regular-session window"):
         preview_live_paper_entry(symbol="DIS", quote=q, equity=500,
@@ -148,7 +162,7 @@ def test_regular_session_preview_before_cutoff_is_still_read_only():
     local = datetime(2026, 10, 21, 15, 29,
                      tzinfo=ZoneInfo("America/New_York"))
     at = local.astimezone(timezone.utc)
-    q = SimpleNamespace(timestamp=at, bid_price=49.98, ask_price=50.00,
+    q = SimpleNamespace(timestamp=at, bid_price=4.78, ask_price=4.80,
                         bid_size=5, ask_size=5)
     result = preview_live_paper_entry(symbol="DIS", quote=q, equity=500,
                                       available_cash=500, now=at,

@@ -154,7 +154,9 @@ class PaperExecutorJournal(PostgresPaperJournal):
             raise TradeBlocked("Invalid session identifier") from exc
         if key != plan.client_order_id:
             raise TradeBlocked("Unexpected client order ID")
-        if (plan.order_class != "oto" or plan.whole_shares < 1
+        if (plan.order_class != "oto"
+                or plan.time_in_force not in {"day", "gtc"}
+                or plan.whole_shares < 1
                 or type(plan.whole_shares) is not int):
             raise TradeBlocked("Only whole-share protected OTO supported")
         entry, stop = money(plan.estimated_entry), money(plan.protective_stop)
@@ -164,6 +166,8 @@ class PaperExecutorJournal(PostgresPaperJournal):
         if (entry <= 0 or stop <= 0 or stop >= entry
                 or budget <= 0 or cost <= 0
                 or expected_loss < 0 or expected_loss > budget
+                or (plan.time_in_force == "gtc"
+                    and cost > money("5.00"))
                 or cost + money('0.02') < entry * plan.whole_shares
                 or expected_loss + money('0.02') <
                    (entry - stop) * plan.whole_shares):

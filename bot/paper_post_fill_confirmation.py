@@ -46,7 +46,7 @@ def confirm_nested_filled_stops(trading, positions, approvals):
                 getattr(indexed, "id"), filter=GetOrderByIdRequest(nested=True))
             if (str(getattr(nested, "id", None)) != str(parent_id)
                     or getattr(nested, "client_order_id", None) != client_id
-                    or value(getattr(nested, "time_in_force", None)) != "day"
+                    or value(getattr(nested, "time_in_force", None)) != plan.time_in_force
                     or value(getattr(nested, "order_class", None)) != "oto"
                     or value(getattr(nested, "side", None)) != "buy"
                     or value(getattr(nested, "type", None)) != "limit"

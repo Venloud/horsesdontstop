@@ -81,7 +81,7 @@ def _plan_from_quoted_preview(preview):
     if (preview.order_submission_enabled is not False
             or preview.quote_feed != "IEX_ONLY_NOT_NBBO"
             or preview.order_class != "oto"
-            or preview.order_time_in_force != "day"):
+            or preview.order_time_in_force != "gtc"):
         raise TradeBlocked("Quote preview not eligible for protected PAPER order")
     try:
         day = datetime.fromisoformat(preview.observed_at_utc)
@@ -101,6 +101,7 @@ def _plan_from_quoted_preview(preview):
         estimated_cost=preview.max_limit_purchase_usd,
         risk_budget_usd=preview.risk_budget_usd,
         estimated_risk_usd=preview.stop_distance_risk_usd,
+        time_in_force=preview.order_time_in_force,
     )
     return plan
 
@@ -199,9 +200,9 @@ def _verify_paper_market_session(trading, clock, *, now):
             or not timedelta(hours=2) <= close_utc - open_utc <= timedelta(hours=7)
             or abs((clock_close_utc - close_utc).total_seconds()) > 60):
         raise TradeBlocked("Alpaca PAPER calendar and market clock disagree")
-    # Parent is DAY; do not risk a new fill at the end of the session.
-    # Independently bound regular sessions to 15:30 ET and early closing
-    # days to 30 minutes before the broker-reported calendar close.
+    # GTC parent may remain active after this process/session ends. Keep
+    # the conservative entry cutoff and require restart reconciliation
+    # before later dispatch; do not treat it as intraday-only.
     regular_cutoff = datetime.combine(
         local_today, datetime.min.time(), ZoneInfo("America/New_York")
     ).replace(hour=15, minute=30).astimezone(timezone.utc)
@@ -316,7 +317,9 @@ def submit_paper_once_supervised(
     from .paper_execution_journal import PaperExecutorJournal
     PaperExecutorJournal.validate_protected_intent(plan)
     order_request = build_live_protected_oto_request(recomputed)
-    if money(getattr(account, "buying_power", None)) < money(plan.estimated_cost):
+    from .live_quotes import PILOT_FEE_RESERVE_USD
+    if (money(getattr(account, "buying_power", None))
+            < money(plan.estimated_cost) + PILOT_FEE_RESERVE_USD):
         raise TradeBlocked("Insufficient verified PAPER buying power")
 
     # First read for prior broker orders, then reserve in Neon. Broker
@@ -350,7 +353,7 @@ def submit_paper_once_supervised(
                     or money(final_account.equity) != money(account.equity)
                     or money(final_account.cash) != money(account.cash)
                     or money(getattr(final_account, "buying_power", None))
-                        < money(plan.estimated_cost)):
+                    < money(plan.estimated_cost) + PILOT_FEE_RESERVE_USD):
                 raise TradeBlocked("PAPER account changed after reservation")
             _verify_paper_market_session(trading, final_clock, now=final_now)
             if not callable(assert_lock_alive):

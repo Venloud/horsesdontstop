@@ -19,6 +19,9 @@ MAX_QUOTE_AGE_SECONDS = 45
 MAX_SPREAD_BPS = Decimal("75")
 ENTRY_LIMIT_BUFFER = Decimal(".001")
 STOP_DISTANCE = Decimal(".03")
+PILOT_MAX_PURCHASE_USD = Decimal("5.00")
+PILOT_FEE_RESERVE_USD = Decimal("0.50")
+PILOT_MAX_EQUITY_FRACTION = Decimal("0.01")
 
 
 @dataclass(frozen=True)
@@ -39,9 +42,10 @@ class LivePaperEntryPreview:
     risk_budget_usd: float
     stop_distance_risk_usd: float
     client_order_id: str
+    fee_reserve_usd: float = 0.50
     quote_feed: str = "IEX_ONLY_NOT_NBBO"
     order_class: str = "oto"
-    order_time_in_force: str = "day"
+    order_time_in_force: str = "gtc"
     order_submission_enabled: bool = False
 
     def to_dict(self):
@@ -131,8 +135,10 @@ def preview_live_paper_entry(
         raise TradeBlocked("Invalid attached stop trigger")
     risk_per_share = buy_limit - stop
     budget = e * risk
+    purchase_cap = min(PILOT_MAX_PURCHASE_USD,
+                       e * PILOT_MAX_EQUITY_FRACTION)
     shares = min(int(budget // risk_per_share), int(cash // buy_limit),
-                 ask_size)
+                 int(purchase_cap // buy_limit), ask_size)
     if shares < 1:
         raise TradeBlocked("No affordable whole share at 1% risk and current spread")
     # Deterministic symbol/day ID, derived from New York clock, not server UTC.
@@ -158,9 +164,8 @@ def preview_live_paper_entry(
 def build_live_protected_oto_request(preview: LivePaperEntryPreview):
     """Return Alpaca SDK OTO LIMIT BUY request. DO NOT SEND.
 
-    DAY entry buys expire at close when unfilled, but this request DOES NOT
-    specify a separate child stop time-in-force. Never assume the child
-    is GTC, stays active overnight, or guarantees gap protection.
+    Uses the owner-approved native GTC OTO structure. This is not a
+    stop-fill guarantee; partial-fill gaps remain a known pilot risk.
     Real broker stop lifecycle evidence and independent supervision
     are mandatory before any PAPER order release.
     """
@@ -168,14 +173,14 @@ def build_live_protected_oto_request(preview: LivePaperEntryPreview):
     from alpaca.trading.requests import LimitOrderRequest, StopLossRequest
     if (preview.order_submission_enabled is not False
             or preview.order_class != "oto"
-            or preview.order_time_in_force != "day"
+            or preview.order_time_in_force != "gtc"
             or preview.shares < 1
             or preview.buy_limit_usd <= preview.stop_usd
             or preview.stop_distance_risk_usd > preview.risk_budget_usd + .00001):
         raise TradeBlocked("Unsafe or modified protected order preview")
     return LimitOrderRequest(
         symbol=preview.symbol, qty=preview.shares,
-        side=OrderSide.BUY, time_in_force=TimeInForce.DAY,
+        side=OrderSide.BUY, time_in_force=TimeInForce.GTC,
         limit_price=preview.buy_limit_usd,
         order_class=OrderClass.OTO,
         stop_loss=StopLossRequest(stop_price=preview.stop_usd),

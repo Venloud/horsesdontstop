@@ -74,7 +74,7 @@ def inspect_nested_oto(plan: PaperOrderPlan, parent, *, position_qty) -> BrokerO
             or field(parent, "order_class") != "oto"
             or field(parent, "side") != "buy"
             or field(parent, "type") != "limit"
-            or field(parent, "time_in_force") != "day"
+            or field(parent, "time_in_force") != plan.time_in_force
             or pid is None):
         blockers.append("broker_parent_identity_or_type_mismatch")
     try:
@@ -189,8 +189,7 @@ def inspect_nested_oto(plan: PaperOrderPlan, parent, *, position_qty) -> BrokerO
     if qty > 0 and len(active) != 1:
         blockers.append("unexpected_protective_order_count")
     if qty > 0 and len(active) == 1:
-        # Alpaca does not specify a separate child TIF in the DAY OTO
-        # entry request. Never *assume* the leg persists overnight.
+        # Require authenticated GTC on the actual nested stop child.
         if field(active[0], "time_in_force") != "gtc":
             blockers.append("overnight_protective_stop_gtc_not_verified")
     if parent_status == "filled" and fill_qty != expected_qty:

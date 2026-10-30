@@ -42,7 +42,8 @@ class PaperOrderPlan:
     risk_budget_usd: float
     estimated_risk_usd: float
     order_class: str = "oto"
-    instruction: str = "RISK RESEARCH ONLY; LIVE entry uses capped DAY limit OTO preview"
+    time_in_force: str = "day"
+    instruction: str = "RISK RESEARCH ONLY; bounded PAPER pilot uses GTC limit OTO"
 
     def to_dict(self):
         return asdict(self)
@@ -204,9 +205,9 @@ def make_protective_alpaca_order(plan: PaperOrderPlan):
 
     The only approved order builder for the future supervised PAPER
     executor is live_quotes.build_live_protected_oto_request, which
-    requires an up-to-date IEX quote and creates a capped DAY LIMIT OTO.
+    requires an up-to-date IEX quote and creates a capped GTC LIMIT OTO.
     """
     raise TradeBlocked(
         "Legacy MARKET OTO order builder retired; use guarded live "
-        "DAY LIMIT OTO preview only"
+        "GTC LIMIT OTO preview only"
     )
