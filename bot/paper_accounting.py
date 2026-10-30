@@ -230,7 +230,8 @@ class LedgerPosition:
 
 def reconcile_posttrade_ledger(*, account, events, orders, positions,
                                expected_account_hash, observed_at,
-                               activities_complete=False, equity_observations=None,
+                               activities_complete=False, journal_complete=False,
+                               pending_client_order_ids=(), equity_observations=None,
                                all_equity_samples_accounted_for=False,
                                exchange_calendar_verified=False):
     """Deterministic long-only FIFO accounting; never releases submissions.
@@ -244,7 +245,7 @@ def reconcile_posttrade_ledger(*, account, events, orders, positions,
     now = timestamp(observed_at)
     created = timestamp(account.created_at)
     identity = hashlib.sha256(str(account.id).encode()).hexdigest()
-    if (activities_complete is not True or identity != expected_account_hash
+    if (activities_complete is not True or journal_complete is not True or identity != expected_account_hash
             or getattr(account, "currency", None) != "USD" or created > now
             or not 0 <= (datetime.now(timezone.utc) - now).total_seconds() <= 120
             or not isinstance(events, list) or not 0 < len(events) <= 10000
@@ -267,6 +268,10 @@ def reconcile_posttrade_ledger(*, account, events, orders, positions,
             raise TradeBlocked("Trading ledger entry approval changed")
         by_id[order.order_id] = order
         used_clients.add(order.client_order_id)
+    if (not isinstance(pending_client_order_ids, (tuple, list))
+            or any(x not in {o.journal_client_order_id for o in orders}
+                   for x in pending_client_order_ids)):
+        raise TradeBlocked("Trading ledger unresolved journal reservation")
     for order in orders:
         if order.side == "sell":
             parent = by_id.get(order.parent_order_id)
@@ -333,6 +338,8 @@ def reconcile_posttrade_ledger(*, account, events, orders, positions,
         actual, requested = fills.get(order.order_id, Decimal("0")), money(order.quantity)
         if (order.status == "filled" and actual != requested
                 or order.status == "rejected" and actual != 0
+                or order.status in {"new", "accepted", "pending_new"} and actual != 0
+                or order.status in active and actual == requested
                 or order.status == "partially_filled" and not 0 < actual < requested):
             raise TradeBlocked("Trading ledger order executions contradict status")
         if order.side == "buy" and order.status in active:
@@ -383,5 +390,7 @@ def reconcile_posttrade_ledger(*, account, events, orders, positions,
         daily_loss_pct=str(risk.loss_from_open_pct) if risk else None,
         drawdown_pct=str(risk.drawdown_from_peak_pct) if risk else None,
         verified_sampled_peak=str(risk.verified_peak_performance_equity_usd) if risk else None,
+        daily_loss_limit_breached=risk.daily_loss_limit_breached if risk else None,
+        drawdown_limit_breached=risk.peak_drawdown_limit_breached if risk else None,
         risk_history_complete=risk is not None, can_submit_orders=False,
         evidence_sha256=hashlib.sha256(digest.encode()).hexdigest())

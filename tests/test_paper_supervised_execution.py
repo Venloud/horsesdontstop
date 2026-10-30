@@ -734,3 +734,58 @@ def test_backend_loss_during_final_broker_reads_prevents_post(monkeypatch):
     with pytest.raises(TradeBlocked,match="before POST"):
         execute(p,broker=broker,journal=journal)
     assert len(reads)>1 and broker.sent==[]
+
+
+@pytest.mark.parametrize('window',['before_post','after_post','after_ack'])
+def test_fatal_process_crash_and_delayed_visibility_never_reuse_durable_id(monkeypatch,tmp_path,window):
+    """Synthetic process death, not a real order or database transaction."""
+    class ProcessDied(BaseException):pass
+    state=tmp_path/'durable-journal-state'
+    class Durable(FakeJournal):
+        def reserve_if_enabled(self,plan):
+            if state.exists():return False
+            state.write_text('reserved');return True
+        def mark_uncertain(self,cid):
+            assert state.read_text()=='reserved';state.write_text('unknown')
+        @contextmanager
+        def authorize_reserved_submission(self,plan):
+            self.mark_uncertain(plan.client_order_id)
+            def guard():
+                if window=='before_post':raise ProcessDied()
+            yield guard
+            if window=='after_ack':raise ProcessDied()
+    monkeypatch.setattr(entry,'PAPER_ORDER_SUBMISSIONS_RELEASED',True)
+    p=preview();broker=FakeBroker(p,failure=ProcessDied() if window=='after_post' else None)
+    with pytest.raises(ProcessDied):execute(p,broker=broker,journal=Durable())
+    assert state.read_text()=='unknown'
+    assert len(broker.sent)==(0 if window=='before_post' else 1)
+    # Fresh process/journal instance, broker GET still404: this is not a permit.
+    with pytest.raises(TradeBlocked,match='NEVER retry'):
+        execute(p,broker=broker,journal=Durable())
+    assert len(broker.sent)==(0 if window=='before_post' else 1)
+
+
+def test_last_database_ack_cannot_make_a_remote_broker_post_atomic(monkeypatch):
+    """Document the residual race with fakes; the real release stays OFF."""
+    assert entry.PAPER_ORDER_SUBMISSIONS_RELEASED is False
+    p=preview();broker=FakeBroker(p);state={'db_alive':True,'kill':False}
+    journal=FakeJournal()
+    @contextmanager
+    def authorization(plan):
+        journal.mark_uncertain(plan.client_order_id)
+        def guard():
+            assert state['db_alive'] and state['kill'] is False
+            # Backend disappears immediately AFTER its successful last reply;
+            # another control writer can then commit kill ON before HTTP POST.
+            state.update(db_alive=False,kill=True)
+        yield guard
+    journal.authorize_reserved_submission=authorization
+    submit=broker.submit_order
+    def remote_post(**kw):
+        assert not state['db_alive'] and state['kill']
+        return submit(**kw)
+    broker.submit_order=remote_post
+    monkeypatch.setattr(entry,'PAPER_ORDER_SUBMISSIONS_RELEASED',True)
+    result=execute(p,broker=broker,journal=journal)
+    assert len(broker.sent)==1 and result.result=='broker_acknowledged_unreconciled_stop_not_proven'
+    assert ('unknown',p.client_order_id) in journal.calls
