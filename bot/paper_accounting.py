@@ -128,7 +128,10 @@ def reconcile_cash_lifetime(*, account, activities, history, positions, orders,
     equity, cash = money(account.equity), money(account.cash)
     if equity != cash or cash != total or equity <= 0:
         raise TradeBlocked("Current cash equity does not reconcile")
-    evidence = json.dumps({"activities": activities, "history": history}, sort_keys=True)
+    evidence = json.dumps({"activities": activities, "history": history,
+        "account_id_sha256": identity, "created_at": created.isoformat(), "currency": "USD",
+        "equity": str(equity), "cash": str(cash), "observed_at": now.isoformat(),
+        "activities_complete": activities_complete, "positions": positions, "orders": orders}, sort_keys=True)
     running, peak = Decimal("0"), Decimal("0")
     for _, _, amount in flows:
         running += amount
@@ -232,6 +235,7 @@ def reconcile_posttrade_ledger(*, account, events, orders, positions,
                                expected_account_hash, observed_at,
                                activities_complete=False, journal_complete=False,
                                pending_client_order_ids=(), equity_observations=None,
+                               historical_positions=None,
                                all_equity_samples_accounted_for=False,
                                exchange_calendar_verified=False):
     """Deterministic long-only FIFO accounting; never releases submissions.
@@ -241,6 +245,9 @@ def reconcile_posttrade_ledger(*, account, events, orders, positions,
     Intraday peaks/daily loss remain UNKNOWN unless a separately verified
     complete sampled-equity history and exchange calendar are supplied.
     Every current share and dollar must conserve across executions and fees.
+    The strategy requires flat-before-entry: overlapping entry parents for a
+    symbol are unsupported. Fees are expensed when charged, not capitalized
+    into tax lots; this is trading-risk accounting, not a tax-basis attestation.
     """
     now = timestamp(observed_at)
     created = timestamp(account.created_at)
@@ -312,6 +319,8 @@ def reconcile_posttrade_ledger(*, account, events, orders, positions,
             if order.side == "buy":
                 if price > money(order.limit_price):
                     raise TradeBlocked("Trading ledger entry exceeds approved limit")
+                if any(q > 0 and parent != order.order_id for q, _, parent in symbol_lots):
+                    raise TradeBlocked("Trading ledger overlapping entry parents unsupported")
                 symbol_lots.append([qty, price, order.order_id])
                 delta = -qty * price
             else:
@@ -346,15 +355,20 @@ def reconcile_posttrade_ledger(*, account, events, orders, positions,
             reserved += (requested - actual) * money(order.limit_price)
     held = {symbol: sum((q for q, _, _ in ls), Decimal("0"))
             for symbol, ls in lots.items() if any(q for q, _, _ in ls)}
-    observed, market_value = {}, Decimal("0")
-    for position in positions:
-        if (not isinstance(position, LedgerPosition) or position.broker_verified is not True
-                or position.symbol in observed or money(position.quantity) <= 0
-                or money(position.market_price) <= 0
-                or not 0 <= (now - timestamp(position.at)).total_seconds() <= 120):
-            raise TradeBlocked("Trading ledger current position unverified")
-        observed[position.symbol] = money(position.quantity)
-        market_value += money(position.quantity) * money(position.market_price)
+    def value_positions(records, at):
+        if not isinstance(records, list):
+            raise TradeBlocked("Trading ledger valuation snapshot missing")
+        observed, market_value = {}, Decimal("0")
+        for position in records:
+            if (not isinstance(position, LedgerPosition) or position.broker_verified is not True
+                    or position.symbol in observed or money(position.quantity) <= 0
+                    or money(position.market_price) <= 0
+                    or not 0 <= (at - timestamp(position.at)).total_seconds() <= 120):
+                raise TradeBlocked("Trading ledger position valuation unverified")
+            observed[position.symbol] = money(position.quantity)
+            market_value += money(position.quantity) * money(position.market_price)
+        return observed, market_value
+    observed, market_value = value_positions(positions, now)
     if observed != held or cash != money(account.cash) or cash + market_value != money(account.equity):
         raise TradeBlocked("Trading ledger share/cash/equity conservation failed")
     open_basis = sum((q * p for ls in lots.values() for q, p, _ in ls), Decimal("0"))
@@ -362,6 +376,9 @@ def reconcile_posttrade_ledger(*, account, events, orders, positions,
     if funding + gross_realized - fees + unrealized != money(account.equity):
         raise TradeBlocked("Trading ledger profit conservation failed")
     risk = None
+    historical_positions = {} if historical_positions is None else historical_positions
+    if not isinstance(historical_positions, dict):
+        raise TradeBlocked("Trading ledger historical valuations malformed")
     if equity_observations is not None:
         from .paper_equity_risk import AuditedExternalCashFlow, contribution_adjusted_risk
         if not equity_observations:
@@ -370,9 +387,20 @@ def reconcile_posttrade_ledger(*, account, events, orders, positions,
         if any(e.kind in {"fill", "fee"} and t <= first for t, _, e in cash_events):
             raise TradeBlocked("Trading ledger prior trading highwater missing")
         for sample in equity_observations:
-            expected_cash = sum((d for t, d, _ in cash_events if t <= timestamp(sample.observed_at)), Decimal("0"))
+            sample_at = timestamp(sample.observed_at)
+            expected_cash = sum((d for t, d, _ in cash_events if t <= sample_at), Decimal("0"))
             if money(sample.cash_usd) != expected_cash:
                 raise TradeBlocked("Trading ledger historical cash does not reconcile")
+            sample_held = {}
+            for t, _, e in cash_events:
+                if t <= sample_at and e.kind == "fill":
+                    order = by_id[e.order_id]
+                    sample_held[order.symbol] = sample_held.get(order.symbol, Decimal("0")) + money(e.quantity) * (1 if order.side == "buy" else -1)
+            sample_held = {k: v for k, v in sample_held.items() if v}
+            marks = positions if sample_at == now else historical_positions.get(sample_at.isoformat(), [])
+            marked_quantities, sample_value = value_positions(marks, sample_at)
+            if marked_quantities != sample_held or money(sample.equity_usd) != expected_cash + sample_value:
+                raise TradeBlocked("Trading ledger historical equity/positions unexplained")
         latest = equity_observations[-1]
         if money(latest.equity_usd) != money(account.equity) or money(latest.cash_usd) != cash:
             raise TradeBlocked("Trading ledger latest equity sample contradicts broker")
@@ -381,7 +409,17 @@ def reconcile_posttrade_ledger(*, account, events, orders, positions,
         risk = contribution_adjusted_risk(equity_observations, flows, as_of_utc=now,
             all_equity_samples_accounted_for=all_equity_samples_accounted_for,
             all_external_flows_reconciled=True, exchange_calendar_verified=exchange_calendar_verified)
-    digest = json.dumps({'events': [asdict(e) for e in events], 'orders': [asdict(o) for o in orders]}, sort_keys=True, default=str)
+    digest = json.dumps({'method': 'long-only FIFO; no overlapping entry parents; fees expensed',
+        'account': {'id_sha256': identity, 'created_at': created.isoformat(), 'currency': 'USD',
+                    'cash': str(money(account.cash)), 'equity': str(money(account.equity))},
+        'observed_at': now.isoformat(), 'events': [asdict(e) for e in events],
+        'orders': [asdict(o) for o in orders], 'positions': [asdict(p) for p in positions],
+        'pending_client_order_ids': list(pending_client_order_ids),
+        'equity_observations': [asdict(x) for x in equity_observations] if equity_observations is not None else None,
+        'historical_positions': {k: [asdict(p) for p in v] for k, v in historical_positions.items()},
+        'activities_complete': activities_complete, 'journal_complete': journal_complete,
+        'all_equity_samples_accounted_for': all_equity_samples_accounted_for,
+        'exchange_calendar_verified': exchange_calendar_verified}, sort_keys=True, default=str)
     return dict(account_id_sha256=identity, observed_at_utc=now.isoformat(),
         cash=str(cash), equity=str(money(account.equity)), net_external_funding=str(funding),
         realized_gross_pnl=str(gross_realized), fees=str(fees), realized_net_pnl=str(gross_realized-fees),
@@ -393,4 +431,5 @@ def reconcile_posttrade_ledger(*, account, events, orders, positions,
         daily_loss_limit_breached=risk.daily_loss_limit_breached if risk else None,
         drawdown_limit_breached=risk.peak_drawdown_limit_breached if risk else None,
         risk_history_complete=risk is not None, can_submit_orders=False,
+        risk_history_scope="verified sampled valuations; no inferred intratick peaks" if risk else "UNKNOWN",
         evidence_sha256=hashlib.sha256(digest.encode()).hexdigest())
