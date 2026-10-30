@@ -488,6 +488,24 @@ audits, approvals and receipts. Post-test privilege checks confirm executor
 bounded reservation/dispatch EXECUTE=true, legacy reserve/consume EXECUTE=false,
 and direct approval/receipt INSERT=false.
 
+Same-day production/runtime refresh at 2026-10-30 23:11 UTC: production branch
+`br-restless-sunset-b5s18rj3` remains kill ON/submissions OFF, zero intents and
+audit events, and has no pilot approval/receipt tables or `time_in_force` column.
+The current main code authenticated against actual restricted production
+executor/reconciler logins and denied nine forgery/escalation attempts with
+SQLSTATE `42501`; the equity writer's zero-row insert was rolled back. No schema
+mutation occurred. Today's only opening-equity sample is at
+`2026-10-30T13:30:13.547Z` (09:30:13 ET), equity/cash $500/$500.
+
+Fresh Windows capture at 23:11 UTC found six processes forming one logical tree
+each for collector, supervisor, and reconciler. Supervisor receipt was
+`closed_flat_idle` with an external acknowledgement; reconciler was
+`read_only_poll_ok`. The running stable checkout is still
+`2d7ccfedc131239e298a969be41a99385dc7d94a`, not current main; no runtime update
+or restart was done. Four existing scheduled tasks still point at the stable
+runtime path. This is valid closed-market monitoring evidence, not market-open
+pilot or order readiness.
+
 Focused local tests: `232 passed, 1 warning`. Exact-head GitHub CI for
 `b05d8d36eefed8c4e646b4a96c55c3d098a5438a` passed the full Python suite, Node
 worker tests and all jobs: [run 41038827357](https://github.com/Venloud/horsesdontstop/actions/runs/41038827357).
