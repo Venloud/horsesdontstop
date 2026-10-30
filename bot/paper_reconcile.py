@@ -46,24 +46,35 @@ def order_legs(orders: Iterable, max_depth: int = 4):
     flat = []
     visited = {}
 
-    def visit(order, depth):
+    def visit(order, depth, ancestors=frozenset()):
         if depth > max_depth:
             raise TradeBlocked("Order legs exceed safe nesting limit")
         key = value(getattr(order, "id", None))
         if not key:
             raise TradeBlocked("Broker order without id")
+        if key in ancestors:
+            raise TradeBlocked("Cyclic broker order tree")
+        legs = getattr(order, "legs", None) or []
+        if not isinstance(legs, (list, tuple)):
+            raise TradeBlocked("Malformed broker child list")
+        child_ids = tuple(sorted(str(value(getattr(x, "id", None))) for x in legs))
+        if len(set(child_ids)) != len(child_ids):
+            raise TradeBlocked("Duplicate nested broker child")
         fingerprint = tuple(value(getattr(order, name, None)) for name in (
             'symbol', 'side', 'type', 'qty', 'filled_qty', 'status',
             'time_in_force', 'order_class', 'client_order_id',
-            'parent_order_id', 'stop_price'))
+            'parent_order_id', 'stop_price', 'limit_price', 'expires_at',
+            'filled_avg_price', 'filled_at')) + (child_ids,)
         if key in visited:
             if visited[key] != fingerprint:
                 raise TradeBlocked('Conflicting broker order ID records')
-            return
-        visited[key] = fingerprint
-        flat.append(order)
-        for leg in getattr(order, "legs", None) or []:
-            visit(leg, depth + 1)
+        else:
+            visited[key] = fingerprint
+            flat.append(order)
+        # Duplicate top-level snapshots must still verify every descendant;
+        # otherwise a changed child/competing exit can hide behind deduplication.
+        for leg in legs:
+            visit(leg, depth + 1, ancestors | {key})
 
     for order in orders:
         visit(order, 0)
@@ -78,7 +89,6 @@ def nested_parent_ids(orders: Iterable, max_depth: int = 4):
     A child attached to two parents is contradictory and fails closed.
     """
     parents = {}
-    visited = set()
     def visit(order, parent, depth):
         if depth > max_depth:
             raise TradeBlocked("Order legs exceed safe nesting limit")
@@ -91,10 +101,6 @@ def nested_parent_ids(orders: Iterable, max_depth: int = 4):
                     or oid in parents and parents[oid] != parent):
                 raise TradeBlocked("Conflicting nested broker parent")
             parents[oid] = parent
-        key = (oid, parent)
-        if key in visited:
-            return
-        visited.add(key)
         for leg in getattr(order, "legs", None) or []:
             visit(leg, oid, depth + 1)
     for order in orders:

@@ -52,6 +52,20 @@ def test_nested_relationship_cannot_be_forged_or_reused(wrong):
     assert report.uncovered_symbols==('F',) and not report.consistent
 
 
+@pytest.mark.parametrize('change',['child_set','child_price','parent_price'])
+def test_duplicate_parent_snapshots_cannot_hide_changed_descendants(change):
+    import copy
+    child=order('child',side='sell',kind='stop',qty=2,tif='gtc',stop_price=24,parent='entry')
+    entry=order('entry',kind='limit',qty=2,filled=2,status='filled',cid='approved',klass='oto',legs=[child])
+    entry.limit_price='25';other=copy.deepcopy(entry)
+    if change=='child_set':other.legs.append(order('competing',side='sell',kind='limit',qty=2))
+    if change=='child_price':other.legs[0].stop_price='23'
+    if change=='parent_price':other.limit_price='26'
+    report=reconcile_observation([position(qty=2)],[entry,other],[],order_fetch_complete=True,
+        approved_stops=[('approved','filled','F',2,24,'entry')])
+    assert 'malformed_broker_order_tree' in report.blockers and report.uncovered_symbols==('F',)
+
+
 @pytest.mark.parametrize("held,stop_qty,stop_filled,status,protected", [
     (1, 5, 0, "new", False),
     (1, 1, 0, "new", False),
