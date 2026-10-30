@@ -228,3 +228,97 @@ as an exact status. Closed-flat offhours intentionally skips Neon pulses, so the
 stored failed/stale lease cannot certify continuous runtime health. Production
 cutover remains blocked on external deployment and verified runtime rollout,
 including compatible opening-equity permissions and restricted service identity.
+
+
+## Final production integration, October 29, 2026, evening ET
+
+**WHY:** Close the production executor's direct status/audit forgery path and
+replace the old collector/runtime dependency with the independently reviewed,
+CI-verified implementation while preserving opening-equity collection.
+
+**HOW:** Venloud explicitly authorized coordinated maintenance and eligible
+production cutover. Both exact PAPER process trees stopped gracefully, with
+source archive, task XML, original lease/data/schema/ACL evidence and Git stash
+recovery preserved. Stable runtime base is
+`02cde8d8104a903f9ac137d3984587884d1366a3`. The five reviewed SQL scripts were
+applied in order in ONE transaction on production
+`br-restless-sunset-b5s18rj3`, database `neondb`, using the exact approved bundle
+SHA256 `7f40e434790d0c907c7d4fabf4cec54e51a53d257e4a4ffd696424e4755e3260`.
+The Neon API requires separate prepared statements: independent review verified
+all 72 interior statements retain their bodies/order under one transaction.
+New reconciler credentials were randomly generated server-side, encrypted in
+transit, authenticated locally, stored in current-user DPAPI with owner-only
+file ACL, and never printed. The ephemeral transport key was removed after
+verified DPAPI storage; sealed recovery evidence remains private.
+
+**DID IT WORK?** Actual executor/reconciler logins passed permission attestations.
+Nine actual unauthorized operations failed with SQLSTATE42501: executor fake
+status, broker ID, audit, intent, owner role and reconciler transition; reconciler
+direct status/audit and executor role. Opening-equity INSERT privilege passed
+with zero inserted rows and rollback. Production kill switch remains ON,
+submissions OFF, zero intents/audits. Unsafe legacy executor status UPDATE and
+audit INSERT are now denied. This is actual production acceptance, distinct
+from the prior isolated concurrency/rollback acceptance.
+
+Collector and supervisor restarted from the stable checkout after acceptance.
+Exactly one logical process tree per service is verified; venv launcher/child
+are one service. The new supervisor first takeover pulse was intentionally
+unhealthy; the second real poll succeeded. Subsequent closed/flat ticks have
+fresh authenticated broker reads and acknowledged operational Cloudflare POSTs;
+Neon intentionally idles offhours and is not called a fresh trading lease.
+October29 opening equity was captured at09:30:15.491924ET, equity/cash500,
+before evening maintenance. Tomorrow's opening capture is not yet verified.
+Actual ntfy server acknowledgement passed; phone display is not attested.
+
+Independent reconciler overlay source is
+`ccadebf84adeb87be9b4f771f34f8d6183b94ce8`. The new existing-host task
+`HorsesDontStop-PAPER-Reconciler` uses a separate restricted DB login, pinned
+account hash checked each tick, and broker GET-only transport. It shares the
+existing PAPER API principal; no separate broker key is claimed. Observe-only
+receipts are fresh, graceful restart and IgnoreNew duplicate prevention passed,
+and a separate wrong-account-pin probe failed closed and delivered an actual
+critical notification. Status writing remains hard-disabled; empty production
+queue is actual authenticated discovery, not proof of a genuine order lifecycle.
+
+Local full tests:1158Python passed,4existing skips,1existing dependency warning;
+12Node passed. Windows pytest default-temp ACL failure was isolated and resolved
+with a unique workspace basetemp under approved execution; no test/security
+assertion was disabled. Independent reviewer passed36 focused tests and approved
+maintenance, SQL transaction transport and observe-only deployment source.
+Exact source CI: [40978697071](https://github.com/Venloud/horsesdontstop/actions/runs/40978697071)
+and [40978692159](https://github.com/Venloud/horsesdontstop/actions/runs/40978692159), bothSUCCESS.
+
+Authenticated complete broker cash-only lifetime history reconciles500 initial
+funding, no FILL activities, no positions/open orders,500equity/cash/nominal peak,
+zero realized/unrealized trading P&L and trading drawdown. These zeros are derived
+from that restricted proof, not assumed missing history. `bot/paper_accounting.py`
+fails closed on unexplained journals, non-cash activity, incomplete pagination,
+exposure, stale/contradictory evidence. A fresh-baseline preparation preserves
+UNKNOWN prior history and cannot self-activate. General posttrade accounting and
+intraday highwater remain unsupported; this module does not release execution.
+
+Cloudflare Wrangler4.156.0 now runs but `whoami` explicitly reports NOT AUTHENTICATED.
+No new Worker/account/paid service was created. Existing operational POST works;
+non-mutating diagnostic GET still404 and deployed cron/D1/alert configuration
+cannot be independently inspected until existing account access is restored.
+Historical original HTTP4xx remains unrecoverable;409 is not claimed confirmed.
+
+**Rollback:** Preserve narrowed production ACLs and kill/submission controls.
+If a component fails, stop only that component and repair forward using the
+preserved source/task backups. Never restore unsafe executor grants or revert
+this runtime to its legacy incompatible permission checks. Do not reset data.
+
+**Release state: BLOCKED / NO TRADE.** Remaining gates are authenticated existing
+Cloudflare diagnostic deployment/control-plane verification; the acknowledged
+DB-to-broker final-ack/send race (execution remains hard-disabled); genuinely
+observed PAPER protective-stop/partial-fill/exit/overnight/restart lifecycle;
+posttrade risk/highwater accounting; separately qualified status-writing
+reconciler release; fresh eligible strategy/risk evidence and exact owner-order
+approval. No order was submitted. PR41 remains draft/open; PR38 retained. No
+additional branches were created/deleted or PRs merged in this work.
+
+Private Vandam evidence is in existing `docs/evidence/hds-final-*`: maintenance/rollback,
+production backup and data refresh, migration receipt, security catalog,
+restricted acceptance, reconciler deployment/restart/alert, authentic risk and
+fresh runtime acceptance. Earlier Phase7 statements that production was not
+migrated describe historical state; this section supersedes current status.
