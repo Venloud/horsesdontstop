@@ -10,9 +10,11 @@ logic. Never change the release constant to True as a convenience.
 """
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from time import monotonic
 
 from .live_quotes import LivePaperEntryPreview, build_live_protected_oto_request
 from .live_quotes import preview_live_paper_entry
+from .paper_broker_transport import assert_single_attempt_transport
 from .paper_safety import (
     PAPER_ENDPOINT, PaperOrderPlan, PaperSafetyState, TradeBlocked,
     execution_blockers, money,
@@ -210,9 +212,32 @@ def _verify_paper_market_session(trading, clock, *, now):
     return True
 
 
+def _verify_momentum_signal(trading, market_data, symbol, now):
+    """Refetch completed bars; rankings or caller booleans are not signals."""
+    if market_data is None:
+        raise TradeBlocked("Independent completed-bar strategy evidence missing")
+    from zoneinfo import ZoneInfo
+    from alpaca.trading.requests import GetCalendarRequest
+    from .paper_readiness_cli import research_candidates
+    today = now.astimezone(ZoneInfo("America/New_York")).date()
+    try:
+        sessions = trading.get_calendar(GetCalendarRequest(
+            start=today - timedelta(days=14), end=today - timedelta(days=1)))
+        days = [s.date for s in sessions]
+        if (not days or len(set(days)) != len(days)
+                or any(not today - timedelta(days=14) <= d < today for d in days)):
+            raise ValueError
+        candidates = research_candidates(market_data, [symbol], now=now,
+                                         required_session=max(days))
+        if len(candidates) != 1 or candidates[0]["symbol"] != symbol:
+            raise ValueError
+    except Exception:
+        raise TradeBlocked("No verified fresh completed-session momentum signal") from None
+
+
 def submit_paper_once_supervised(
     *, trading, journal, market_quote, preview, safety_state,
-    approval, now: datetime,
+    approval, now: datetime, market_data=None,
 ) -> PaperSubmitResult:
     """ONE broker submission at most, with exact matching reviewed terms.
 
@@ -224,6 +249,7 @@ def submit_paper_once_supervised(
         raise TradeBlocked("PAPER broker submissions NOT RELEASED")
     if not isinstance(now, datetime) or now.tzinfo is None:
         raise TradeBlocked("Missing trustworthy timezone-aware clock")
+    started = monotonic()
     if not isinstance(safety_state, PaperSafetyState):
         raise TradeBlocked("Required independent persistent supervisor missing")
     blockers = execution_blockers(safety_state)
@@ -236,6 +262,7 @@ def submit_paper_once_supervised(
     # default to refusal instead of guessing.
     if str(getattr(trading, "_base_url", "")).rstrip("/") != PAPER_ENDPOINT:
         raise TradeBlocked("Actual broker client endpoint is not Alpaca PAPER")
+    assert_single_attempt_transport(trading)
     if not isinstance(preview, LivePaperEntryPreview):
         raise TradeBlocked("Invalid live IEX preview")
 
@@ -257,9 +284,12 @@ def submit_paper_once_supervised(
     # missing values. In particular, None does not prove trading is allowed.
     if (getattr(clock, "is_open", None) is not True
             or getattr(account, "trading_blocked", None) is not False
+            or not isinstance(positions, (list, tuple))
+            or not isinstance(orders, (list, tuple))
             or positions or orders):
         raise TradeBlocked("Paper market closed, account blocked or exposure exists")
     _verify_paper_market_session(trading, clock, now=now)
+    _verify_momentum_signal(trading, market_data, preview.symbol, now)
     if (abs(money(account.equity) - money(safety_state.equity)) > money(".01")
             or abs(money(account.cash) - money(safety_state.available_cash))
                > money(".01")):
@@ -286,6 +316,8 @@ def submit_paper_once_supervised(
     from .paper_execution_journal import PaperExecutorJournal
     PaperExecutorJournal.validate_protected_intent(plan)
     order_request = build_live_protected_oto_request(recomputed)
+    if money(getattr(account, "buying_power", None)) < money(plan.estimated_cost):
+        raise TradeBlocked("Insufficient verified PAPER buying power")
 
     # First read for prior broker orders, then reserve in Neon. Broker
     # lookup/race failures cannot cause a duplicate post: stable client
@@ -294,13 +326,57 @@ def submit_paper_once_supervised(
     if journal.reserve_if_enabled(plan) is not True:
         raise TradeBlocked("Durable order already reserved: NEVER retry")
 
+    attempted = False
     try:
-        result = trading.submit_order(order_data=order_request)
+        with journal.authorize_reserved_submission(plan) as assert_lock_alive:
+            # Reservation is consumed durably before entering this context.
+            # Recheck time-sensitive evidence after any DB lock wait.
+            final_now = now + timedelta(seconds=monotonic() - started)
+            _validate_approval(approval, recomputed, final_now)
+            preview_live_paper_entry(
+                symbol=preview.symbol, quote=market_quote, equity=account.equity,
+                available_cash=account.cash, now=final_now, market_open=True)
+            _verify_paper_market_session(trading, clock, now=final_now)
+            # Refresh account/exposure again after reservation and lock waits.
+            final_account = trading.get_account()
+            final_clock = trading.get_clock()
+            final_positions = trading.get_all_positions()
+            final_orders = trading.get_orders(filter=GetOrdersRequest(
+                status=QueryOrderStatus.OPEN, nested=True, limit=500))
+            if (getattr(final_clock, "is_open", None) is not True
+                    or getattr(final_account, "trading_blocked", None) is not False
+                    or not isinstance(final_positions, (list, tuple)) or final_positions
+                    or not isinstance(final_orders, (list, tuple)) or final_orders
+                    or money(final_account.equity) != money(account.equity)
+                    or money(final_account.cash) != money(account.cash)
+                    or money(getattr(final_account, "buying_power", None))
+                        < money(plan.estimated_cost)):
+                raise TradeBlocked("PAPER account changed after reservation")
+            _verify_paper_market_session(trading, final_clock, now=final_now)
+            if not callable(assert_lock_alive):
+                raise TradeBlocked("PAPER control lock liveness check unavailable")
+            assert_lock_alive()
+            # Network reads can themselves stall. Approval and quote freshness
+            # must still hold immediately before the POST boundary.
+            send_now = now + timedelta(seconds=monotonic() - started)
+            _validate_approval(approval, recomputed, send_now)
+            preview_live_paper_entry(
+                symbol=preview.symbol, quote=market_quote, equity=final_account.equity,
+                available_cash=final_account.cash, now=send_now, market_open=True)
+            if send_now - final_now > timedelta(seconds=3):
+                raise TradeBlocked("PAPER final broker verification exceeded freshness budget")
+            if send_now >= final_clock.next_close - timedelta(minutes=30):
+                raise TradeBlocked("PAPER entry deadline passed during verification")
+            # A remote DB and broker cannot share an atomic transaction. A
+            # backend can still die after this acknowledgement; submission
+            # release stays disabled until that residual risk is reviewed.
+            attempted = True
+            result = trading.submit_order(order_data=order_request)
     except Exception:
-        try:
-            journal.mark_uncertain(plan.client_order_id)
-        except Exception:
-            pass  # Durable reservation remains; no broker resend.
+        if not attempted:
+            raise TradeBlocked(
+                "Final PAPER reauthorization failed before POST; NEVER retry reserved ID"
+            ) from None
         outcome = inspect_uncertain_submit_by_client_id(trading, plan)
         raise TradeBlocked(
             "Broker submit outcome UNKNOWN after client-ID lookup: " + outcome
@@ -312,31 +388,21 @@ def submit_paper_once_supervised(
             or getattr(result, "client_order_id", None) != plan.client_order_id
             or str(getattr(getattr(result, "side", None), "value",
                            getattr(result, "side", ""))).lower() != "buy"):
-        try:
-            journal.mark_uncertain(plan.client_order_id)
-        except Exception:
-            pass
         outcome = inspect_uncertain_submit_by_client_id(trading, plan)
         raise TradeBlocked(
             "Broker acknowledgement inconsistent; outcome UNKNOWN after "
             "client-ID lookup: " + outcome
         )
-    try:
-        journal.record_observed_state(
-            plan.client_order_id, "submitted", str(broker_id))
-    except Exception:
-        # Broker MAY have accepted order even when Neon status update
-        # fails. Make a best-effort read-only lookup, never re-submit.
-        outcome = inspect_uncertain_submit_by_client_id(trading, plan)
-        raise TradeBlocked(
-            "Broker sent but durable journal update failed; "
-            "client-ID lookup: " + outcome + "; do not resubmit"
-        ) from None
-    # Success only confirms acceptance of submission, NOT a fill or
-    # active stop. Separate round-the-clock stop verifier still needed.
+    # Even a genuine ACK cannot be promoted to "submitted" by the
+    # executor. Only the independent PAPER GET/stop reconciler has that
+    # DB function grant. Mark the durable reservation unresolved so
+    # crashes or delayed broker visibility can NEVER trigger a second POST.
+    # Already committed UNKNOWN before the attempt. No ACK can promote it.
+    # Success means the broker ACK was observed, not that the durable
+    # journal is independently verified or a GTC stop exists.
     return PaperSubmitResult(
         client_order_id=plan.client_order_id,
         broker_order_id=str(broker_id),
-        result="submitted_unreconciled_stop_not_proven",
+        result="broker_acknowledged_unreconciled_stop_not_proven",
         submitted_to_paper_broker=True,
     )

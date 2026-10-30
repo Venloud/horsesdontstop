@@ -6,6 +6,7 @@ even if an OTO order was initially accepted.
 """
 from dataclasses import asdict, dataclass
 from decimal import Decimal
+from datetime import datetime, timezone
 from typing import Optional
 
 from .paper_safety import PAPER_ENDPOINT, PaperOrderPlan, TradeBlocked, money
@@ -111,6 +112,10 @@ def inspect_nested_oto(plan: PaperOrderPlan, parent, *, position_qty) -> BrokerO
     if not isinstance(legs, (list, tuple)):
         legs = []
         blockers.append("invalid_broker_legs_response")
+    child_ids = [str(getattr(leg, "id", "") or "") for leg in legs]
+    if (any(not key or key == pid for key in child_ids)
+            or len(set(child_ids)) != len(child_ids)):
+        blockers.append("invalid_or_duplicate_broker_child_identity")
     # A valid STOP is not protective when the same parent also has
     # another active SELL exit. Both children could attempt to liquidate
     # the shares, so require exactly one active sell exit regardless
@@ -118,7 +123,7 @@ def inspect_nested_oto(plan: PaperOrderPlan, parent, *, position_qty) -> BrokerO
     active_sell_exits = [
         leg for leg in legs
         if (field(leg, "side") == "sell"
-            and field(leg, "status") in PROTECTIVE_ACTIVE)
+            and field(leg, "status") not in {"canceled", "rejected", "expired", "filled"})
     ]
     if qty > 0 and len(active_sell_exits) != 1:
         blockers.append("unexpected_active_sell_exit_count")
@@ -138,6 +143,16 @@ def inspect_nested_oto(plan: PaperOrderPlan, parent, *, position_qty) -> BrokerO
             # actual nesting is the primary linkage evidence.
             if not getattr(leg, "id", None):
                 continue
+            expiry = getattr(leg, "expires_at", None)
+            if expiry is not None:
+                if isinstance(expiry, str):
+                    try:
+                        expiry = datetime.fromisoformat(expiry.replace("Z", "+00:00"))
+                    except ValueError:
+                        continue
+                if (not isinstance(expiry, datetime) or expiry.tzinfo is None
+                        or expiry <= datetime.now(timezone.utc)):
+                    continue
             parent_ref = getattr(leg, "parent_order_id", None)
             if parent_ref is not None and str(parent_ref) != pid:
                 continue
@@ -145,12 +160,26 @@ def inspect_nested_oto(plan: PaperOrderPlan, parent, *, position_qty) -> BrokerO
             leg_filled = quantity(getattr(leg, "filled_qty", None))
             if leg_filled > leg_qty or leg_qty > expected_qty:
                 continue
-            if leg_qty - leg_filled >= qty and leg_qty > 0:
+            # A smaller position is explained only by this independently
+            # fetched, linked stop's consistent executions. An oversized
+            # unchanged stop is not evidence of a sale elsewhere.
+            status = field(leg, "status")
+            consistent_fill = (
+                (status in PROTECTIVE_ACTIVE - {"partially_filled"}
+                 and leg_filled == 0)
+                or (status == "partially_filled"
+                    and 0 < leg_filled < leg_qty)
+                or (status == "filled" and leg_filled == leg_qty)
+            )
+            if (leg_qty == fill_qty and leg_qty > 0
+                    and consistent_fill and fill_qty - leg_filled == qty):
                 protective.append(leg)
         except TradeBlocked:
             continue
     active = [x for x in protective if field(x, "status") in PROTECTIVE_ACTIVE]
     filled_stop = [x for x in protective if field(x, "status") in EXIT_FINISHED]
+    if qty != fill_qty and len(protective) != 1:
+        blockers.append("broker_position_change_without_verified_stop_execution")
     if qty > 0 and not active:
         blockers.append("unprotected_open_paper_position")
     if qty == 0 and fill_qty > 0 and not filled_stop:

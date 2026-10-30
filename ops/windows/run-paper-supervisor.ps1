@@ -110,7 +110,7 @@ try {
             # the market is open or anything is exposed; broker-verified closed
             # and flat ticks skip Neon (free-tier compute) but still post the
             # Cloudflare liveness signal every 30 seconds.
-            & $python -m bot.paper_supervisor_loop --max-ticks 0 --interval-seconds 30 --external-liveness --idle-neon-when-broker-closed-flat
+            & $python -m bot.paper_supervisor_loop --max-ticks 0 --interval-seconds 30 --external-liveness --idle-neon-when-broker-closed-flat --receipt-file (Join-Path $folder "supervisor-runtime.json")
         }
         else {
             & $python -m bot.paper_supervisor_loop --max-ticks $runTicks --interval-seconds 30 --external-liveness

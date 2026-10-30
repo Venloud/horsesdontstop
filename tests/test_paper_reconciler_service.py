@@ -1,0 +1,95 @@
+"""Independent staged service: fake brokers only, no credentials or network."""
+import pytest
+import requests
+
+from bot import paper_reconciler_service as service
+from bot.paper_broker_transport import make_reconciler_paper_client
+from bot.paper_safety import PAPER_ENDPOINT, TradeBlocked
+
+
+def test_default_service_cannot_release_status_writes_or_start_without_credentials(monkeypatch):
+    assert service.PAPER_RECONCILIATION_SERVICE_RELEASED is False
+    assert service.main(["--apply-status"]) == 2
+    for key in ("PAPER_RECONCILER_DSN", "ALPACA_RECONCILER_PAPER_API_KEY", "ALPACA_RECONCILER_PAPER_SECRET_KEY"):
+        monkeypatch.delenv(key, raising=False)
+    assert service.main([]) == 2
+
+
+def test_observe_service_ticks_never_record_status(monkeypatch):
+    records = []
+    sleeps = []
+    monkeypatch.setattr(service, "reconcile_pending_once", lambda **kw: records.append(kw["record"]))
+    assert service.run_service(trading=object(), journal=object(), max_ticks=2, sleeper=sleeps.append) == 2
+    assert records == [False, False] and sleeps == [30]
+
+
+def test_unreleased_status_mode_stops_before_broker_or_journal(monkeypatch):
+    monkeypatch.setattr(service, "reconcile_pending_once", lambda **kw: pytest.fail("Read reached"))
+    with pytest.raises(TradeBlocked, match="NOT RELEASED"):
+        service.run_service(trading=object(), journal=object(), apply_status=True)
+
+
+def test_reconciliation_failure_alerts_and_stops_without_retry(monkeypatch):
+    attempts, alerts = [], []
+    def unresolved(**kw):
+        attempts.append(kw)
+        raise RuntimeError("SENSITIVE_CREDENTIAL")
+    monkeypatch.setattr(service, "reconcile_pending_once", unresolved)
+    with pytest.raises(TradeBlocked, match="unresolved") as exc:
+        service.run_service(trading=object(), journal=object(), max_ticks=2,
+                            alert=lambda: alerts.append(True) or True)
+    assert len(attempts) == 1 and alerts == [True]
+    assert "SENSITIVE_CREDENTIAL" not in str(exc.value)
+
+
+def test_independent_sdk_transport_refuses_even_an_accidental_order_post(monkeypatch):
+    monkeypatch.setattr(requests.Session, "request", lambda *_a, **_kw: pytest.fail("HTTP reached"))
+    client = make_reconciler_paper_client("fake", "fake")
+    with pytest.raises(TradeBlocked, match="GET only"):
+        client._session.request("POST", PAPER_ENDPOINT + "/v2/orders")
+
+
+def test_account_pin_is_checked_on_every_tick_before_journal(monkeypatch):
+    import hashlib
+    from types import SimpleNamespace
+    class Broker:
+        calls=0
+        def get_account(self):
+            self.calls+=1
+            return SimpleNamespace(id='expected' if self.calls==1 else 'changed')
+    reads=[];receipts=[];alerts=[]
+    monkeypatch.setattr(service,'reconcile_pending_once',lambda **kw: reads.append(kw['record']))
+    with pytest.raises(TradeBlocked):
+        service.run_service(trading=Broker(),journal=object(),max_ticks=2,sleeper=lambda _:None,
+            expected_account_hash=hashlib.sha256(b'expected').hexdigest(),
+            tick_observer=receipts.append,alert=lambda: alerts.append(True) or True)
+    assert reads==[False] and receipts==[1] and alerts==[True]
+
+
+def test_receipt_failure_alerts_and_stops_before_next_tick(monkeypatch):
+    reads=[];alerts=[]
+    monkeypatch.setattr(service,'reconcile_pending_once',lambda **kw: reads.append(kw['record']))
+    def failed(_):raise OSError('private path')
+    with pytest.raises(TradeBlocked):
+        service.run_service(trading=object(),journal=object(),max_ticks=2,
+            tick_observer=failed,alert=lambda: alerts.append(True) or True)
+    assert reads==[False] and alerts==[True]
+
+
+def test_cli_writes_actual_valid_receipt_after_pinned_authenticated_tick(monkeypatch,tmp_path):
+    import hashlib,json
+    from types import SimpleNamespace
+    for name in ('PAPER_RECONCILER_DSN','ALPACA_RECONCILER_PAPER_API_KEY','ALPACA_RECONCILER_PAPER_SECRET_KEY'):
+        monkeypatch.setenv(name,'test-only')
+    monkeypatch.setenv('PAPER_RECONCILER_ACCOUNT_SHA256',hashlib.sha256(b'expected').hexdigest())
+    monkeypatch.setenv('PAPER_MONITOR_NTFY_TOPIC','hds-test-topic-not-a-real-secret')
+    monkeypatch.setattr(service,'make_reconciler_paper_client',lambda *a:SimpleNamespace(get_account=lambda:SimpleNamespace(id='expected')))
+    monkeypatch.setattr(service,'PaperStatusReconcilerJournal',lambda *a:object())
+    records=[]
+    monkeypatch.setattr(service,'reconcile_pending_once',lambda **kw:records.append(kw['record']))
+    target=tmp_path/'reconciler-runtime.json'
+    assert service.main(['--receipt-file',str(target)])==0
+    result=json.loads(target.read_text())
+    assert result['worker_id'].startswith('paper-') and result['sequence']==1
+    assert result['status']=='read_only_poll_ok' and result['external_ack'] is False
+    assert records==[False]

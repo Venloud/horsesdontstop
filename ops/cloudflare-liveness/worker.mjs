@@ -56,13 +56,24 @@ export function classifyLiveness(row, nowMs) {
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
-    if (url.pathname !== "/v1/heartbeat" || request.method !== "POST") {
+    const diagnostic = url.pathname === "/v1/diagnostic" && request.method === "GET";
+    if (!diagnostic && (url.pathname !== "/v1/heartbeat" || request.method !== "POST")) {
       return response(404, "Not found");
     }
     if (!(await compareAuth(request.headers.get("authorization"), env.BEAT_TOKEN))) {
       return response(401, "Unauthorized");
     }
     if (!env.DB || !validSecret(env.BEAT_TOKEN)) return response(503, "Unavailable");
+    if (diagnostic) {
+      // Authentication + storage reachability only. Never renew a lease,
+      // replace an identity, acknowledge a poll, or alter alarm receipts.
+      try {
+        await env.DB.prepare("SELECT singleton FROM liveness WHERE singleton=1").first();
+        return response(204, "");
+      } catch {
+        return response(503, "Diagnostic storage unavailable");
+      }
+    }
     const bodySize = request.headers.get("content-length");
     if (bodySize && (+bodySize > 512 || +bodySize < 0)) return response(413, "Too large");
     let data;

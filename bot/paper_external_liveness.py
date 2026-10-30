@@ -18,6 +18,29 @@ TOKEN = re.compile(r"[A-Za-z0-9_-]{32,128}")
 STATES = frozenset(("read_only_poll_ok", "closed_flat_idle", "poll_failed"))
 
 
+class ExternalLivenessHTTPError(TradeBlocked):
+    """Only a typed HTTP code, never a remote response body or URL."""
+    def __init__(self, code):
+        self.http_status = code if type(code) is int and 100 <= code <= 599 else None
+        super().__init__("External liveness delivery not acknowledged" +
+                         (f" HTTP_{self.http_status}" if self.http_status else ""))
+
+
+def probe_liveness(*, url, token, get=None):
+    """Authenticated non-mutating probe; NOT a successful operational tick."""
+    check_liveness_settings(url, token)
+    endpoint = url.removesuffix("/heartbeat") + "/diagnostic"
+    try:
+        reply = (get or requests.get)(
+            endpoint, headers={"Authorization": "Bearer " + token},
+            timeout=5, allow_redirects=False)
+    except Exception:
+        raise TradeBlocked("External diagnostic delivery failed") from None
+    if reply.status_code != 204:
+        raise ExternalLivenessHTTPError(reply.status_code)
+    return True
+
+
 def check_liveness_settings(url, token):
     """Accept only HTTPS Cloudflare Workers-dev POST endpoint.
 
@@ -70,5 +93,5 @@ def send_liveness(*, url, token, worker_id, sequence, status, post=None):
     except Exception:
         raise TradeBlocked("External liveness delivery failed") from None
     if code != 204:
-        raise TradeBlocked("External liveness delivery not acknowledged")
+        raise ExternalLivenessHTTPError(code)
     return True

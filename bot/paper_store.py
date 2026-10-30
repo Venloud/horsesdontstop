@@ -156,23 +156,16 @@ class PostgresPaperJournal:
                 return JournalControl(bool(row[0]), bool(row[1]))
 
     def reserve_intent(self, plan: PaperOrderPlan) -> bool:
-        """Atomic one-time reservation. False means NEVER auto-resubmit."""
-        if plan.whole_shares < 1 or plan.protective_stop >= plan.estimated_entry:
-            raise TradeBlocked("Unsafe protective order")
-        with self._connect() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "INSERT INTO paper_intents "
-                    "(client_order_id, strategy, symbol, trading_day, "
-                    " whole_shares, expected_entry, protective_stop) "
-                    "VALUES (%s,%s,%s,%s,%s,%s,%s) "
-                    "ON CONFLICT (client_order_id) DO NOTHING "
-                    "RETURNING client_order_id",
-                    (plan.client_order_id, plan.strategy, plan.symbol,
-                     plan.trading_day, plan.whole_shares,
-                     plan.estimated_entry, plan.protective_stop),
-                )
-                return cur.fetchone() is not None
+        """Legacy direct-INSERT shortcut is intentionally retired.
+
+        After PR38, every executable intent reservation must flow through
+        PaperExecutorJournal.reserve_if_enabled(), whose narrowly owned
+        SQL function atomically locks/checks the actual control row.
+        A plain INSERT can bypass emergency controls or forge a filled
+        record and must NEVER become an available fallback.
+        """
+        raise TradeBlocked(
+            "Direct PAPER intent INSERT forbidden: use atomic guarded reservation")
 
     def read_unresolved_intents(self, limit: int = 501):
         """Read durable order intents. A saturated result is NOT complete.
@@ -250,29 +243,16 @@ class PostgresPaperJournal:
 
     def record_observed_state(self, client_order_id: str,
                               observed_status: str, broker_order_id=None):
-        """Use ONLY with trusted, freshly reconciled broker state.
+        """Never let the legacy journal directly attest broker outcomes.
 
-        Reject backward/unsafe transitions and duplicate status writes.
-        The journal NEVER authorizes trading by itself.
+        A future independent broker reconciler must first verify PAPER
+        order/position/stop evidence, then call the separately privileged
+        atomic paper_record_reconciled_intent_status SQL interface.
+        This legacy entrypoint fails closed BEFORE any SQL or broker work.
         """
-        with self._connect() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT status FROM paper_intents "
-                    "WHERE client_order_id = %s FOR UPDATE",
-                    (client_order_id,))
-                row = cur.fetchone()
-                if row is None or not transition_allowed(row[0], observed_status):
-                    raise TradeBlocked("Unknown or invalid order state transition")
-                cur.execute(
-                    "UPDATE paper_intents SET status = %s, "
-                    "broker_order_id = COALESCE(%s, broker_order_id), "
-                    "updated_at = now() WHERE client_order_id = %s",
-                    (observed_status, broker_order_id, client_order_id))
-                cur.execute(
-                    "INSERT INTO paper_audit_events "
-                    "(client_order_id, kind, summary) VALUES (%s,%s,%s)",
-                    (client_order_id, "status_observed", observed_status))
+        raise TradeBlocked(
+            "Direct PAPER status and audit writes disabled: use trusted "
+            "independent broker reconciliation")
 
     def record_equity(self, equity: float, cash: float):
         from .paper_safety import money
