@@ -364,7 +364,10 @@ def diagnostic_supervisor_lease(row):
     if age < 0:
         return "LEASE_UNVERIFIED"
     if age > 120:
-        return "SUPERVISOR_NOT_RUNNING"
+        # Closed/flat off-hours may deliberately idle Neon while the live
+        # process continues authenticated broker checks and external beats.
+        # An expired lease is never healthy, but cannot prove process absence.
+        return "LEASE_STALE"
     if row[1] is not True:
         return "UNHEALTHY_OBSERVATION"
     return True

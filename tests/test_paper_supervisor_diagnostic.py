@@ -181,7 +181,7 @@ def test_process_count_fails_closed(count, expected):
     (None, "SUPERVISOR_NOT_RUNNING"),
     ((NOW - timedelta(seconds=30), True, NOW), True),
     ((NOW - timedelta(seconds=30), False, NOW), "UNHEALTHY_OBSERVATION"),
-    ((NOW - timedelta(seconds=121), True, NOW), "SUPERVISOR_NOT_RUNNING"),
+    ((NOW - timedelta(seconds=121), True, NOW), "LEASE_STALE"),
     ((NOW + timedelta(seconds=5), True, NOW), "LEASE_UNVERIFIED"),
     ((NOW.replace(tzinfo=None), True, NOW), "LEASE_UNVERIFIED"),
     ((NOW, "true", NOW), "LEASE_UNVERIFIED"),
