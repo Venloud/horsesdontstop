@@ -1,8 +1,9 @@
 """Staged independent PAPER GET reconciler, observe-only by default.
 
-No task is installed. Status-writing service release is hard-disabled until
+Status-writing service release is hard-disabled until
 separate approval, migration acceptance and independent identity deployment.
-Existing collector/supervisor code and credentials are not reused or changed.
+The database login is distinct. The Windows launcher uses the existing PAPER
+broker API principal with a GET-only transport; it does not provision a new key.
 """
 import argparse
 import hashlib
@@ -78,7 +79,7 @@ def main(argv=None):
         journal = PaperStatusReconcilerJournal(os.environ[names[0]])
         from .paper_runtime_receipt import write_runtime_receipt
         from uuid import uuid4
-        worker_id = "reconciler-" + uuid4().hex
+        worker_id = "paper-" + uuid4().hex
         observer = (lambda sequence: write_runtime_receipt(args.receipt_file, {
             "worker_id": worker_id, "sequence": sequence,
             "status": "read_only_poll_ok", "external_ack": False,

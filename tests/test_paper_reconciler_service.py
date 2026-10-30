@@ -74,3 +74,22 @@ def test_receipt_failure_alerts_and_stops_before_next_tick(monkeypatch):
         service.run_service(trading=object(),journal=object(),max_ticks=2,
             tick_observer=failed,alert=lambda: alerts.append(True) or True)
     assert reads==[False] and alerts==[True]
+
+
+def test_cli_writes_actual_valid_receipt_after_pinned_authenticated_tick(monkeypatch,tmp_path):
+    import hashlib,json
+    from types import SimpleNamespace
+    for name in ('PAPER_RECONCILER_DSN','ALPACA_RECONCILER_PAPER_API_KEY','ALPACA_RECONCILER_PAPER_SECRET_KEY'):
+        monkeypatch.setenv(name,'test-only')
+    monkeypatch.setenv('PAPER_RECONCILER_ACCOUNT_SHA256',hashlib.sha256(b'expected').hexdigest())
+    monkeypatch.setenv('PAPER_MONITOR_NTFY_TOPIC','hds-test-topic-not-a-real-secret')
+    monkeypatch.setattr(service,'make_reconciler_paper_client',lambda *a:SimpleNamespace(get_account=lambda:SimpleNamespace(id='expected')))
+    monkeypatch.setattr(service,'PaperStatusReconcilerJournal',lambda *a:object())
+    records=[]
+    monkeypatch.setattr(service,'reconcile_pending_once',lambda **kw:records.append(kw['record']))
+    target=tmp_path/'reconciler-runtime.json'
+    assert service.main(['--receipt-file',str(target)])==0
+    result=json.loads(target.read_text())
+    assert result['worker_id'].startswith('paper-') and result['sequence']==1
+    assert result['status']=='read_only_poll_ok' and result['external_ack'] is False
+    assert records==[False]
