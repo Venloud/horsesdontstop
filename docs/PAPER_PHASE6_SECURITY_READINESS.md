@@ -454,3 +454,49 @@ would need a reviewed policy for overnight entries or unprotected fill gaps.
 Genuine broker lifecycle acceptance and a policy satisfying both partial-fill
 and overnight requirements remain necessary; the synthetic tests do not prove
 the broker can supply that guarantee.
+
+## Bounded GTC PAPER pilot rehearsal, 2026-10-30
+
+**WHY:** Venloud approved qualification of a first PAPER pilot capped at $5
+purchase cost plus a $0.50 fee reserve, with Alpaca-native GTC OTO protection,
+no retry for uncertain outcomes, and no new order while an earlier intent needs
+reconciliation. Stop-loss and partial-fill exposure remain acknowledged. Neon
+and Alpaca operations still cannot form one atomic transaction.
+
+**HOW:** Main commit `b05d8d36eefed8c4e646b4a96c55c3d098a5438a` adds preview
+limits, durable `time_in_force`, exact request/account approval binding, a
+single-use owner approval, and a committed dispatch receipt plus `UNKNOWN`
+journal/audit transition before the one allowed POST attempt. Legacy unbounded
+executor APIs and direct approval/receipt writes are revoked by the staged
+migration. The hard order-submission release constant remains `False`; no
+stable Windows runtime deployment or production migration was performed.
+
+**DID IT WORK:** Independent source review found no blocking defect for isolated
+acceptance. It explicitly notes the post-commit kill-switch race: a kill after
+durable dispatch authorization cannot recall the already authorized HTTP POST.
+The review is not production release approval. Migration SHA256 is
+`be058c4f6e49b023e57e17fc03c00c7c70e3ee3d2199399f97dfc751037a4394`. It was
+applied only on existing isolated branch `br-misty-dawn-b5dbnr90`
+(`hds-pr38-clean-migration-20261026`), not production. Authenticated executor
+and reconciler logins verified ACL boundaries; over-cap and repeated reservations
+were rejected; direct table writes, legacy APIs, wrong account hash and replayed
+dispatch were denied; exact owner approval and one durable dispatch receipt
+succeeded. The synthetic dispatch left the journal `unknown` with one audit
+record before cleanup; broker operations were zero. All synthetic rows were
+removed and the branch restored to kill ON, submissions OFF, zero intents,
+audits, approvals and receipts. Post-test privilege checks confirm executor
+bounded reservation/dispatch EXECUTE=true, legacy reserve/consume EXECUTE=false,
+and direct approval/receipt INSERT=false.
+
+Focused local tests: `232 passed, 1 warning`. Exact-head GitHub CI for
+`b05d8d36eefed8c4e646b4a96c55c3d098a5438a` passed the full Python suite, Node
+worker tests and all jobs: [run 41038827357](https://github.com/Venloud/horsesdontstop/actions/runs/41038827357).
+The exact-head local full suite completed after rerunning outside the sandbox:
+`1,221 passed, 4 skipped, 1 websockets deprecation warning`; `node --test`
+passed 12/12. The earlier sandbox permission errors did not weaken tests.
+
+**Release decision:** NO TRADE. Isolated acceptance does not establish
+production migration acceptance, stable-runtime deployment, actual Alpaca GTC
+OTO child behavior or stop coverage during partial fills. Strict database-to-
+broker kill atomicity remains unresolved, as do fresh Monday signal/risk gates
+and separate exact-transaction owner authorization.
