@@ -3,7 +3,7 @@ from decimal import Decimal
 from datetime import datetime,timezone,timedelta
 from types import SimpleNamespace
 import pytest
-from bot.paper_accounting import reconcile_cash_lifetime,verify_fresh_baseline
+from bot.paper_accounting import reconcile_cash_lifetime,verify_fresh_baseline,fetch_account_history
 from bot.paper_safety import TradeBlocked
 
 
@@ -20,6 +20,42 @@ def test_authentic_cash_only_lifetime_explains_funding_not_trading_profit():
  assert Decimal(r['net_external_funding'])==500 and r['realized_pnl']=='0'
  assert Decimal(r['nominal_peak_equity'])==500 and r['daily_trading_loss_pct']=='0'
  assert not r['can_submit_orders']
+
+
+def test_late_initial_journal_is_not_assumed_to_be_external_funding():
+ x=evidence()
+ x['activities'][0]['created_at']=(x['account'].created_at+timedelta(hours=1)).isoformat()
+ with pytest.raises(TradeBlocked):reconcile_cash_lifetime(**x)
+
+
+def test_second_baseline_witness_requires_a_named_principal():
+ w=witnesses();w[1]['principal']=''
+ with pytest.raises(TradeBlocked):verify_fresh_baseline(w,authorization_reference='owner',prior_history_digest='b'*64)
+
+
+@pytest.mark.parametrize('case',['complete','duplicate','malformed','oversized','exhausted'])
+def test_history_pagination_requires_complete_distinct_broker_pages(case):
+ from bot.paper_safety import PAPER_ENDPOINT
+ class Broker:
+  _base_url=PAPER_ENDPOINT
+  def __init__(self):self.calls=[]
+  def get_account(self):return evidence()['account']
+  def get(self,path,args):
+   self.calls.append((path,dict(args)))
+   if path.endswith('/history'):return {'verified_fixture':True}
+   n=len(self.calls)
+   if case=='malformed':return {'not':'a list'}
+   if case=='oversized':return [{'id':str(i)} for i in range(101)]
+   if n==1 or case=='exhausted':return [{'id':str((n-1)*100+i)} for i in range(100)]
+   assert args['page_token']=='99'
+   return [{'id':'99' if case=='duplicate' else '100'}]
+ b=Broker()
+ if case!='complete':
+  with pytest.raises(TradeBlocked):fetch_account_history(b)
+ else:
+  _,rows,h,complete=fetch_account_history(b)
+  assert len(rows)==101 and complete and h['verified_fixture']
+  assert b.calls[-1][0]=='/account/portfolio/history'
 
 
 @pytest.mark.parametrize('case',['partial','identity','exposure','fill','journal','cashflow','pnl','equity','stale'])

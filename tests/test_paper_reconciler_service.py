@@ -47,3 +47,30 @@ def test_independent_sdk_transport_refuses_even_an_accidental_order_post(monkeyp
     client = make_reconciler_paper_client("fake", "fake")
     with pytest.raises(TradeBlocked, match="GET only"):
         client._session.request("POST", PAPER_ENDPOINT + "/v2/orders")
+
+
+def test_account_pin_is_checked_on_every_tick_before_journal(monkeypatch):
+    import hashlib
+    from types import SimpleNamespace
+    class Broker:
+        calls=0
+        def get_account(self):
+            self.calls+=1
+            return SimpleNamespace(id='expected' if self.calls==1 else 'changed')
+    reads=[];receipts=[];alerts=[]
+    monkeypatch.setattr(service,'reconcile_pending_once',lambda **kw: reads.append(kw['record']))
+    with pytest.raises(TradeBlocked):
+        service.run_service(trading=Broker(),journal=object(),max_ticks=2,sleeper=lambda _:None,
+            expected_account_hash=hashlib.sha256(b'expected').hexdigest(),
+            tick_observer=receipts.append,alert=lambda: alerts.append(True) or True)
+    assert reads==[False] and receipts==[1] and alerts==[True]
+
+
+def test_receipt_failure_alerts_and_stops_before_next_tick(monkeypatch):
+    reads=[];alerts=[]
+    monkeypatch.setattr(service,'reconcile_pending_once',lambda **kw: reads.append(kw['record']))
+    def failed(_):raise OSError('private path')
+    with pytest.raises(TradeBlocked):
+        service.run_service(trading=object(),journal=object(),max_ticks=2,
+            tick_observer=failed,alert=lambda: alerts.append(True) or True)
+    assert reads==[False] and alerts==[True]
