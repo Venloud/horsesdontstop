@@ -386,3 +386,52 @@ statements are historical and superseded above. Remaining release gates include
 correct Cloudflare account control-plane acceptance, residual DB/broker race,
 genuine protection/partial-exit/overnight lifecycle, general posttrade risk
 accounting and separately qualified status-writing/owner-order authorization.
+
+## Final stabilization: authenticated management and post-trade accounting
+
+Correct Cloudflare account access is recovered. Read-only API acceptance confirms
+the existing Worker, its 100% active version, both `secret_text` binding names,
+the exact D1 database UUID, and the original one-minute schedule. Served Worker
+JavaScript matches a local dry-run bundle byte-for-byte (SHA256
+`c4dc35feae6a4a9c9dfe811af5fc143a12b08348799dc1e5ab8370c768fb748e`).
+No missing code or configuration justified another manual deployment. A temporary
+log subscription observed a real successful scheduled invocation and was removed.
+Repeated diagnostic GET204/unauthorized401 left actual D1 heartbeat/alarm rows
+and the Neon lease unchanged. The list API's zero-table metadata is contradicted
+by database-info and actual schema: both application tables exist. No reset or
+schema migration was performed. Historical alarm state records a real
+`stale_heartbeat` delivery on October25; this does not prove current phone delivery
+or a hard120-second end-to-end dead-host guarantee.
+
+`bot/paper_accounting.py` now includes a pure deterministic post-trade ledger.
+It consumes independently verified, normalized executions and journal-linked
+orders; constructing evidence classes does not authenticate their contents.
+Partial entry fills and parent-linked exits conserve quantities, cash and equity.
+Fees are immediately expensed; deposits/withdrawals are separate from trading
+returns. This is risk accounting, not a broker tax-basis attestation. The current
+flat-before-entry strategy rejects overlapping entry parents for one symbol;
+full exit and subsequent reentry remain supported. Unresolved reservations,
+duplicate/missing executions, mismatched identities and unsupported adjustments
+fail closed. Replaying persisted evidence does not double-count events.
+
+Daily loss and sampled drawdown use the existing contribution-adjusted risk
+engine only with complete independently verified sampling/calendar evidence.
+Each historical cash balance and share quantity is replayed. Flat equity must
+equal cash; nonflat samples require exact-time broker-verified position marks
+whose quantities and values explain equity. Missing historical valuation evidence
+remains UNKNOWN. Evidence hashes bind identity, time, positions, marks, orders,
+events, sampling history and completeness flags. No intratick peak is inferred.
+The authenticated current account still has complete cash-only history and zero
+actual trades; normalized synthetic execution tests are not live adapter or
+genuine broker lifecycle acceptance. All accounting receipts refuse submission.
+
+Crash tests cover death after durable consumption but before POST, after POST,
+and after acknowledgement. Fresh journal instances still refuse the reserved ID
+even if broker GET returns404. A separate fake-only witness demonstrates the
+remaining race: the DB backend can die after its final successful reply, a kill
+writer can then commit, and the remote broker can receive POST afterward. The
+same-connection guard, bounded freshness budget, durable single-use receipt and
+independent reconciliation mitigate uncertainty but cannot make those systems
+atomic. Strict cross-system kill semantics remain a release blocker; adding an
+extra check does not solve this. Never retry an ambiguous intent or weaken the
+kill-switch policy. Both real release constants remain False.

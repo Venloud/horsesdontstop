@@ -5,11 +5,17 @@
 The successful Cloudflare Workers Builds check on merge commit
 `9f1f80975d79857579972460b6fc738a31d2da00` identifies deployment account
 `96dc1a6a8ae1020c1c6f61530e230c09`. Wrangler login now works with Windows-keychain
-storage, but its current account is a different account and cannot inspect this
-Worker. Do not deploy or create resources in that other account. Current cron,
-remote version, D1 alarm rows and secret types still need read-only control-plane
-verification with the correct existing account. Operational supervisor POSTs
-are acknowledged; this does not establish alert timing or phone delivery.
+storage. Correct-account management access is now verified. The existing D1
+binding, both secret names/types and one-minute cron match configuration. A real
+scheduled execution completed successfully. Diagnostic GETs left both D1 rows
+and the Neon lease exactly unchanged while genuine supervisor beats continued.
+The served JavaScript is byte-identical to the local Wrangler build; no manual
+deployment is needed when those bytes match. This does not establish dead-host
+alert timing or phone delivery.
+
+The D1 list API reports `num_tables: 0`; database-info reports two application
+tables, and `sqlite_schema` confirms `liveness` and `alarm_state`. Treat the list
+value as inconsistent management metadata. Do not reset or recreate the database.
 
 This is a second, out-of-band signal to distinguish a crashed Python
 supervisor from intentional off-hours Neon idle. A Cloudflare Worker with

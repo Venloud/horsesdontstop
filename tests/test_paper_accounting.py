@@ -22,6 +22,15 @@ def test_authentic_cash_only_lifetime_explains_funding_not_trading_profit():
  assert not r['can_submit_orders']
 
 
+def test_cash_evidence_digest_binds_observation_time_and_account_identity():
+ x=evidence();first=reconcile_cash_lifetime(**x)
+ x['observed_at']=(datetime.fromisoformat(x['observed_at'])-timedelta(seconds=1)).isoformat()
+ second=reconcile_cash_lifetime(**x)
+ assert first['evidence_sha256']!=second['evidence_sha256']
+ x['account'].id='another-paper-account';x['expected_account_hash']=hashlib.sha256(b'another-paper-account').hexdigest()
+ assert reconcile_cash_lifetime(**x)['evidence_sha256']!=second['evidence_sha256']
+
+
 def test_late_initial_journal_is_not_assumed_to_be_external_funding():
  x=evidence()
  x['activities'][0]['created_at']=(x['account'].created_at+timedelta(hours=1)).isoformat()

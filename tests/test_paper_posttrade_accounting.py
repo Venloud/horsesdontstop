@@ -123,7 +123,7 @@ def test_flat_historical_equity_cannot_fabricate_a_peak(monkeypatch):
         reconcile_posttrade_ledger(**x)
 
 
-@pytest.mark.parametrize('bad',['missing','quantity','unverified','valuation',None])
+@pytest.mark.parametrize('bad',['missing','quantity','unverified','valuation','timestamp',None])
 def test_nonflat_historical_samples_require_independent_matching_position_marks(monkeypatch,bad):
     x=cash_history_case(monkeypatch);now=datetime.fromisoformat(x['observed_at']);old=now-timedelta(minutes=10)
     x['events']=x['events'][:1]+[LedgerEvent('fill',(now-timedelta(minutes=20)).isoformat(),'fill',True,order_id='entry',quantity='1',price='10')]
@@ -135,6 +135,7 @@ def test_nonflat_historical_samples_require_independent_matching_position_marks(
     if bad=='quantity':mark=replace(mark,quantity='2')
     if bad=='unverified':mark=replace(mark,broker_verified=False)
     if bad=='valuation':mark=replace(mark,market_price='999')
+    if bad=='timestamp':mark=replace(mark,at=(old-timedelta(seconds=1)).isoformat())
     if bad!='missing':x['historical_positions']={old.isoformat():[mark]}
     if bad is not None:
         with pytest.raises(TradeBlocked):reconcile_posttrade_ledger(**x)

@@ -355,7 +355,7 @@ def reconcile_posttrade_ledger(*, account, events, orders, positions,
             reserved += (requested - actual) * money(order.limit_price)
     held = {symbol: sum((q for q, _, _ in ls), Decimal("0"))
             for symbol, ls in lots.items() if any(q for q, _, _ in ls)}
-    def value_positions(records, at):
+    def value_positions(records, at, *, exact=False):
         if not isinstance(records, list):
             raise TradeBlocked("Trading ledger valuation snapshot missing")
         observed, market_value = {}, Decimal("0")
@@ -363,7 +363,8 @@ def reconcile_posttrade_ledger(*, account, events, orders, positions,
             if (not isinstance(position, LedgerPosition) or position.broker_verified is not True
                     or position.symbol in observed or money(position.quantity) <= 0
                     or money(position.market_price) <= 0
-                    or not 0 <= (at - timestamp(position.at)).total_seconds() <= 120):
+                    or not 0 <= (at - timestamp(position.at)).total_seconds() <= 120
+                    or exact and timestamp(position.at) != at):
                 raise TradeBlocked("Trading ledger position valuation unverified")
             observed[position.symbol] = money(position.quantity)
             market_value += money(position.quantity) * money(position.market_price)
@@ -398,7 +399,7 @@ def reconcile_posttrade_ledger(*, account, events, orders, positions,
                     sample_held[order.symbol] = sample_held.get(order.symbol, Decimal("0")) + money(e.quantity) * (1 if order.side == "buy" else -1)
             sample_held = {k: v for k, v in sample_held.items() if v}
             marks = positions if sample_at == now else historical_positions.get(sample_at.isoformat(), [])
-            marked_quantities, sample_value = value_positions(marks, sample_at)
+            marked_quantities, sample_value = value_positions(marks, sample_at, exact=sample_at != now)
             if marked_quantities != sample_held or money(sample.equity_usd) != expected_cash + sample_value:
                 raise TradeBlocked("Trading ledger historical equity/positions unexplained")
         latest = equity_observations[-1]
