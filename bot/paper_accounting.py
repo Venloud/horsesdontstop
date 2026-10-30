@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 import hashlib
 import json
+from dataclasses import dataclass, asdict
 
 from .paper_safety import PAPER_ENDPOINT, TradeBlocked, money
 
@@ -177,3 +178,210 @@ def verify_fresh_baseline(witnesses, *, authorization_reference, prior_history_d
                 authorization_reference=authorization_reference,
                 pre_scope_pnl="UNKNOWN", pre_scope_peak="UNKNOWN", activated=False,
                 can_submit_orders=False)
+
+
+@dataclass(frozen=True)
+class LedgerOrder:
+    """Previously broker-fetched and journal-linked order, NOT authentication.
+
+    An exit links to the independently verified entry parent and its journal
+    client ID. Construction alone cannot attest either identity.
+    """
+    order_id: str
+    symbol: str
+    side: str
+    quantity: str
+    client_order_id: str
+    journal_client_order_id: str
+    status: str
+    limit_price: str = "0"
+    parent_order_id: str | None = None
+    broker_verified: bool = False
+    journal_verified: bool = False
+
+
+@dataclass(frozen=True)
+class LedgerEvent:
+    """Normalized independent execution/cash evidence; never an order ack.
+
+    Deposits are positive, withdrawals and fees negative. Fill quantity/price
+    are actual executions, not requested or acknowledged quantities. Unknown
+    corporate actions, funding adjustments and provider types require a
+    separately reviewed adapter and must not be coerced into these kinds.
+    """
+    event_id: str
+    at: str
+    kind: str
+    broker_verified: bool = False
+    amount: str = "0"
+    order_id: str = ""
+    quantity: str = "0"
+    price: str = "0"
+
+
+@dataclass(frozen=True)
+class LedgerPosition:
+    symbol: str
+    quantity: str
+    market_price: str
+    at: str
+    broker_verified: bool = False
+
+
+def reconcile_posttrade_ledger(*, account, events, orders, positions,
+                               expected_account_hash, observed_at,
+                               activities_complete=False, equity_observations=None,
+                               all_equity_samples_accounted_for=False,
+                               exchange_calendar_verified=False):
+    """Deterministic long-only FIFO accounting; never releases submissions.
+
+    This is a pure evidence consumer, not a provider-authentication adapter.
+    Full history must start with cash funding and no inherited inventory.
+    Intraday peaks/daily loss remain UNKNOWN unless a separately verified
+    complete sampled-equity history and exchange calendar are supplied.
+    Every current share and dollar must conserve across executions and fees.
+    """
+    now = timestamp(observed_at)
+    created = timestamp(account.created_at)
+    identity = hashlib.sha256(str(account.id).encode()).hexdigest()
+    if (activities_complete is not True or identity != expected_account_hash
+            or getattr(account, "currency", None) != "USD" or created > now
+            or not 0 <= (datetime.now(timezone.utc) - now).total_seconds() <= 120
+            or not isinstance(events, list) or not 0 < len(events) <= 10000
+            or not isinstance(orders, list) or not isinstance(positions, list)):
+        raise TradeBlocked("Trading ledger identity/history/freshness unverified")
+    by_id, used_clients = {}, set()
+    active = {"new", "accepted", "pending_new", "pending_cancel", "partially_filled"}
+    terminal = {"filled", "canceled", "expired", "rejected"}
+    for order in orders:
+        if (not isinstance(order, LedgerOrder) or order.broker_verified is not True
+                or order.journal_verified is not True or not order.order_id
+                or order.order_id in by_id or not order.symbol
+                or order.side not in {"buy", "sell"} or money(order.quantity) <= 0
+                or not order.client_order_id or order.client_order_id in used_clients
+                or not order.journal_client_order_id or order.status not in active | terminal):
+            raise TradeBlocked("Trading ledger order identity/state unverified")
+        if order.side == "buy" and (order.parent_order_id is not None
+                or order.client_order_id != order.journal_client_order_id
+                or money(order.limit_price) <= 0):
+            raise TradeBlocked("Trading ledger entry approval changed")
+        by_id[order.order_id] = order
+        used_clients.add(order.client_order_id)
+    for order in orders:
+        if order.side == "sell":
+            parent = by_id.get(order.parent_order_id)
+            if (parent is None or parent.side != "buy" or parent.symbol != order.symbol
+                    or parent.journal_client_order_id != order.journal_client_order_id):
+                raise TradeBlocked("Trading ledger exit is not linked to entry")
+    cash = funding = gross_realized = fees = Decimal("0")
+    lots, fills, ids, cash_events = {}, {}, set(), []
+    last = created
+    for event in events:
+        if (not isinstance(event, LedgerEvent) or event.broker_verified is not True
+                or not event.event_id or event.event_id in ids):
+            raise TradeBlocked("Trading ledger event unverified or duplicated")
+        at = timestamp(event.at)
+        if not last <= at <= now:
+            raise TradeBlocked("Trading ledger chronology incomplete")
+        last = at
+        ids.add(event.event_id)
+        amount, qty, price = money(event.amount), money(event.quantity), money(event.price)
+        delta = Decimal("0")
+        if event.kind in {"deposit", "withdrawal", "fee"}:
+            if (event.order_id or qty != 0 or price != 0
+                    or (amount <= 0 if event.kind == "deposit" else amount >= 0)):
+                raise TradeBlocked("Trading ledger cash event unexplained")
+            delta = amount
+            if event.kind == "fee":
+                fees -= amount
+            else:
+                funding += amount
+        elif event.kind == "fill":
+            order = by_id.get(event.order_id)
+            if order is None or amount != 0 or qty <= 0 or price <= 0:
+                raise TradeBlocked("Trading ledger execution missing")
+            fills[order.order_id] = fills.get(order.order_id, Decimal("0")) + qty
+            if fills[order.order_id] > money(order.quantity):
+                raise TradeBlocked("Trading ledger fill exceeds approved quantity")
+            symbol_lots = lots.setdefault(order.symbol, [])
+            if order.side == "buy":
+                if price > money(order.limit_price):
+                    raise TradeBlocked("Trading ledger entry exceeds approved limit")
+                symbol_lots.append([qty, price, order.order_id])
+                delta = -qty * price
+            else:
+                left, basis = qty, Decimal("0")
+                for lot in symbol_lots:
+                    if lot[2] != order.parent_order_id:
+                        continue
+                    take = min(left, lot[0])
+                    lot[0] -= take
+                    basis += take * lot[1]
+                    left -= take
+                if left != 0:
+                    raise TradeBlocked("Trading ledger competing exit or short position")
+                gross_realized += qty * price - basis
+                delta = qty * price
+        else:
+            raise TradeBlocked("Unsupported trading ledger event")
+        cash += delta
+        if cash < 0:
+            raise TradeBlocked("Trading ledger cash funding missing")
+        cash_events.append((at, delta, event))
+    reserved = Decimal("0")
+    for order in orders:
+        actual, requested = fills.get(order.order_id, Decimal("0")), money(order.quantity)
+        if (order.status == "filled" and actual != requested
+                or order.status == "rejected" and actual != 0
+                or order.status == "partially_filled" and not 0 < actual < requested):
+            raise TradeBlocked("Trading ledger order executions contradict status")
+        if order.side == "buy" and order.status in active:
+            reserved += (requested - actual) * money(order.limit_price)
+    held = {symbol: sum((q for q, _, _ in ls), Decimal("0"))
+            for symbol, ls in lots.items() if any(q for q, _, _ in ls)}
+    observed, market_value = {}, Decimal("0")
+    for position in positions:
+        if (not isinstance(position, LedgerPosition) or position.broker_verified is not True
+                or position.symbol in observed or money(position.quantity) <= 0
+                or money(position.market_price) <= 0
+                or not 0 <= (now - timestamp(position.at)).total_seconds() <= 120):
+            raise TradeBlocked("Trading ledger current position unverified")
+        observed[position.symbol] = money(position.quantity)
+        market_value += money(position.quantity) * money(position.market_price)
+    if observed != held or cash != money(account.cash) or cash + market_value != money(account.equity):
+        raise TradeBlocked("Trading ledger share/cash/equity conservation failed")
+    open_basis = sum((q * p for ls in lots.values() for q, p, _ in ls), Decimal("0"))
+    unrealized = market_value - open_basis
+    if funding + gross_realized - fees + unrealized != money(account.equity):
+        raise TradeBlocked("Trading ledger profit conservation failed")
+    risk = None
+    if equity_observations is not None:
+        from .paper_equity_risk import AuditedExternalCashFlow, contribution_adjusted_risk
+        if not equity_observations:
+            raise TradeBlocked("Trading ledger equity sampling history missing")
+        first = timestamp(equity_observations[0].observed_at)
+        if any(e.kind in {"fill", "fee"} and t <= first for t, _, e in cash_events):
+            raise TradeBlocked("Trading ledger prior trading highwater missing")
+        for sample in equity_observations:
+            expected_cash = sum((d for t, d, _ in cash_events if t <= timestamp(sample.observed_at)), Decimal("0"))
+            if money(sample.cash_usd) != expected_cash:
+                raise TradeBlocked("Trading ledger historical cash does not reconcile")
+        latest = equity_observations[-1]
+        if money(latest.equity_usd) != money(account.equity) or money(latest.cash_usd) != cash:
+            raise TradeBlocked("Trading ledger latest equity sample contradicts broker")
+        flows = [AuditedExternalCashFlow(e.event_id, t, money(e.amount), True)
+                 for t, _, e in cash_events if e.kind in {"deposit", "withdrawal"} and t > first]
+        risk = contribution_adjusted_risk(equity_observations, flows, as_of_utc=now,
+            all_equity_samples_accounted_for=all_equity_samples_accounted_for,
+            all_external_flows_reconciled=True, exchange_calendar_verified=exchange_calendar_verified)
+    digest = json.dumps({'events': [asdict(e) for e in events], 'orders': [asdict(o) for o in orders]}, sort_keys=True, default=str)
+    return dict(account_id_sha256=identity, observed_at_utc=now.isoformat(),
+        cash=str(cash), equity=str(money(account.equity)), net_external_funding=str(funding),
+        realized_gross_pnl=str(gross_realized), fees=str(fees), realized_net_pnl=str(gross_realized-fees),
+        unrealized_pnl=str(unrealized), open_cost_basis=str(open_basis), market_exposure=str(market_value),
+        open_entry_reserved_notional=str(reserved), positions={k: str(v) for k, v in held.items()},
+        daily_loss_pct=str(risk.loss_from_open_pct) if risk else None,
+        drawdown_pct=str(risk.drawdown_from_peak_pct) if risk else None,
+        verified_sampled_peak=str(risk.verified_peak_performance_equity_usd) if risk else None,
+        risk_history_complete=risk is not None, can_submit_orders=False,
+        evidence_sha256=hashlib.sha256(digest.encode()).hexdigest())
