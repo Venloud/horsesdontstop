@@ -10,7 +10,10 @@ logic. Never change the release constant to True as a convenience.
 """
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from hashlib import sha256
+import json
 from time import monotonic
+from uuid import uuid4
 
 from .live_quotes import LivePaperEntryPreview, build_live_protected_oto_request
 from .live_quotes import preview_live_paper_entry
@@ -40,6 +43,10 @@ class ExplicitPaperTradeApproval:
     protective_stop_usd: float
     approved_at_utc: datetime
     expires_at_utc: datetime
+    order_time_in_force: str = "gtc"
+    order_class: str = "oto"
+    maximum_purchase_cost_usd: float = 5.00
+    fee_reserve_usd: float = 0.50
 
 
 @dataclass(frozen=True)
@@ -72,6 +79,22 @@ def _validate_approval(approval, preview, now):
             or money(approval.protective_stop_usd) !=
                money(preview.stop_usd)):
         raise TradeBlocked("Approval does not match exact paper order")
+    if (approval.order_time_in_force != "gtc"
+            or approval.order_class != "oto"
+            or money(approval.maximum_purchase_cost_usd) != money("5.00")
+            or money(approval.fee_reserve_usd) != money("0.50")
+            or money(preview.max_limit_purchase_usd) > money("5.00")):
+        raise TradeBlocked("Approval does not match bounded GTC OTO pilot policy")
+
+
+def _request_sha256(order_request):
+    """Hash the exact Alpaca SDK wire fields approved and dispatched."""
+    fields = order_request.to_request_fields()
+    canonical = json.dumps(
+        fields, sort_keys=True, separators=(",", ":"),
+        default=lambda value: getattr(value, "value", str(value)),
+    )
+    return sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def _plan_from_quoted_preview(preview):
@@ -317,6 +340,8 @@ def submit_paper_once_supervised(
     from .paper_execution_journal import PaperExecutorJournal
     PaperExecutorJournal.validate_protected_intent(plan)
     order_request = build_live_protected_oto_request(recomputed)
+    request_digest = _request_sha256(order_request)
+    attempt_id = str(uuid4())
     from .live_quotes import PILOT_FEE_RESERVE_USD
     if (money(getattr(account, "buying_power", None))
             < money(plan.estimated_cost) + PILOT_FEE_RESERVE_USD):
@@ -331,7 +356,9 @@ def submit_paper_once_supervised(
 
     attempted = False
     try:
-        with journal.authorize_reserved_submission(plan) as assert_lock_alive:
+        with journal.authorize_reserved_submission(
+                plan, request_sha256=request_digest, attempt_id=attempt_id
+                ) as assert_lock_alive:
             # Reservation is consumed durably before entering this context.
             # Recheck time-sensitive evidence after any DB lock wait.
             final_now = now + timedelta(seconds=monotonic() - started)

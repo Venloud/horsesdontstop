@@ -29,6 +29,8 @@ CREATE TABLE IF NOT EXISTS paper_intents (
     whole_shares INTEGER NOT NULL CHECK (whole_shares > 0),
     expected_entry NUMERIC(18, 6) NOT NULL CHECK (expected_entry > 0),
     protective_stop NUMERIC(18, 6) NOT NULL CHECK (protective_stop > 0),
+    time_in_force TEXT NOT NULL DEFAULT 'day' CHECK
+        (time_in_force IN ('day','gtc')),
     status TEXT NOT NULL DEFAULT 'reserved' CHECK
         (status IN ('reserved', 'submitted', 'accepted', 'filled',
                     'rejected', 'canceled', 'unknown')),

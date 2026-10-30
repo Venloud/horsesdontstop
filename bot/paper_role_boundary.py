@@ -21,11 +21,14 @@ SELECT /* paper_acl_boundary */
  AND NOT EXISTS (
    SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
    WHERE n.nspname='public' AND c.relname IN
-     ('paper_intents','paper_audit_events','paper_control','paper_equity_snapshots')
+     ('paper_intents','paper_audit_events','paper_control','paper_equity_snapshots',
+      'paper_pilot_approvals','paper_pilot_dispatch_receipts')
      AND pg_has_role(current_user,c.relowner,'MEMBER'))
  AND NOT EXISTS (
    SELECT 1 FROM (VALUES ('public.paper_intents'),('public.paper_audit_events'),
-                        ('public.paper_control')) AS t(tbl)
+                        ('public.paper_control'),
+                        ('public.paper_pilot_approvals'),
+                        ('public.paper_pilot_dispatch_receipts')) AS t(tbl)
    WHERE has_any_column_privilege(current_user,t.tbl,'INSERT,UPDATE,REFERENCES')
       OR has_table_privilege(current_user,t.tbl,'DELETE,TRUNCATE,TRIGGER'))
  AND NOT EXISTS (
@@ -34,6 +37,8 @@ SELECT /* paper_acl_boundary */
      AND has_function_privilege(current_user,p.oid,'EXECUTE')
      AND p.oid::regprocedure::text NOT IN
        ('paper_reserve_intent_if_enabled(text,text,text,date,integer,numeric,numeric)',
+        'paper_reserve_bounded_pilot_intent(text,text,text,date,integer,numeric,numeric)',
+        'paper_commit_bounded_pilot_dispatch(text,text,uuid)',
         'paper_mark_reserved_intent_unknown(text)',
         'paper_consume_submission_authorization(text)',
         'paper_record_reconciled_intent_status(text,text,text,text)',
@@ -47,7 +52,8 @@ def assert_journal_acl_boundary(cursor, *, reconciler=False):
         sql += """ AND NOT EXISTS (
           SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
           WHERE n.nspname='public' AND p.proname IN
-            ('paper_reserve_intent_if_enabled','paper_mark_reserved_intent_unknown',
+            ('paper_reserve_intent_if_enabled','paper_reserve_bounded_pilot_intent',
+             'paper_commit_bounded_pilot_dispatch','paper_mark_reserved_intent_unknown',
              'paper_consume_submission_authorization',
              'paper_authorize_unknown_submission','paper_reservation_control_guard')
             AND has_function_privilege(current_user,p.oid,'EXECUTE'))"""

@@ -137,7 +137,9 @@ def preview_live_paper_entry(
     budget = e * risk
     purchase_cap = min(PILOT_MAX_PURCHASE_USD,
                        e * PILOT_MAX_EQUITY_FRACTION)
-    shares = min(int(budget // risk_per_share), int(cash // buy_limit),
+    cash_after_fee_reserve = cash - PILOT_FEE_RESERVE_USD
+    shares = min(int(budget // risk_per_share),
+                 int(cash_after_fee_reserve // buy_limit),
                  int(purchase_cap // buy_limit), ask_size)
     if shares < 1:
         raise TradeBlocked("No affordable whole share at 1% risk and current spread")

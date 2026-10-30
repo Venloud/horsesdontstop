@@ -78,6 +78,9 @@ def test_first_pilot_purchase_cap_is_five_dollars_plus_separate_fee_reserve():
     with pytest.raises(TradeBlocked, match="No affordable whole"):
         plan(quote=quote(bid=5.00, ask=5.01), equity=500,
              available_cash=500)
+    with pytest.raises(TradeBlocked, match="No affordable whole"):
+        plan(quote=quote(bid=4.48, ask=4.50), equity=500,
+             available_cash=5.49)
 
 
 def test_market_closed_rejected_even_with_recent_price():

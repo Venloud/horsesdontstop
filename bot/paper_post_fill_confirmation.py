@@ -28,12 +28,13 @@ def confirm_nested_filled_stops(trading, positions, approvals):
             continue
         try:
             matching = [a for a in approvals
-                        if isinstance(a, (tuple, list)) and len(a) == 6
+                        if isinstance(a, (tuple, list)) and len(a) in (6, 7)
                         and a[2] == symbol and a[1] in ("accepted", "filled")]
             if len(matching) != 1:
                 raise ValueError("No unique durable approved stop")
             approved = matching[0]
             client_id, _status, _symbol, qty, stop, parent_id = approved
+            approved_tif = approved[6] if len(approved) == 7 else "day"
             if (not isinstance(client_id, str) or not client_id
                     or not parent_id or money(qty) <= 0 or money(stop) <= 0):
                 raise ValueError("Invalid stop terms")
@@ -46,7 +47,7 @@ def confirm_nested_filled_stops(trading, positions, approvals):
                 getattr(indexed, "id"), filter=GetOrderByIdRequest(nested=True))
             if (str(getattr(nested, "id", None)) != str(parent_id)
                     or getattr(nested, "client_order_id", None) != client_id
-                    or value(getattr(nested, "time_in_force", None)) != plan.time_in_force
+                    or value(getattr(nested, "time_in_force", None)) != approved_tif
                     or value(getattr(nested, "order_class", None)) != "oto"
                     or value(getattr(nested, "side", None)) != "buy"
                     or value(getattr(nested, "type", None)) != "limit"

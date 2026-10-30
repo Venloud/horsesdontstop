@@ -70,7 +70,7 @@ class PaperStatusReconcilerJournal(PostgresPaperJournal):
             with conn.cursor() as cur:
                 cur.execute(
                     "SELECT status, broker_order_id, strategy, symbol, trading_day, "
-                    "whole_shares, expected_entry, protective_stop "
+                    "whole_shares, expected_entry, protective_stop, time_in_force "
                     "FROM public.paper_intents WHERE client_order_id=%s",
                     (client_order_id,))
                 return cur.fetchone()
@@ -82,14 +82,14 @@ class PaperStatusReconcilerJournal(PostgresPaperJournal):
             with conn.cursor() as cur:
                 cur.execute(
                     "SELECT client_order_id,strategy,symbol,trading_day,whole_shares,"
-                    "expected_entry,protective_stop FROM public.paper_intents "
+                    "expected_entry,protective_stop,time_in_force FROM public.paper_intents "
                     "WHERE status IN ('reserved','submitted','accepted','unknown') "
                     "ORDER BY created_at LIMIT 501")
                 rows = cur.fetchall()
         if len(rows) >= 501:
             raise TradeBlocked("Pending reconciler intent list incomplete")
         plans = []
-        for cid, strategy, symbol, day, qty, entry, stop in rows:
+        for cid, strategy, symbol, day, qty, entry, stop, tif in rows:
             # Derived numbers exist only to reconstruct the durable terms;
             # this service cannot reserve or submit an order.
             cost = money(entry) * qty
@@ -98,7 +98,8 @@ class PaperStatusReconcilerJournal(PostgresPaperJournal):
                 symbol=symbol, strategy=strategy, trading_day=day.isoformat(),
                 client_order_id=cid, whole_shares=qty, estimated_entry=entry,
                 protective_stop=stop, estimated_cost=cost,
-                risk_budget_usd=risk, estimated_risk_usd=risk))
+                risk_budget_usd=risk, estimated_risk_usd=risk,
+                time_in_force=tif))
         return plans
 
     def record_broker_verified_state(self, client_order_id, old, new, broker_id):
@@ -119,9 +120,9 @@ class PaperStatusReconcilerJournal(PostgresPaperJournal):
 
 
 def _durable_matches_plan(plan, row):
-    if not isinstance(row, (tuple, list)) or len(row) != 8:
+    if not isinstance(row, (tuple, list)) or len(row) != 9:
         return False
-    old, original_broker_id, strategy, symbol, trading_day, shares, entry, stop = row
+    old, original_broker_id, strategy, symbol, trading_day, shares, entry, stop, tif = row
     try:
         return (
             isinstance(old, str)
@@ -134,6 +135,7 @@ def _durable_matches_plan(plan, row):
             and type(shares) is int and shares == plan.whole_shares
             and money(entry) == money(plan.estimated_entry)
             and money(stop) == money(plan.protective_stop)
+            and tif == plan.time_in_force
         )
     except (ValueError, TypeError, TradeBlocked):
         return False

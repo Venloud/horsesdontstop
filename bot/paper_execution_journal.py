@@ -185,12 +185,20 @@ class PaperExecutorJournal(PostgresPaperJournal):
         with self._connect() as conn:
             with conn.cursor() as cur:
                 cur.execute("SET LOCAL statement_timeout = '3000ms'")
-                cur.execute(
-                    "SELECT public.paper_reserve_intent_if_enabled("
-                    "%s,%s,%s,%s,%s,%s,%s)",
-                    (plan.client_order_id, plan.strategy, plan.symbol,
-                     date.fromisoformat(plan.trading_day), plan.whole_shares,
-                     money(plan.estimated_entry), money(plan.protective_stop)))
+                if plan.time_in_force == "gtc":
+                    cur.execute(
+                        "SELECT public.paper_reserve_bounded_pilot_intent("
+                        "%s,%s,%s,%s,%s,%s,%s)",
+                        (plan.client_order_id, plan.strategy, plan.symbol,
+                         date.fromisoformat(plan.trading_day), plan.whole_shares,
+                         money(plan.estimated_entry), money(plan.protective_stop)))
+                else:
+                    cur.execute(
+                        "SELECT public.paper_reserve_intent_if_enabled("
+                        "%s,%s,%s,%s,%s,%s,%s)",
+                        (plan.client_order_id, plan.strategy, plan.symbol,
+                         date.fromisoformat(plan.trading_day), plan.whole_shares,
+                         money(plan.estimated_entry), money(plan.protective_stop)))
                 row = cur.fetchone()
                 if (not isinstance(row, tuple) or len(row) != 1
                         or type(row[0]) is not bool):
@@ -215,7 +223,8 @@ class PaperExecutorJournal(PostgresPaperJournal):
                     raise TradeBlocked("Cannot mark nonreserved intent unknown")
 
     @contextmanager
-    def authorize_reserved_submission(self, plan):
+    def authorize_reserved_submission(self, plan, *, request_sha256=None,
+                                      attempt_id=None):
         """Consume the reservation before POST, then hold the control row lock.
 
         UNKNOWN is committed separately first: a crash or transaction rollback
@@ -225,6 +234,27 @@ class PaperExecutorJournal(PostgresPaperJournal):
         """
         self.validate_protected_intent(plan)
         self.assert_executor_permissions(reservation=True)
+        if plan.time_in_force == "gtc":
+            if (not isinstance(request_sha256, str)
+                    or len(request_sha256) != 64
+                    or not isinstance(attempt_id, str)
+                    or len(attempt_id) != 36):
+                raise TradeBlocked("Missing exact GTC pilot dispatch receipt terms")
+            with self._connect() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("SET LOCAL statement_timeout='3000ms'")
+                    cur.execute(
+                        "SELECT public.paper_commit_bounded_pilot_dispatch("
+                        "%s,%s,%s::uuid)",
+                        (plan.client_order_id, request_sha256, attempt_id))
+                    if cur.fetchone() != (True,):
+                        raise TradeBlocked("Bounded PAPER dispatch commit denied")
+            # The transaction committed a single-use owner-approved receipt
+            # and UNKNOWN journal state before the caller's sole POST. The
+            # accepted policy permits an already committed dispatch to race
+            # a later kill; that control cannot recall a committed receipt.
+            yield lambda: None
+            return
         self.mark_uncertain(plan.client_order_id)
         with self._connect() as conn:
             with conn.cursor() as cur:
