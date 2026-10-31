@@ -533,6 +533,11 @@ applied as one Neon transaction by `neondb_owner` to production branch
 `br-restless-sunset-b5s18rj3`, database `neondb`. Before migration, a recovery
 snapshot was created: `snap-raspy-haze-b52ygtmj`
 (`hds-pre-bounded-pilot-20261031`, expires 2026-11-30). No rollback was needed.
+The migration ran transactionally, so a statement error would roll back the
+whole migration. For a post-commit defect, leave submission release hard-false
+and controls kill ON/submissions OFF; recover this snapshot to a separate review
+branch and make a forward corrective migration. Do not restore revoked legacy
+executor grants or reset production from the snapshot.
 The migration adds `paper_intents.time_in_force` (`day` default, constrained to
 `day`/`gtc`), owner-controlled exact-term approvals, single-use dispatch
 receipts, protected reservation/dispatch functions and revokes the executor's
