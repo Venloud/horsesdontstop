@@ -82,6 +82,7 @@ class PreparedPaperOrder:
             "fee_reserve": self.fee_reserve_usd,
             "request_sha256": self.request_sha256,
             "account_id_sha256": self.account_id_sha256,
+            "quote_preview": self.preview.to_dict(),
             "submitted": False,
         }
 
