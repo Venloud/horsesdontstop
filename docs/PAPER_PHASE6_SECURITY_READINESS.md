@@ -518,3 +518,69 @@ production migration acceptance, stable-runtime deployment, actual Alpaca GTC
 OTO child behavior or stop coverage during partial fills. Strict database-to-
 broker kill atomicity remains unresolved, as do fresh Monday signal/risk gates
 and separate exact-transaction owner authorization.
+
+## October 31, 2026: bounded pilot production migration
+
+**WHY:** Move the already reviewed and isolated-accepted bounded pilot schema
+into production without enabling order submission or changing the production
+kill switch.
+
+**HOW:** Latest source/runtime base `9a96bbe83f29e95251e5c070ce705b4379248cf3`
+was confirmed equal to `origin/main`. The exact migration
+`sql/paper_bounded_pilot_dispatch_review_only.sql` (SHA256
+`be058c4f6e49b023e57e17fc03c00c7c70e3ee3d2199399f97dfc751037a4394`) was
+applied as one Neon transaction by `neondb_owner` to production branch
+`br-restless-sunset-b5s18rj3`, database `neondb`. Before migration, a recovery
+snapshot was created: `snap-raspy-haze-b52ygtmj`
+(`hds-pre-bounded-pilot-20261031`, expires 2026-11-30). No rollback was needed.
+The migration adds `paper_intents.time_in_force` (`day` default, constrained to
+`day`/`gtc`), owner-controlled exact-term approvals, single-use dispatch
+receipts, protected reservation/dispatch functions and revokes the executor's
+legacy unbounded reserve/authorization/consume/status functions.
+
+**DID IT WORK:** Actual production catalogs show both pilot tables and all
+three functions present. The reserve and dispatch `SECURITY DEFINER` functions
+are owned by `hds_paper_reservation_guard`, pin `search_path=pg_catalog`, and
+have no PUBLIC or reconciler execute grant; executor execute is present.
+`paper_approve_bounded_pilot` is invoker security, owned by `neondb_owner`, and
+has no PUBLIC/executor/reconciler execute grant. The executor has no direct
+INSERT/UPDATE on intents, approvals or receipts; reconciler has read-only
+intent/approval access and no receipt writes. All tested service roles lack
+superuser, role/database creation, replication, bypass-RLS, schema-CREATE and
+database-CREATE privileges. The reconciler inherits only
+`hds_paper_reconciler` among the inspected memberships. The existing
+executor/reconciler restricted login harness denied nine forgery/escalation
+attempts with SQLSTATE `42501`; the opening-equity zero-row permission probe
+rolled back.
+
+A clearly synthetic production intent reserved successfully through the real
+`hds_paper_executor` login and received exact bounded terms through the owner
+database function: one share, `$4.50` purchase cost, `$0.50` fee reserve, GTC,
+60-second synthetic expiry. A dispatch call from the executor was blocked by
+production controls, which remained kill ON/submissions OFF. Direct executor
+approval/receipt inserts and reconciler receipt insertion were denied. The
+synthetic approval and intent were deleted; final counts are zero for intents,
+audits, approvals and receipts. No broker operation occurred. This proves
+production role/schema compatibility and the safe dispatch gate; it does not
+prove a successful dispatch or Alpaca order lifecycle.
+
+The stable Windows checkout already ran `9a96bbe83f29e95251e5c070ce705b4379248cf3`.
+After migration, the existing observe-only reconciler was restarted and its
+fresh receipt returned `read_only_poll_ok`; the continuous supervisor was
+preserved with the same PID/heartbeat identity and a fresh `closed_flat_idle`
+receipt plus external acknowledgment. Capture verified one process tree per
+collector, supervisor and reconciler. Order and status-writing release flags
+remain `False`. Focused local pilot/execution regressions: 118 passed, one
+deprecation warning. Full exact-head local suite had already passed 1,221 with
+four skips and Node 12/12; exact-head GitHub CI run
+[41143687822](https://github.com/Venloud/horsesdontstop/actions/runs/41143687822)
+passed. Detailed timestamped migration and runtime evidence is in Vandam at
+`docs/evidence/hds-bounded-pilot-production-migration-20261031.json`.
+
+**Release decision: NO TRADE.** The production schema is deployed, but the
+bounded order gateway is still hard-disabled and has no trusted executable
+owner-approval service/entrypoint. The accepted one-shot dispatch design still
+has a post-commit kill race; an already committed dispatch cannot be recalled.
+Genuine GTC OTO child, partial-fill and overnight stop behavior and live
+post-trade accounting remain unverified. Fresh market-session, strategy and
+risk checks plus separate exact-transaction approval are still required.
