@@ -33,8 +33,10 @@ PAPER_ORDER_SUBMISSIONS_RELEASED = False
 class ExplicitPaperTradeApproval:
     """Exact trade details *previously approved* through a trusted workflow.
 
-    This type alone does NOT authenticate an owner. A secure owner
-    authorization mechanism must be built before releasing real runs.
+    This type alone does NOT authenticate an owner. The trusted proof is the
+    short-lived approval row written by the owner-only Neon function and
+    consumed by the single-use dispatch function; Python fields are only a
+    local consistency check. See paper_pilot_approval_cli for the handoff.
     """
     client_order_id: str
     symbol: str
