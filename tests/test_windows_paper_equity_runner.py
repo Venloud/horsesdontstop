@@ -18,15 +18,19 @@ def test_collector_reuses_existing_daemon_and_current_user_dpapi():
 
 def test_task_does_not_replace_supervisor_or_embed_secrets():
     installer = (ROOT / "ops/windows/install-paper-opening-equity-task.ps1").read_text()
+    schedule_helper = (ROOT / "ops/windows/scheduled-task-time.ps1").read_text()
     assert "HorsesDontStop-PAPER-OpeningEquity" in installer
     assert "New-ScheduledTaskTrigger -AtLogOn" in installer
-    assert "New-ScheduledTaskTrigger -Weekly" in installer
+    assert "New-HdsEasternWeeklyTrigger" in installer
     assert "09:20" in installer
     assert "-RestartCount 3" in installer
     assert "-LogonType Interactive" in installer
     assert "run-paper-opening-equity.ps1" in installer
     assert "run-paper-supervisor.ps1" not in installer
     assert "PAPER_EXECUTOR_DSN" not in installer
+    assert "Eastern Standard Time" in schedule_helper
+    assert "yyyy-MM-ddTHH:mm:ss" in schedule_helper
+    assert "$trigger.StartBoundary = $firstRun.ToString(" in schedule_helper
 
 
 def test_setup_prompts_hidden_and_refuses_overwrite():
