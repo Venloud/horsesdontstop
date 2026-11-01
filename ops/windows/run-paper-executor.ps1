@@ -60,5 +60,6 @@ try {
     Write-Host 'PAPER EXECUTOR BLOCKED: required protected configuration or runtime evidence unavailable.'
     exit 2
 } finally {
+    Remove-Variable monitorPassword -ErrorAction SilentlyContinue
     foreach ($name in $names) { Remove-Item "Env:$name" -ErrorAction SilentlyContinue }
 }
