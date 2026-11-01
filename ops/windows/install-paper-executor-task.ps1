@@ -21,6 +21,10 @@ foreach ($name in @('alpaca-paper-key.dpapi','alpaca-paper-secret.dpapi',
     }
 }
 $user = [Security.Principal.WindowsIdentity]::GetCurrent().Name
+$timeZone = Get-TimeZone
+if ($timeZone.Id -ne 'Eastern Standard Time') {
+    throw "Executor schedule requires Eastern Time; found '$($timeZone.Id)'."
+}
 $principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Limited
 $action = New-ScheduledTaskAction -Execute 'powershell.exe' `
     -Argument ('-NoProfile -ExecutionPolicy RemoteSigned -File "' + $runner + '"') `
