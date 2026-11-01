@@ -32,10 +32,11 @@ $supervisorSettings = New-ScheduledTaskSettingsSet -RestartCount 3 `
     -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit ([TimeSpan]::Zero) `
     -MultipleInstances IgnoreNew -StartWhenAvailable -AllowStartIfOnBatteries `
     -DontStopIfGoingOnBatteries
+$supervisorTriggers = @((New-ScheduledTaskTrigger -AtLogOn -User $user))
+$supervisorTriggers += New-HdsEasternWeeklyTrigger -DaysOfWeek $weekdays -At "09:10"
 Register-ScheduledTask -TaskName "HorsesDontStop-PAPER-Supervisor" `
     -Action (New-HdsAction "-Continuous") `
-    -Trigger @((New-ScheduledTaskTrigger -AtLogOn -User $user),
-               (New-HdsEasternWeeklyTrigger -DaysOfWeek $weekdays -At "09:10")) `
+    -Trigger $supervisorTriggers `
     -Principal $principal -Settings $supervisorSettings -Force `
     -Description "Continuous read-only PAPER supervisor. No orders." | Out-Null
 
@@ -44,10 +45,12 @@ Register-ScheduledTask -TaskName "HorsesDontStop-PAPER-Supervisor" `
 $diagnosticSettings = New-ScheduledTaskSettingsSet `
     -ExecutionTimeLimit (New-TimeSpan -Minutes 15) -MultipleInstances IgnoreNew `
     -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+$diagnosticTriggers = @()
+$diagnosticTriggers += New-HdsEasternWeeklyTrigger -DaysOfWeek $weekdays -At "09:21"
+$diagnosticTriggers += New-HdsEasternWeeklyTrigger -DaysOfWeek $weekdays -At "09:36"
 Register-ScheduledTask -TaskName "HorsesDontStop-PAPER-Diagnostic" `
     -Action (New-HdsAction "-Diagnose") `
-    -Trigger @((New-HdsEasternWeeklyTrigger -DaysOfWeek $weekdays -At "09:21"),
-               (New-HdsEasternWeeklyTrigger -DaysOfWeek $weekdays -At "09:36")) `
+    -Trigger $diagnosticTriggers `
     -Principal $principal -Settings $diagnosticSettings -Force `
     -Description "One-shot read-only PAPER diagnostic with log and phone alert. No orders." | Out-Null
 

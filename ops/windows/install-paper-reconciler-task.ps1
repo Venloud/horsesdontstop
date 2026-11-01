@@ -17,7 +17,8 @@ $user = [Security.Principal.WindowsIdentity]::GetCurrent().Name
 $principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Limited
 $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument ('-NoProfile -ExecutionPolicy RemoteSigned -File "' + $runner + '"') -WorkingDirectory $repo
 $weekdays = @('Monday','Tuesday','Wednesday','Thursday','Friday')
-$triggers = @((New-ScheduledTaskTrigger -AtLogOn -User $user), (New-HdsEasternWeeklyTrigger -DaysOfWeek $weekdays -At '09:20'))
+$triggers = @((New-ScheduledTaskTrigger -AtLogOn -User $user))
+$triggers += New-HdsEasternWeeklyTrigger -DaysOfWeek $weekdays -At '09:20'
 $settings = New-ScheduledTaskSettingsSet -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
 Register-ScheduledTask -TaskName $task -Action $action -Trigger $triggers -Principal $principal -Settings $settings -Description 'Independent restricted DB PAPER reconciler; broker GET only; observe only.' | Out-Null
 Write-Host 'Registered observe-only PAPER reconciler. Windows session must remain signed in and awake.'

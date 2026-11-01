@@ -16,10 +16,8 @@ if (-not (Test-Path -LiteralPath $python)) { throw "Python environment missing."
 $task = "HorsesDontStop-PAPER-OpeningEquity"
 $principal = New-ScheduledTaskPrincipal -UserId ([Security.Principal.WindowsIdentity]::GetCurrent().Name) -LogonType Interactive -RunLevel Limited
 $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument ('-NoProfile -ExecutionPolicy RemoteSigned -File "' + $runner + '"')
-$triggers = @(
-    (New-ScheduledTaskTrigger -AtLogOn -User ([Security.Principal.WindowsIdentity]::GetCurrent().Name)),
-    (New-HdsEasternWeeklyTrigger -DaysOfWeek @("Monday", "Tuesday", "Wednesday", "Thursday", "Friday") -At "09:20")
-)
+$triggers = @((New-ScheduledTaskTrigger -AtLogOn -User ([Security.Principal.WindowsIdentity]::GetCurrent().Name)))
+$triggers += New-HdsEasternWeeklyTrigger -DaysOfWeek @("Monday", "Tuesday", "Wednesday", "Thursday", "Friday") -At "09:20"
 $settings = New-ScheduledTaskSettingsSet -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
 Register-ScheduledTask -TaskName $task -Action $action -Trigger $triggers -Principal $principal -Settings $settings -Description "PAPER opening equity, separate from read-only supervisor. No orders." -Force | Out-Null
 Write-Host "Registered $task for interactive Windows user (logon and weekdays 09:20 local)."
