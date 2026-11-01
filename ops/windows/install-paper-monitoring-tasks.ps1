@@ -4,6 +4,8 @@
 #   HorsesDontStop-PAPER-Diagnostic   one-shot diagnostic, weekdays 09:21 + 09:36
 # Does not touch HorsesDontStop-PAPER-OpeningEquity, credentials or trading.
 $ErrorActionPreference = "Stop"
+$taskTimeHelper = Join-Path $PSScriptRoot 'scheduled-task-time.ps1'
+. $taskTimeHelper
 $runner = (Resolve-Path (Join-Path $PSScriptRoot "run-paper-supervisor.ps1")).Path
 $python = Join-Path (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path ".venv\Scripts\python.exe"
 $secrets = Join-Path $env:LOCALAPPDATA "horsesdontstop"
@@ -33,7 +35,7 @@ $supervisorSettings = New-ScheduledTaskSettingsSet -RestartCount 3 `
 Register-ScheduledTask -TaskName "HorsesDontStop-PAPER-Supervisor" `
     -Action (New-HdsAction "-Continuous") `
     -Trigger @((New-ScheduledTaskTrigger -AtLogOn -User $user),
-               (New-ScheduledTaskTrigger -Weekly -DaysOfWeek $weekdays -At "09:10")) `
+               (New-HdsEasternWeeklyTrigger -DaysOfWeek $weekdays -At "09:10")) `
     -Principal $principal -Settings $supervisorSettings -Force `
     -Description "Continuous read-only PAPER supervisor. No orders." | Out-Null
 
@@ -44,8 +46,8 @@ $diagnosticSettings = New-ScheduledTaskSettingsSet `
     -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
 Register-ScheduledTask -TaskName "HorsesDontStop-PAPER-Diagnostic" `
     -Action (New-HdsAction "-Diagnose") `
-    -Trigger @((New-ScheduledTaskTrigger -Weekly -DaysOfWeek $weekdays -At "09:21"),
-               (New-ScheduledTaskTrigger -Weekly -DaysOfWeek $weekdays -At "09:36")) `
+    -Trigger @((New-HdsEasternWeeklyTrigger -DaysOfWeek $weekdays -At "09:21"),
+               (New-HdsEasternWeeklyTrigger -DaysOfWeek $weekdays -At "09:36")) `
     -Principal $principal -Settings $diagnosticSettings -Force `
     -Description "One-shot read-only PAPER diagnostic with log and phone alert. No orders." | Out-Null
 

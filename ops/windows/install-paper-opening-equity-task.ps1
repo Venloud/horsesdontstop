@@ -1,6 +1,8 @@
 # Install a user-session Windows Task Scheduler task, separate from supervisor.
 # Reuses the existing Python collector and current-user DPAPI credential store.
 $ErrorActionPreference = "Stop"
+$taskTimeHelper = Join-Path $PSScriptRoot 'scheduled-task-time.ps1'
+. $taskTimeHelper
 $runner = (Resolve-Path (Join-Path $PSScriptRoot "run-paper-opening-equity.ps1")).Path
 $python = Join-Path (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path ".venv\Scripts\python.exe"
 $secrets = Join-Path $env:LOCALAPPDATA "horsesdontstop"
@@ -16,7 +18,7 @@ $principal = New-ScheduledTaskPrincipal -UserId ([Security.Principal.WindowsIden
 $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument ('-NoProfile -ExecutionPolicy RemoteSigned -File "' + $runner + '"')
 $triggers = @(
     (New-ScheduledTaskTrigger -AtLogOn -User ([Security.Principal.WindowsIdentity]::GetCurrent().Name)),
-    (New-ScheduledTaskTrigger -Weekly -DaysOfWeek Monday,Tuesday,Wednesday,Thursday,Friday -At "09:20")
+    (New-HdsEasternWeeklyTrigger -DaysOfWeek @("Monday", "Tuesday", "Wednesday", "Thursday", "Friday") -At "09:20")
 )
 $settings = New-ScheduledTaskSettingsSet -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
 Register-ScheduledTask -TaskName $task -Action $action -Trigger $triggers -Principal $principal -Settings $settings -Description "PAPER opening equity, separate from read-only supervisor. No orders." -Force | Out-Null
