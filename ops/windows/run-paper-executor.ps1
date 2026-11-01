@@ -7,6 +7,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $folder = Join-Path $env:LOCALAPPDATA 'horsesdontstop'
+$dbHost = 'ep-summer-salad-b5btnpj6.c-7.us-east-2.aws.neon.tech'
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 $python = Join-Path $repo '.venv\Scripts\python.exe'
 if ($repo -ne 'C:\Users\van02\horsesdontstop') { throw 'Executor must run from the stable runtime checkout.' }
@@ -32,7 +33,9 @@ try {
     }
     $env:ALPACA_PAPER_API_KEY = Read-HdsExecutorSecret 'alpaca-paper-key.dpapi'
     $env:ALPACA_PAPER_SECRET_KEY = Read-HdsExecutorSecret 'alpaca-paper-secret.dpapi'
-    $env:PAPER_JOURNAL_DSN = Read-HdsExecutorSecret 'neon-monitor.dpapi'
+    $monitorPassword = [Uri]::EscapeDataString(
+        (Read-HdsExecutorSecret 'neon-monitor.dpapi'))
+    $env:PAPER_JOURNAL_DSN = "postgresql://hds_paper_win_monitor:${monitorPassword}@${dbHost}:5432/neondb?sslmode=require&channel_binding=require"
     $env:PAPER_EXECUTOR_DSN = Read-HdsExecutorSecret 'neon-executor-dsn.dpapi'
     $env:PAPER_RECONCILER_DSN = Read-HdsExecutorSecret 'neon-reconciler-dsn.dpapi'
     $env:PAPER_ACCOUNT_SHA256 = (Get-Content -LiteralPath (Join-Path $folder 'paper-account-sha256.txt') -Raw).Trim()
