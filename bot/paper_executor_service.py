@@ -269,9 +269,19 @@ def prepare_live_candidate(*, components, now=None, symbols=None):
         if (getattr(clock, "is_open", None) is not True
                 or getattr(account, "trading_blocked", None) is not False):
             raise TradeBlocked("PAPER account or regular market session is not eligible")
+        now = datetime.now(timezone.utc)
         preview = preview_live_paper_entry(
             symbol=symbol, quote=quote, equity=account.equity,
             available_cash=account.cash, now=now, market_open=clock.is_open)
+        lease = _verify_supervisor_receipt(
+            components["receipt_path"], components["heartbeat"], now)
+
+        def verify_watchdog():
+            fresh_lease = _verify_supervisor_receipt(
+                components["receipt_path"], components["heartbeat"],
+                datetime.now(timezone.utc))
+            return int(fresh_lease.age_seconds)
+
         state = build_safety_state(
             account=account, clock=clock, positions=positions, orders=orders,
             control=control, unresolved=unresolved,
@@ -283,7 +293,7 @@ def prepare_live_candidate(*, components, now=None, symbols=None):
             trading=trading, journal=executor, market_quote=quote,
             preview=preview, safety_state=state, approval=None, now=now,
             expected_account_sha256=expected_hash, market_data=market_data,
-            prepare_only=True)
+            prepare_only=True, verify_watchdog=verify_watchdog)
         from .paper_pilot_approval import render_owner_approval_sql
         result = {
             "mode": "PREPARED_FOR_EXACT_OWNER_REVIEW",
@@ -309,17 +319,21 @@ def dispatch_approved_artifact(*, components, artifact, now=None):
     row and single-use dispatch function remain the authentication boundary.
     """
     from datetime import timedelta
-    from .live_quotes import LivePaperEntryPreview
+    from .paper_supervised_execution import PAPER_ORDER_SUBMISSIONS_RELEASED
+    if PAPER_ORDER_SUBMISSIONS_RELEASED is not True:
+        raise TradeBlocked("PAPER broker submissions NOT RELEASED")
+
+    from .live_quotes import LivePaperEntryPreview, build_live_protected_oto_request
     from .paper_supervised_execution import (
         ExplicitPaperTradeApproval, _plan_from_quoted_preview,
-        _paper_account_sha256, _broker_did_not_find_order,
+        _paper_account_sha256, _broker_did_not_find_order, _request_sha256,
         submit_paper_once_supervised,
     )
     from .paper_pilot_approval_cli import approval_sql_from_document
-    from .alpaca.data.requests import StockLatestQuoteRequest
-    from .alpaca.data.enums import DataFeed
-    from .alpaca.trading.enums import QueryOrderStatus
-    from .alpaca.trading.requests import GetOrdersRequest
+    from alpaca.data.requests import StockLatestQuoteRequest
+    from alpaca.data.enums import DataFeed
+    from alpaca.trading.enums import QueryOrderStatus
+    from alpaca.trading.requests import GetOrdersRequest
     from .paper_accounting import fetch_account_history, reconcile_cash_lifetime
     from .paper_execution_journal import PaperExecutorJournal
     from .paper_readiness_cli import research_candidates
@@ -392,7 +406,17 @@ def dispatch_approved_artifact(*, components, artifact, now=None):
     from .live_quotes import preview_live_paper_entry
     live_preview = preview_live_paper_entry(
         symbol=plan.symbol, quote=quote, equity=account.equity,
+        available_cash=account.cash, now=datetime.now(timezone.utc), market_open=True)
+    if (prepared_doc.get("account_id_sha256") != expected_hash
+            or _request_sha256(build_live_protected_oto_request(live_preview))
+            != prepared_doc.get("request_sha256")):
+        raise TradeBlocked("Fresh SDK order does not match recorded owner-approved request")
+    now = datetime.now(timezone.utc)
+    live_preview = preview_live_paper_entry(
+        symbol=plan.symbol, quote=quote, equity=account.equity,
         available_cash=account.cash, now=now, market_open=True)
+    lease = _verify_supervisor_receipt(
+        components["receipt_path"], components["heartbeat"], now)
     state = build_safety_state(
         account=account, clock=clock, positions=positions, orders=orders,
         control=control, unresolved=(), day_open_equity=day_open,
@@ -407,13 +431,18 @@ def dispatch_approved_artifact(*, components, artifact, now=None):
         order_time_in_force="gtc", order_class="oto",
         maximum_purchase_cost_usd=5.00, fee_reserve_usd=0.50,
         account_id_sha256=expected_hash)
+    def verify_watchdog():
+        fresh_lease = _verify_supervisor_receipt(
+            components["receipt_path"], components["heartbeat"],
+            datetime.now(timezone.utc))
+        return int(fresh_lease.age_seconds)
     # The dataclass above carries consistency terms only. The owner-only
     # approval row is checked/consumed atomically by the Neon dispatch function.
     return submit_paper_once_supervised(
         trading=trading, journal=executor, market_quote=quote,
-        preview=preview, safety_state=state, approval=approval, now=now,
+        preview=live_preview, safety_state=state, approval=approval, now=now,
         expected_account_sha256=expected_hash, market_data=market_data,
-        intent_already_reserved=True)
+        intent_already_reserved=True, verify_watchdog=verify_watchdog)
 
 
 def run_once(*, output: Path, reserve: bool = False):
@@ -442,7 +471,9 @@ def main(argv=None):
         else:
             from .paper_supervised_execution import PAPER_ORDER_SUBMISSIONS_RELEASED
             if PAPER_ORDER_SUBMISSIONS_RELEASED is not True:
-                raise TradeBlocked("PAPER broker submissions NOT RELEASED")
+                print("PAPER EXECUTOR BLOCKED: PAPER broker submissions NOT RELEASED; no broker order sent.",
+                      file=sys.stderr)
+                return 2
             artifact = json.loads(args.dispatch_file.read_text(encoding="utf-8"))
             components = _live_components()
             dispatch_started = True

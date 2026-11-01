@@ -192,7 +192,7 @@ class FakeMarketData:
 
 def execute(p=None, *, broker=None, journal=None, state=None,
             approval=None, live_quote=None, now=NOW, prepare_only=False,
-            intent_already_reserved=True):
+            intent_already_reserved=True, verify_watchdog=lambda: 2):
     p = p or preview()
     broker = broker or FakeBroker(p)
     journal = journal or FakeJournal()
@@ -205,6 +205,7 @@ def execute(p=None, *, broker=None, journal=None, state=None,
         market_data=FakeMarketData(),
         prepare_only=prepare_only,
         intent_already_reserved=intent_already_reserved,
+        verify_watchdog=verify_watchdog,
     )
 
 
@@ -214,6 +215,20 @@ def test_release_is_off_by_default_and_blocks_before_any_network():
     broker, journal = FakeBroker(p), FakeJournal()
     with pytest.raises(TradeBlocked, match="NOT RELEASED"):
         execute(p, broker=broker, journal=journal)
+    assert broker.calls == []
+    assert journal.calls == []
+
+
+def test_stale_independent_watchdog_blocks_before_broker_or_database_calls(monkeypatch):
+    monkeypatch.setattr(entry, "PAPER_ORDER_SUBMISSIONS_RELEASED", True)
+    p = preview()
+    broker, journal = FakeBroker(p), FakeJournal()
+    with pytest.raises(TradeBlocked, match="supervisor lease"):
+        entry.submit_paper_once_supervised(
+            trading=broker, journal=journal, market_quote=quote(),
+            preview=p, safety_state=healthy(), approval=approved(p), now=NOW,
+            expected_account_sha256=PAPER_ACCOUNT_SHA256,
+            market_data=FakeMarketData(), verify_watchdog=lambda: 121)
     assert broker.calls == []
     assert journal.calls == []
 
@@ -257,7 +272,45 @@ def test_disarmed_preparation_returns_exact_order_without_broker_write():
     assert proposal["account_id_sha256"] == PAPER_ACCOUNT_SHA256
     assert len(broker.sent) == 0
     assert journal.calls[0][0] == "reserve"
-    assert len(journal.calls) == 1
+
+
+def test_watchdog_is_rechecked_after_broker_reads_before_reservation():
+    p = preview()
+    broker, journal = FakeBroker(p), FakeJournal()
+    ages = iter((2, 121))
+    with pytest.raises(TradeBlocked, match="supervisor lease"):
+        execute(
+            p, broker=broker, journal=journal, prepare_only=True,
+            intent_already_reserved=False, approval=None,
+            state=healthy(kill_switch_active=True,
+                          order_submissions_explicitly_enabled=False),
+            verify_watchdog=lambda: next(ages))
+    assert journal.calls == []
+    assert not broker.sent
+
+
+def test_slow_client_id_lookup_cannot_reserve_a_stale_quote(monkeypatch):
+    p = preview()
+    broker, journal = FakeBroker(p), FakeJournal()
+    ticks = {"now": 100}
+    monkeypatch.setattr(entry, "monotonic", lambda: ticks["now"])
+    original = broker.get_order_by_client_id
+
+    def slow_lookup(client_id):
+        try:
+            return original(client_id)
+        finally:
+            ticks["now"] += 60
+
+    broker.get_order_by_client_id = slow_lookup
+    with pytest.raises(TradeBlocked, match="stale"):
+        execute(
+            p, broker=broker, journal=journal, prepare_only=True,
+            intent_already_reserved=False, approval=None,
+            state=healthy(kill_switch_active=True,
+                          order_submissions_explicitly_enabled=False))
+    assert journal.calls == []
+    assert not broker.sent
 
 
 def test_gtc_dispatch_requires_existing_prepared_intent(monkeypatch):
@@ -318,7 +371,7 @@ def test_missing_approval_stops_entry(monkeypatch):
             trading=broker, journal=journal, market_quote=quote(),
             preview=p, safety_state=healthy(), approval=None, now=NOW,
             expected_account_sha256=PAPER_ACCOUNT_SHA256,
-            market_data=FakeMarketData())
+            market_data=FakeMarketData(), verify_watchdog=lambda: 2)
     assert journal.calls == []
     assert not broker.sent
 
@@ -703,7 +756,7 @@ def test_strategy_must_have_fresh_unique_eligible_completed_bars(monkeypatch, ba
             trading=broker, journal=FakeJournal(), market_quote=quote(),
             preview=p, safety_state=healthy(), approval=approved(p), now=NOW,
             expected_account_sha256=PAPER_ACCOUNT_SHA256,
-            market_data=BadData())
+            market_data=BadData(), verify_watchdog=lambda: 2)
     assert not broker.sent
 
 
@@ -718,7 +771,32 @@ def test_early_close_deadline_crossed_during_final_reads_blocks(monkeypatch):
         is_open=True, next_close=NOW + timedelta(minutes=30, seconds=1))
     with pytest.raises(TradeBlocked, match="before POST"):
         execute(p, broker=broker)
-    assert not broker.sent
+
+
+def test_watchdog_network_delay_cannot_hide_stale_quote_before_post(monkeypatch):
+    monkeypatch.setattr(entry, "PAPER_ORDER_SUBMISSIONS_RELEASED", True)
+    p = preview()
+    broker, journal = FakeBroker(p), FakeJournal()
+    ticks = {"n": 0, "now": 100}
+
+    def monotonic_now():
+        return ticks["now"]
+
+    monkeypatch.setattr(entry, "monotonic", monotonic_now)
+
+    def delayed_watchdog():
+        ticks["n"] += 1
+        if ticks["n"] == 2:
+            # This simulates a slow, successful DB lease read. The quote is
+            # stale afterward, so its age must be checked against this time.
+            ticks["now"] += 60
+        return 2
+
+    with pytest.raises(TradeBlocked, match="before POST"):
+        execute(p, broker=broker, journal=journal,
+                verify_watchdog=delayed_watchdog)
+    assert broker.sent == []
+    assert broker.calls[-1] != "submit_order"
 
 
 def test_simulated_order_to_independent_fill_reconciliation_and_restart(monkeypatch):

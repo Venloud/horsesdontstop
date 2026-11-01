@@ -309,7 +309,7 @@ def _verify_momentum_signal(trading, market_data, symbol, now):
 def submit_paper_once_supervised(
     *, trading, journal, market_quote, preview, safety_state,
     approval, now: datetime, expected_account_sha256=None, market_data=None,
-    prepare_only=False, intent_already_reserved=False,
+    prepare_only=False, intent_already_reserved=False, verify_watchdog=None,
 ) -> PaperSubmitResult | PreparedPaperOrder:
     """ONE broker submission at most, with exact matching reviewed terms.
 
@@ -339,6 +339,13 @@ def submit_paper_once_supervised(
         raise TradeBlocked("Execution readiness blocked: " + ",".join(blockers))
     if safety_state.broker_endpoint != PAPER_ENDPOINT:
         raise TradeBlocked("Live-money broker endpoint rejected")
+    def assert_watchdog_fresh():
+        if not callable(verify_watchdog):
+            raise TradeBlocked("Independent supervisor lease verifier unavailable")
+        age = verify_watchdog()
+        if type(age) is not int or not 0 <= age <= 120:
+            raise TradeBlocked("Independent supervisor lease is stale or unverifiable")
+    assert_watchdog_fresh()
     # Confirm the *actual* SDK client URL, not only caller-provided
     # PaperSafetyState. If SDK changes or its endpoint is hidden,
     # default to refusal instead of guessing.
@@ -414,6 +421,24 @@ def submit_paper_once_supervised(
     # id + journal uniqueness + explicit no-repeat rule.
     _broker_did_not_find_order(trading, plan.client_order_id)
     if prepare_only:
+        # Do network-based calendar and watchdog reads first. Then recheck
+        # quote age/deadline locally immediately before the durable reservation.
+        final_now = now + timedelta(seconds=monotonic() - started)
+        _verify_paper_market_session(trading, clock, now=final_now)
+        assert_watchdog_fresh()
+        final_now = now + timedelta(seconds=monotonic() - started)
+        final_preview = preview_live_paper_entry(
+            symbol=preview.symbol, quote=market_quote, equity=account.equity,
+            available_cash=account.cash, now=final_now, market_open=True)
+        for key in (
+            "client_order_id", "quote_at_utc", "bid_usd", "ask_usd",
+            "buy_limit_usd", "stop_usd", "shares", "risk_budget_usd",
+            "stop_distance_risk_usd", "max_limit_purchase_usd",
+        ):
+            if getattr(recomputed, key) != getattr(final_preview, key):
+                raise TradeBlocked("PAPER quote or order terms changed before reservation")
+        if final_now >= clock.next_close - timedelta(minutes=30):
+            raise TradeBlocked("PAPER preparation deadline passed before reservation")
         if journal.reserve_if_enabled(plan) is not True:
             raise TradeBlocked("Durable order already reserved: NEVER reuse")
         return PreparedPaperOrder(
@@ -463,8 +488,10 @@ def submit_paper_once_supervised(
             if not callable(assert_lock_alive):
                 raise TradeBlocked("PAPER control lock liveness check unavailable")
             assert_lock_alive()
-            # Network reads can themselves stall. Approval and quote freshness
-            # must still hold immediately before the POST boundary.
+            # The independent lease read is network I/O. Do it before the
+            # final clock/quote/approval budget, then perform no more I/O
+            # between those final checks and the one POST.
+            assert_watchdog_fresh()
             send_now = now + timedelta(seconds=monotonic() - started)
             _validate_approval(approval, recomputed, send_now,
                                expected_account_sha256)

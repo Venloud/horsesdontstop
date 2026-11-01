@@ -3,8 +3,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from bot.paper_executor_service import build_safety_state
-from bot.paper_executor_service import main
+from bot.paper_executor_service import (
+    build_safety_state, dispatch_approved_artifact, main,
+)
 from bot.paper_safety import TradeBlocked, execution_blockers
 
 
@@ -88,3 +89,10 @@ def test_dispatch_cli_is_hard_disabled_before_reading_or_connecting(capsys):
     output = capsys.readouterr()
     assert "PAPER broker submissions NOT RELEASED" in output.err
     assert "no broker order sent" in output.err
+
+
+def test_dispatch_helper_is_hard_disabled_before_using_components(monkeypatch):
+    monkeypatch.setattr(
+        "bot.paper_supervised_execution.PAPER_ORDER_SUBMISSIONS_RELEASED", False)
+    with pytest.raises(TradeBlocked, match="NOT RELEASED"):
+        dispatch_approved_artifact(components=None, artifact=None)
