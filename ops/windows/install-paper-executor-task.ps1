@@ -26,9 +26,22 @@ $action = New-ScheduledTaskAction -Execute 'powershell.exe' `
     -Argument ('-NoProfile -ExecutionPolicy RemoteSigned -File "' + $runner + '"') `
     -WorkingDirectory $repo
 $triggers = @()
+$now = Get-Date
+$today = $now.Date
 foreach ($day in @('Monday','Tuesday','Wednesday','Thursday','Friday')) {
     foreach ($at in @('09:36','09:41','09:46')) {
-        $triggers += New-ScheduledTaskTrigger -Weekly -DaysOfWeek $day -At $at
+        $parts = $at.Split(':')
+        $timeOfDay = [TimeSpan]::new([int]$parts[0], [int]$parts[1], 0)
+        $targetDay = [System.DayOfWeek]::$day
+        $daysAhead = (([int]$targetDay - [int]$today.DayOfWeek) + 7) % 7
+        if ($daysAhead -eq 0 -and $timeOfDay -le $now.TimeOfDay) { $daysAhead = 7 }
+        $firstRun = $today.AddDays($daysAhead).Add($timeOfDay)
+        $trigger = New-ScheduledTaskTrigger -Weekly -DaysOfWeek $day -At $firstRun
+        # An explicit UTC offset freezes today's offset and can shift the task
+        # by one hour at the next DST transition. A naive local StartBoundary
+        # asks Task Scheduler to apply the machine's Eastern DST rules.
+        $trigger.StartBoundary = $firstRun.ToString('yyyy-MM-ddTHH:mm:ss', [Globalization.CultureInfo]::InvariantCulture)
+        $triggers += $trigger
     }
 }
 $settings = New-ScheduledTaskSettingsSet -RestartCount 2 `
