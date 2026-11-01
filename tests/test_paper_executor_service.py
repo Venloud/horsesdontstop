@@ -1,7 +1,10 @@
 from hashlib import sha256
+from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from alpaca.common.exceptions import APIError
 
 from bot.paper_executor_service import (
     build_safety_state, dispatch_approved_artifact, main,
@@ -96,3 +99,125 @@ def test_dispatch_helper_is_hard_disabled_before_using_components(monkeypatch):
         "bot.paper_supervised_execution.PAPER_ORDER_SUBMISSIONS_RELEASED", False)
     with pytest.raises(TradeBlocked, match="NOT RELEASED"):
         dispatch_approved_artifact(components=None, artifact=None)
+
+
+def test_live_coordinator_prepares_exact_proposal_without_any_broker_post(monkeypatch):
+    from bot import paper_accounting, paper_executor_service as service
+    from bot.paper_broker_transport import BoundedPaperSession
+    from bot.paper_safety import PAPER_ENDPOINT
+
+    now = datetime(2026, 11, 2, 15, 0, tzinfo=timezone.utc)
+    today, prior = date(2026, 11, 2), date(2026, 10, 30)
+    account = SimpleNamespace(
+        id=ACCOUNT_ID, equity="500", cash="500", buying_power="500",
+        trading_blocked=False, currency="USD",
+        created_at=datetime(2026, 10, 1, tzinfo=timezone.utc))
+    sessions = [
+        SimpleNamespace(date=prior),
+        SimpleNamespace(date=today,
+                        open=datetime(2026, 11, 2, 14, 30, tzinfo=timezone.utc),
+                        close=datetime(2026, 11, 2, 21, 0, tzinfo=timezone.utc)),
+    ]
+
+    class Trading:
+        _base_url = PAPER_ENDPOINT
+        _retry = 0
+        _session = BoundedPaperSession()
+        sent = []
+
+        def get_account(self): return account
+        def get_clock(self):
+            return SimpleNamespace(is_open=True,
+                                   next_close=datetime(2026, 11, 2, 21, 0, tzinfo=timezone.utc))
+        def get_all_positions(self): return []
+        def get_orders(self, *, filter): return []
+        def get_calendar(self, request):
+            if request.start == today and request.end == today:
+                return [sessions[1]]
+            if request.end < today:
+                return [sessions[0]]
+            return sessions
+        def get_order_by_client_id(self, client_id):
+            error = SimpleNamespace(response=SimpleNamespace(status_code=404))
+            raise APIError("not found", http_error=error)
+        def submit_order(self, *, order_data):
+            self.sent.append(order_data)
+            raise AssertionError("prepare coordinator must never POST")
+
+    class Data:
+        def get_stock_latest_quote(self, request):
+            return {"F": SimpleNamespace(
+                timestamp=now - timedelta(seconds=2), bid_price=1.00,
+                ask_price=1.004, bid_size=20, ask_size=20)}
+
+    class Monitor:
+        def assert_monitor_only(self): pass
+        def read_control(self):
+            return SimpleNamespace(kill_switch_active=True,
+                                   submissions_enabled=False)
+        def read_unresolved_intents(self, *, limit): return []
+        def read_equity_references(self, start, as_of): return (500, 500)
+
+    class Executor:
+        reserved = []
+        def assert_executor_permissions(self, *, reservation):
+            assert reservation is True
+        def reserve_if_enabled(self, plan):
+            self.reserved.append(plan)
+            return True
+
+    class Reconciler:
+        def assert_reconciler_permissions(self): pass
+        def read_pending_plans(self): return []
+
+    class Heartbeat:
+        pass
+
+    monkeypatch.setattr(service, "_verify_supervisor_receipt", lambda *_a: SimpleNamespace(
+        healthy=True, age_seconds=3))
+    monkeypatch.setattr(paper_accounting, "fetch_account_history",
+                        lambda trading: (account, [], {}, True))
+    monkeypatch.setattr(paper_accounting, "reconcile_cash_lifetime",
+                        lambda **_kw: {
+                            "history_scope": "authenticated cash-only account lifetime",
+                            "equity_history_explained": True,
+                            "cashflows_reconciled": True, "can_submit_orders": False,
+                            "account_id_sha256": ACCOUNT_HASH,
+                            "equity": "500", "cash": "500",
+                        })
+    import bot.paper_readiness_cli as readiness
+    monkeypatch.setattr(readiness, "research_candidates", lambda *a, **kw: [{
+        "symbol": "F", "momentum_score": 0.5,
+        "prior_completed_bar_date": prior.isoformat(), "reference_close": 1.0,
+    }])
+    trading, executor = Trading(), Executor()
+    components = {
+        "trading": trading, "market_data": Data(), "monitor": Monitor(),
+        "executor": executor, "reconciler": Reconciler(),
+        "reconciler_trading": Trading(), "heartbeat": Heartbeat(),
+        "expected_account_hash": ACCOUNT_HASH, "receipt_path": Path("unused.json"),
+    }
+    persisted = []
+    result = service.prepare_live_candidate(
+        components=components, now=now, symbols=("F",), utcnow=lambda: now,
+        prepared_observer=lambda prepared: persisted.append(prepared.to_dict()))
+    assert result["mode"] == "PREPARED_FOR_EXACT_OWNER_REVIEW"
+    assert result["prepared"]["symbol"] == "F"
+    assert result["prepared"]["time_in_force"] == "gtc"
+    assert result["prepared"]["order_class"] == "oto"
+    assert result["prepared"]["purchase_cost_cap"] <= 5.00
+    assert result["prepared"]["fee_reserve"] == 0.50
+    assert result["owner_approval_sql"].startswith("-- OWNER ACTION:")
+    from bot.paper_pilot_approval_cli import approval_sql_from_document
+    recovery_sql = approval_sql_from_document({
+        "mode": "PREPARATION_PENDING_RESERVATION",
+        "prepared": result["prepared"],
+    })
+    assert recovery_sql.startswith("-- RECOVERY ARTIFACT:")
+    assert "SELECT public.paper_approve_bounded_pilot(" in recovery_sql
+    assert result["broker_orders"] == 0
+    assert result["kill_switch_active"] is True
+    assert result["submissions_enabled"] is False
+    assert len(executor.reserved) == 1
+    assert persisted[0]["client_order_id"] == result["prepared"]["client_order_id"]
+    assert trading.sent == []

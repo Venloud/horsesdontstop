@@ -310,6 +310,7 @@ def submit_paper_once_supervised(
     *, trading, journal, market_quote, preview, safety_state,
     approval, now: datetime, expected_account_sha256=None, market_data=None,
     prepare_only=False, intent_already_reserved=False, verify_watchdog=None,
+    prepared_observer=None,
 ) -> PaperSubmitResult | PreparedPaperOrder:
     """ONE broker submission at most, with exact matching reviewed terms.
 
@@ -321,6 +322,8 @@ def submit_paper_once_supervised(
         raise TradeBlocked("Invalid PAPER pilot mode")
     if prepare_only and intent_already_reserved:
         raise TradeBlocked("Preparation cannot reuse a prior intent")
+    if prepared_observer is not None and (not prepare_only or not callable(prepared_observer)):
+        raise TradeBlocked("Prepared artifact observer is valid only before a preparation reservation")
     if PAPER_ORDER_SUBMISSIONS_RELEASED is not True and not prepare_only:
         raise TradeBlocked("PAPER broker submissions NOT RELEASED")
     if not isinstance(now, datetime) or now.tzinfo is None:
@@ -425,6 +428,15 @@ def submit_paper_once_supervised(
         # quote age/deadline locally immediately before the durable reservation.
         final_now = now + timedelta(seconds=monotonic() - started)
         _verify_paper_market_session(trading, clock, now=final_now)
+        prepared = PreparedPaperOrder(
+            plan=plan, preview=recomputed, request_sha256=request_digest,
+            account_id_sha256=expected_account_sha256,
+        )
+        # Persist exact terms before the irreversible durable reservation. If
+        # the process crashes after commit, the owner can recover the artifact;
+        # the DB approval function still refuses unless the reservation exists.
+        if prepared_observer is not None:
+            prepared_observer(prepared)
         assert_watchdog_fresh()
         final_now = now + timedelta(seconds=monotonic() - started)
         final_preview = preview_live_paper_entry(
@@ -441,10 +453,7 @@ def submit_paper_once_supervised(
             raise TradeBlocked("PAPER preparation deadline passed before reservation")
         if journal.reserve_if_enabled(plan) is not True:
             raise TradeBlocked("Durable order already reserved: NEVER reuse")
-        return PreparedPaperOrder(
-            plan=plan, preview=recomputed, request_sha256=request_digest,
-            account_id_sha256=expected_account_sha256,
-        )
+        return prepared
     if plan.time_in_force == "gtc":
         if intent_already_reserved is not True:
             raise TradeBlocked("GTC pilot dispatch requires separately prepared owner-approved intent")

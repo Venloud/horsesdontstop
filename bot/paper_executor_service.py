@@ -191,7 +191,8 @@ def _live_components():
     }
 
 
-def prepare_live_candidate(*, components, now=None, symbols=None):
+def prepare_live_candidate(*, components, now=None, symbols=None, utcnow=None,
+                          prepared_observer=None):
     """Read fresh evidence and reserve at most one exact proposal; never POST."""
     from alpaca.data.enums import DataFeed
     from alpaca.data.requests import StockLatestQuoteRequest
@@ -204,7 +205,8 @@ def prepare_live_candidate(*, components, now=None, symbols=None):
     from .paper_supervised_execution import submit_paper_once_supervised
     from .robustness_cli import BROADER_SYMBOLS
 
-    now = now or datetime.now(timezone.utc)
+    utcnow = utcnow or (lambda: datetime.now(timezone.utc))
+    now = now or utcnow()
     if now.tzinfo is None:
         raise TradeBlocked("Timezone-aware executor clock required")
     symbols = tuple(symbols or BROADER_SYMBOLS)
@@ -269,7 +271,7 @@ def prepare_live_candidate(*, components, now=None, symbols=None):
         if (getattr(clock, "is_open", None) is not True
                 or getattr(account, "trading_blocked", None) is not False):
             raise TradeBlocked("PAPER account or regular market session is not eligible")
-        now = datetime.now(timezone.utc)
+        now = utcnow()
         preview = preview_live_paper_entry(
             symbol=symbol, quote=quote, equity=account.equity,
             available_cash=account.cash, now=now, market_open=clock.is_open)
@@ -279,7 +281,7 @@ def prepare_live_candidate(*, components, now=None, symbols=None):
         def verify_watchdog():
             fresh_lease = _verify_supervisor_receipt(
                 components["receipt_path"], components["heartbeat"],
-                datetime.now(timezone.utc))
+                utcnow())
             return int(fresh_lease.age_seconds)
 
         state = build_safety_state(
@@ -293,7 +295,8 @@ def prepare_live_candidate(*, components, now=None, symbols=None):
             trading=trading, journal=executor, market_quote=quote,
             preview=preview, safety_state=state, approval=None, now=now,
             expected_account_sha256=expected_hash, market_data=market_data,
-            prepare_only=True, verify_watchdog=verify_watchdog)
+            prepare_only=True, verify_watchdog=verify_watchdog,
+            prepared_observer=prepared_observer)
         from .paper_pilot_approval import render_owner_approval_sql
         result = {
             "mode": "PREPARED_FOR_EXACT_OWNER_REVIEW",
@@ -312,7 +315,7 @@ def prepare_live_candidate(*, components, now=None, symbols=None):
             "broker_orders": 0, "database_writes": 0}
 
 
-def dispatch_approved_artifact(*, components, artifact, now=None):
+def dispatch_approved_artifact(*, components, artifact, now=None, utcnow=None):
     """Attempt one dispatch through the hard-gated gateway after owner SQL.
 
     The supplied JSON is not authority. The database's owner-only approval
@@ -355,7 +358,8 @@ def dispatch_approved_artifact(*, components, artifact, now=None):
     except Exception:
         raise TradeBlocked("Prepared order artifact failed integrity checks") from None
     plan = _plan_from_quoted_preview(preview)
-    now = now or datetime.now(timezone.utc)
+    utcnow = utcnow or (lambda: datetime.now(timezone.utc))
+    now = now or utcnow()
     if now.tzinfo is None:
         raise TradeBlocked("Timezone-aware dispatch clock required")
     trading, market_data = components["trading"], components["market_data"]
@@ -406,12 +410,12 @@ def dispatch_approved_artifact(*, components, artifact, now=None):
     from .live_quotes import preview_live_paper_entry
     live_preview = preview_live_paper_entry(
         symbol=plan.symbol, quote=quote, equity=account.equity,
-        available_cash=account.cash, now=datetime.now(timezone.utc), market_open=True)
+        available_cash=account.cash, now=utcnow(), market_open=True)
     if (prepared_doc.get("account_id_sha256") != expected_hash
             or _request_sha256(build_live_protected_oto_request(live_preview))
             != prepared_doc.get("request_sha256")):
         raise TradeBlocked("Fresh SDK order does not match recorded owner-approved request")
-    now = datetime.now(timezone.utc)
+    now = utcnow()
     live_preview = preview_live_paper_entry(
         symbol=plan.symbol, quote=quote, equity=account.equity,
         available_cash=account.cash, now=now, market_open=True)
@@ -434,7 +438,7 @@ def dispatch_approved_artifact(*, components, artifact, now=None):
     def verify_watchdog():
         fresh_lease = _verify_supervisor_receipt(
             components["receipt_path"], components["heartbeat"],
-            datetime.now(timezone.utc))
+            utcnow())
         return int(fresh_lease.age_seconds)
     # The dataclass above carries consistency terms only. The owner-only
     # approval row is checked/consumed atomically by the Neon dispatch function.
@@ -449,7 +453,16 @@ def run_once(*, output: Path, reserve: bool = False):
     if reserve is not True:
         raise TradeBlocked("Executor requires explicit --prepare to perform a durable reservation")
     components = _live_components()
-    report = prepare_live_candidate(components=components)
+    def persist_before_reservation(prepared):
+        _atomic_json(output, {
+            "mode": "PREPARATION_PENDING_RESERVATION",
+            "prepared": prepared.to_dict(),
+            "broker_orders": 0,
+            "durable_reservation_written": False,
+            "instructions": "Check the durable intent is reserved before executing owner approval SQL.",
+        })
+    report = prepare_live_candidate(
+        components=components, prepared_observer=persist_before_reservation)
     _atomic_json(output, report)
     return report
 

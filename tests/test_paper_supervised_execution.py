@@ -192,7 +192,8 @@ class FakeMarketData:
 
 def execute(p=None, *, broker=None, journal=None, state=None,
             approval=None, live_quote=None, now=NOW, prepare_only=False,
-            intent_already_reserved=True, verify_watchdog=lambda: 2):
+            intent_already_reserved=True, verify_watchdog=lambda: 2,
+            prepared_observer=None):
     p = p or preview()
     broker = broker or FakeBroker(p)
     journal = journal or FakeJournal()
@@ -206,6 +207,7 @@ def execute(p=None, *, broker=None, journal=None, state=None,
         prepare_only=prepare_only,
         intent_already_reserved=intent_already_reserved,
         verify_watchdog=verify_watchdog,
+        prepared_observer=prepared_observer,
     )
 
 
@@ -254,11 +256,15 @@ def test_mock_only_happy_path_one_protected_paper_order(monkeypatch):
 def test_disarmed_preparation_returns_exact_order_without_broker_write():
     p = preview()
     broker, journal = FakeBroker(p), FakeJournal()
+    events = []
+    reserve = journal.reserve_if_enabled
+    journal.reserve_if_enabled = lambda plan: (events.append("reserve"), reserve(plan))[1]
     prepared = execute(
         p, broker=broker, journal=journal, approval=None, prepare_only=True,
         intent_already_reserved=False,
         state=healthy(kill_switch_active=True,
                       order_submissions_explicitly_enabled=False),
+        prepared_observer=lambda result: events.append("artifact"),
     )
     proposal = prepared.to_dict()
     assert proposal["symbol"] == "F" and proposal["side"] == "buy"
@@ -271,6 +277,7 @@ def test_disarmed_preparation_returns_exact_order_without_broker_write():
     assert len(proposal["request_sha256"]) == 64
     assert proposal["account_id_sha256"] == PAPER_ACCOUNT_SHA256
     assert len(broker.sent) == 0
+    assert events == ["artifact", "reserve"]
     assert journal.calls[0][0] == "reserve"
 
 
@@ -311,6 +318,24 @@ def test_slow_client_id_lookup_cannot_reserve_a_stale_quote(monkeypatch):
                           order_submissions_explicitly_enabled=False))
     assert journal.calls == []
     assert not broker.sent
+
+
+def test_prepared_artifact_failure_prevents_durable_reservation():
+    p = preview()
+    broker, journal = FakeBroker(p), FakeJournal()
+
+    def fail_before_reservation(_prepared):
+        raise OSError("local artifact path unavailable")
+
+    with pytest.raises(OSError, match="artifact path"):
+        execute(
+            p, broker=broker, journal=journal, prepare_only=True,
+            intent_already_reserved=False, approval=None,
+            state=healthy(kill_switch_active=True,
+                          order_submissions_explicitly_enabled=False),
+            prepared_observer=fail_before_reservation)
+    assert journal.calls == []
+    assert broker.sent == []
 
 
 def test_gtc_dispatch_requires_existing_prepared_intent(monkeypatch):

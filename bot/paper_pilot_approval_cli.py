@@ -19,6 +19,14 @@ from .paper_supervised_execution import (
 def approval_sql_from_document(document):
     if not isinstance(document, dict):
         raise ValueError("proposal must be a JSON object")
+    recovered = document.get("mode") == "PREPARATION_PENDING_RESERVATION"
+    if recovered:
+        # Recovery artifact written before Neon reservation. The generated
+        # SQL is safe to render, but Neon will reject it unless the exact
+        # durable reservation committed; verify that status independently.
+        document = document.get("prepared")
+        if not isinstance(document, dict):
+            raise ValueError("recovery proposal lacks prepared terms")
     preview_data = document.get("quote_preview")
     if not isinstance(preview_data, dict):
         raise ValueError("proposal lacks full quote preview")
@@ -42,7 +50,14 @@ def approval_sql_from_document(document):
         account_id_sha256=document.get("account_id_sha256"),
         fee_reserve_usd=document.get("fee_reserve"),
     )
-    return render_owner_approval_sql(prepared)
+    statement = render_owner_approval_sql(prepared)
+    if recovered:
+        statement = (
+            "-- RECOVERY ARTIFACT: first verify the exact Neon intent is still reserved.\n"
+            "-- This approval call will fail closed if reservation did not commit.\n"
+            + statement
+        )
+    return statement
 
 
 def main(argv=None):
