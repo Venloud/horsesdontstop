@@ -6,7 +6,7 @@
     "python-testing",
     "ai-regression-testing"
   ],
-  "restrictions": "Read-only offline/paper safety work only. Never submit orders, change trading permissions, apply migrations or bypass the kill switch.",
+  "restrictions": "Venloud authorizes building, testing, and deploying the bounded Alpaca PAPER executor to the existing stable Windows runtime; using the existing production Neon schema through restricted roles; and narrowly managing the existing PAPER services and permissions when target, rollback, and acceptance evidence are verified. Use existing isolated Neon environments for synthetic write tests. Never use LIVE broker endpoints or credentials, deposit/withdraw funds, create duplicate infrastructure, bypass fail-closed controls, or retry an ambiguous broker POST. Keep production kill ON, submissions OFF, and PAPER_ORDER_SUBMISSIONS_RELEASED=False through deployment and qualification. Do not create or dispatch an order-specific production authorization until Venloud approves the exact current symbol, side, quantity, order type/limit, protective stop, and maximum risk; execute only that approved transaction. Existing reviewed migration sequence and direct-table privilege boundaries remain mandatory.",
   "upstream": "v2.2.3",
   "memory": "Vandam canonical; no automatic observation or separate memory store"
 }
