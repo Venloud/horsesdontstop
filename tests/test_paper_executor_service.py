@@ -1,5 +1,6 @@
 from hashlib import sha256
 from datetime import date, datetime, timedelta, timezone
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -124,6 +125,7 @@ def test_live_coordinator_prepares_exact_proposal_without_any_broker_post(monkey
         _retry = 0
         _session = BoundedPaperSession()
         sent = []
+        pending = []
 
         def get_account(self): return account
         def get_clock(self):
@@ -142,7 +144,9 @@ def test_live_coordinator_prepares_exact_proposal_without_any_broker_post(monkey
             raise APIError("not found", http_error=error)
         def submit_order(self, *, order_data):
             self.sent.append(order_data)
-            raise AssertionError("prepare coordinator must never POST")
+            return SimpleNamespace(
+                id="mock-paper-order", client_order_id=order_data.client_order_id,
+                side="buy")
 
     class Data:
         def get_stock_latest_quote(self, request):
@@ -151,11 +155,14 @@ def test_live_coordinator_prepares_exact_proposal_without_any_broker_post(monkey
                 ask_price=1.004, bid_size=20, ask_size=20)}
 
     class Monitor:
+        kill = True
+        enabled = False
+        pending = []
         def assert_monitor_only(self): pass
         def read_control(self):
-            return SimpleNamespace(kill_switch_active=True,
-                                   submissions_enabled=False)
-        def read_unresolved_intents(self, *, limit): return []
+            return SimpleNamespace(kill_switch_active=self.kill,
+                                   submissions_enabled=self.enabled)
+        def read_unresolved_intents(self, *, limit): return list(self.pending)
         def read_equity_references(self, start, as_of): return (500, 500)
 
     class Executor:
@@ -164,7 +171,17 @@ def test_live_coordinator_prepares_exact_proposal_without_any_broker_post(monkey
             assert reservation is True
         def reserve_if_enabled(self, plan):
             self.reserved.append(plan)
+            components["monitor"].pending = [(
+                plan.client_order_id, "reserved", plan.symbol, plan.whole_shares)]
             return True
+
+        @contextmanager
+        def authorize_reserved_submission(self, plan, *, request_sha256,
+                                         attempt_id, account_id_sha256):
+            assert self.approval_saved is True
+            assert request_sha256 == result["prepared"]["request_sha256"]
+            assert account_id_sha256 == ACCOUNT_HASH
+            yield lambda: None
 
     class Reconciler:
         def assert_reconciler_permissions(self): pass
@@ -221,3 +238,18 @@ def test_live_coordinator_prepares_exact_proposal_without_any_broker_post(monkey
     assert len(executor.reserved) == 1
     assert persisted[0]["client_order_id"] == result["prepared"]["client_order_id"]
     assert trading.sent == []
+
+    # Synthetic dispatch only: simulate the separately enabled production
+    # controls and owner approval, while keeping the real code gate OFF.
+    from bot import paper_supervised_execution as gateway
+    monkeypatch.setattr(gateway, "PAPER_ORDER_SUBMISSIONS_RELEASED", True)
+    components["monitor"].kill = False
+    components["monitor"].enabled = True
+    executor.approval_saved = True
+    submitted = service.dispatch_approved_artifact(
+        components=components, artifact=result, now=now, utcnow=lambda: now)
+    assert submitted.result == "broker_acknowledged_unreconciled_stop_not_proven"
+    assert submitted.submitted_to_paper_broker is True
+    assert len(trading.sent) == 1
+    assert trading.sent[0].qty == result["prepared"]["quantity"]
+    assert trading.sent[0].stop_loss.stop_price == result["prepared"]["stop_price"]
