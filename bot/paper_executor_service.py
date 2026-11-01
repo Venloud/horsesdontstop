@@ -509,6 +509,14 @@ def main(argv=None):
                        + "; broker orders=0; dispatch release remains false.")
         print(message)
         return 0
+    except TradeBlocked as exc:
+        if dispatch_started:
+            print("PAPER EXECUTOR DISPATCH OUTCOME UNKNOWN OR BLOCKED; perform independent broker reconciliation; NEVER retry this client order ID.",
+                  file=sys.stderr)
+        else:
+            print(f"PAPER EXECUTOR BLOCKED: {exc}; no broker order sent.",
+                  file=sys.stderr)
+        return 2
     except Exception:
         if dispatch_started:
             print("PAPER EXECUTOR DISPATCH OUTCOME UNKNOWN OR BLOCKED; perform independent broker reconciliation; NEVER retry this client order ID.",

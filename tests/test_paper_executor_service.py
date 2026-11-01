@@ -102,6 +102,20 @@ def test_dispatch_helper_is_hard_disabled_before_using_components(monkeypatch):
         dispatch_approved_artifact(components=None, artifact=None)
 
 
+def test_prepare_cli_reports_safe_fail_closed_reason_without_exposing_exception(monkeypatch, capsys, tmp_path):
+    from bot import paper_executor_service as service
+
+    def blocked(**_kwargs):
+        raise TradeBlocked("Independent supervisor lease is not healthy")
+
+    monkeypatch.setattr(service, "run_once", blocked)
+    assert main(["--prepare", "--output", str(tmp_path / "receipt.json")]) == 2
+    output = capsys.readouterr()
+    assert "Independent supervisor lease is not healthy" in output.err
+    assert "no broker order sent" in output.err
+    assert not (tmp_path / "receipt.json").exists()
+
+
 def test_live_coordinator_prepares_exact_proposal_without_any_broker_post(monkeypatch):
     from bot import paper_accounting, paper_executor_service as service
     from bot.paper_broker_transport import BoundedPaperSession
