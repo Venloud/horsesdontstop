@@ -151,6 +151,20 @@ def test_runtime_failure_receipt_records_safe_trade_block_reason(monkeypatch, tm
     assert record["exit_code"] == 2
 
 
+def test_closed_flat_supervisor_is_reported_as_idle_not_stale(tmp_path):
+    import json
+    from bot.paper_executor_service import _verify_supervisor_receipt
+
+    now = datetime(2026, 11, 5, 5, 24, tzinfo=timezone.utc)
+    path = tmp_path / "supervisor.json"
+    path.write_text(json.dumps({
+        "status": "closed_flat_idle", "external_ack": True,
+        "observed_at_utc": now.isoformat(), "worker_id": "paper-test",
+    }))
+    with pytest.raises(TradeBlocked, match="closed/flat idle; no active trading lease"):
+        _verify_supervisor_receipt(path, object(), now)
+
+
 def test_live_coordinator_prepares_exact_proposal_without_any_broker_post(monkeypatch):
     from bot import paper_accounting, paper_executor_service as service
     from bot.paper_broker_transport import BoundedPaperSession

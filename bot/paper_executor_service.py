@@ -147,11 +147,17 @@ def _verify_supervisor_receipt(receipt_path: Path, heartbeat_journal, now):
         receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
         observed = datetime.fromisoformat(
             receipt["observed_at_utc"].replace("Z", "+00:00"))
-        if (receipt.get("status") != "read_only_poll_ok"
-                or receipt.get("external_ack") is not True
-                or observed.tzinfo is None or now - observed > timedelta(seconds=120)
-                or now < observed):
-            raise ValueError
+    except Exception:
+        raise TradeBlocked("Independent supervisor lease or external ACK is stale") from None
+    if receipt.get("status") == "closed_flat_idle":
+        raise TradeBlocked(
+            "Supervisor is broker-verified closed/flat idle; no active trading lease")
+    if (receipt.get("status") != "read_only_poll_ok"
+            or receipt.get("external_ack") is not True
+            or observed.tzinfo is None or now - observed > timedelta(seconds=120)
+            or now < observed):
+        raise TradeBlocked("Independent supervisor lease or external ACK is stale")
+    try:
         lease = heartbeat_journal.inspect(expected_worker_id=receipt["worker_id"])
     except Exception:
         raise TradeBlocked("Independent supervisor lease or external ACK is stale") from None
