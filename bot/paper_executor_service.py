@@ -18,6 +18,7 @@ from pathlib import Path
 import sys
 from tempfile import NamedTemporaryFile
 from zoneinfo import ZoneInfo
+from uuid import uuid4
 
 from .paper_safety import PAPER_ENDPOINT, PaperSafetyState, TradeBlocked, money
 
@@ -159,8 +160,12 @@ def _verify_supervisor_receipt(receipt_path: Path, heartbeat_journal, now):
     return lease
 
 
-def _live_components():
+def _live_components(*, stage_observer=None):
     """Create fixed PAPER clients and least-privilege database adapters."""
+    def stage(name):
+        if stage_observer:
+            stage_observer(name)
+    stage("validate_runtime_configuration")
     names = ("ALPACA_PAPER_API_KEY", "ALPACA_PAPER_SECRET_KEY",
              "PAPER_JOURNAL_DSN", "PAPER_EXECUTOR_DSN",
              "PAPER_RECONCILER_DSN", "PAPER_ACCOUNT_SHA256",
@@ -176,23 +181,32 @@ def _live_components():
         make_reconciler_paper_client, make_supervised_paper_client,
     )
     key, secret = os.environ["ALPACA_PAPER_API_KEY"], os.environ["ALPACA_PAPER_SECRET_KEY"]
+    stage("initialize_alpaca_paper_client")
     trading = make_supervised_paper_client(key, secret)
+    stage("initialize_market_data_client")
     market_data = StockHistoricalDataClient(key, secret)
+    stage("initialize_monitor_database_role")
+    monitor = PostgresPaperJournal(os.environ["PAPER_JOURNAL_DSN"])
+    stage("initialize_executor_database_role")
+    executor = PaperExecutorJournal(os.environ["PAPER_EXECUTOR_DSN"])
+    stage("initialize_reconciler_database_role")
+    reconciler = PaperStatusReconcilerJournal(os.environ["PAPER_RECONCILER_DSN"])
+    stage("initialize_independent_broker_reader")
+    reconciler_trading = make_reconciler_paper_client(key, secret)
+    stage("initialize_heartbeat_reader")
+    heartbeat = PaperWorkerHeartbeat(os.environ["PAPER_JOURNAL_DSN"])
     return {
         "trading": trading,
         "market_data": market_data,
-        "monitor": PostgresPaperJournal(os.environ["PAPER_JOURNAL_DSN"]),
-        "executor": PaperExecutorJournal(os.environ["PAPER_EXECUTOR_DSN"]),
-        "reconciler": PaperStatusReconcilerJournal(os.environ["PAPER_RECONCILER_DSN"]),
-        "reconciler_trading": make_reconciler_paper_client(key, secret),
-        "heartbeat": PaperWorkerHeartbeat(os.environ["PAPER_JOURNAL_DSN"]),
+        "monitor": monitor, "executor": executor, "reconciler": reconciler,
+        "reconciler_trading": reconciler_trading, "heartbeat": heartbeat,
         "expected_account_hash": os.environ["PAPER_ACCOUNT_SHA256"],
         "receipt_path": Path(os.environ["PAPER_SUPERVISOR_RECEIPT"]),
     }
 
 
 def prepare_live_candidate(*, components, now=None, symbols=None, utcnow=None,
-                          prepared_observer=None):
+                          prepared_observer=None, stage_observer=None):
     """Read fresh evidence and reserve at most one exact proposal; never POST."""
     from alpaca.data.enums import DataFeed
     from alpaca.data.requests import StockLatestQuoteRequest
@@ -206,6 +220,10 @@ def prepare_live_candidate(*, components, now=None, symbols=None, utcnow=None,
     from .robustness_cli import BROADER_SYMBOLS
 
     utcnow = utcnow or (lambda: datetime.now(timezone.utc))
+    def stage(name):
+        if stage_observer:
+            stage_observer(name)
+    stage("validate_executor_clock")
     now = now or utcnow()
     if now.tzinfo is None:
         raise TradeBlocked("Timezone-aware executor clock required")
@@ -215,15 +233,19 @@ def prepare_live_candidate(*, components, now=None, symbols=None, utcnow=None,
     reconciler = components["reconciler"]
     if str(getattr(trading, "_base_url", "")).rstrip("/") != PAPER_ENDPOINT:
         raise TradeBlocked("Executor client is not bound to Alpaca PAPER")
+    stage("verify_database_role_permissions")
     monitor.assert_monitor_only()
     executor.assert_executor_permissions(reservation=True)
+    stage("read_safety_controls")
     control = monitor.read_control()
     if control.kill_switch_active is not True or control.submissions_enabled is not False:
         raise TradeBlocked("PAPER preparation requires kill ON and submissions OFF")
+    stage("authenticate_alpaca_paper_account")
     account = trading.get_account()
     expected_hash = components["expected_account_hash"]
     if _account_hash(account) != expected_hash:
         raise TradeBlocked("Authenticated PAPER account does not match pinned identity")
+    stage("read_positions_orders_and_journal")
     clock = trading.get_clock()
     positions = trading.get_all_positions()
     orders = trading.get_orders(filter=GetOrdersRequest(
@@ -235,11 +257,13 @@ def prepare_live_candidate(*, components, now=None, symbols=None, utcnow=None,
         raise TradeBlocked("Earlier PAPER orders or existing exposure require reconciliation")
 
     # Authentic GET-only reconciliation is performed even for an empty queue.
+    stage("independent_broker_reconciliation")
     from .paper_status_reconciler import reconcile_pending_once
     if reconcile_pending_once(
             trading=components["reconciler_trading"],
             journal=reconciler, record=False):
         raise TradeBlocked("Existing PAPER order requires independent reconciliation")
+    stage("verify_account_lifetime_history")
     account, activities, history, complete = fetch_account_history(trading)
     lifetime = reconcile_cash_lifetime(
         account=account, activities=activities, history=history,
@@ -247,13 +271,16 @@ def prepare_live_candidate(*, components, now=None, symbols=None, utcnow=None,
         expected_account_hash=expected_hash, observed_at=now,
         activities_complete=complete)
 
+    stage("verify_market_calendar_and_equity_baseline")
     today, sessions, latest_session = _calendar_for_today(trading, now)
     if latest_session is None:
         return {"mode": "NO_TRADE", "reason": "No previous verified trading session",
                 "broker_orders": 0, "database_writes": 0}
     day_open, peak = _opening_and_peak(monitor, now, sessions)
+    stage("verify_supervisor_lease_and_external_ack")
     lease = _verify_supervisor_receipt(
         components["receipt_path"], components["heartbeat"], now)
+    stage("evaluate_strategy_candidates")
     candidates = research_candidates(
         market_data, symbols, now=now, required_session=latest_session)
     if not candidates:
@@ -263,6 +290,7 @@ def prepare_live_candidate(*, components, now=None, symbols=None, utcnow=None,
 
     for candidate in candidates:
         symbol = candidate["symbol"]
+        stage("verify_live_quote_and_risk")
         latest = market_data.get_stock_latest_quote(
             StockLatestQuoteRequest(symbol_or_symbols=symbol, feed=DataFeed.IEX))
         quote = latest.get(symbol)
@@ -291,6 +319,7 @@ def prepare_live_candidate(*, components, now=None, symbols=None, utcnow=None,
             lifetime_evidence=lifetime, lease=lease,
             calendar_verified=True, quote_age_seconds=preview.quote_age_seconds,
             journal_healthy=True, broker_reconciled=True)
+        stage("reserve_exact_pilot_proposal")
         prepared = submit_paper_once_supervised(
             trading=trading, journal=executor, market_quote=quote,
             preview=preview, safety_state=state, approval=None, now=now,
@@ -449,10 +478,10 @@ def dispatch_approved_artifact(*, components, artifact, now=None, utcnow=None):
         intent_already_reserved=True, verify_watchdog=verify_watchdog)
 
 
-def run_once(*, output: Path, reserve: bool = False):
+def run_once(*, output: Path, reserve: bool = False, stage_observer=None):
     if reserve is not True:
         raise TradeBlocked("Executor requires explicit --prepare to perform a durable reservation")
-    components = _live_components()
+    components = _live_components(stage_observer=stage_observer)
     def persist_before_reservation(prepared):
         _atomic_json(output, {
             "mode": "PREPARATION_PENDING_RESERVATION",
@@ -462,7 +491,8 @@ def run_once(*, output: Path, reserve: bool = False):
             "instructions": "Check the durable intent is reserved before executing owner approval SQL.",
         })
     report = prepare_live_candidate(
-        components=components, prepared_observer=persist_before_reservation)
+        components=components, prepared_observer=persist_before_reservation,
+        stage_observer=stage_observer)
     _atomic_json(output, report)
     return report
 
@@ -475,17 +505,40 @@ def main(argv=None):
     mode.add_argument("--dispatch-file", type=Path,
                       help="single approved proposal artifact; hard release gate still applies")
     parser.add_argument("--output", default=".state/paper-executor/latest.json")
+    parser.add_argument("--runtime-receipt", help="sanitized operational stage receipt")
     args = parser.parse_args(argv)
     dispatch_started = False
+    current_stage = "parse_arguments"
+    run_id = uuid4().hex
+    def set_stage(value):
+        nonlocal current_stage
+        current_stage = value
+    def runtime_receipt(status, *, error_type=None, reason=None, exit_code=None):
+        if not args.runtime_receipt:
+            return
+        record = {
+            "schema": 1, "run_id": run_id,
+            "observed_at_utc": datetime.now(timezone.utc).isoformat(),
+            "mode": "prepare" if args.prepare else "dispatch",
+            "stage": current_stage, "status": status,
+            "error_type": error_type, "safe_reason": reason,
+            "exit_code": exit_code,
+            "broker_order_attempted": bool(dispatch_started),
+        }
+        _atomic_json(Path(args.runtime_receipt), record)
     try:
         if args.prepare:
-            result = run_once(output=Path(args.output), reserve=True)
+            set_stage("prepare_live_workflow")
+            result = run_once(output=Path(args.output), reserve=True,
+                              stage_observer=set_stage)
             broker_orders = 0
         else:
             from .paper_supervised_execution import PAPER_ORDER_SUBMISSIONS_RELEASED
             if PAPER_ORDER_SUBMISSIONS_RELEASED is not True:
                 print("PAPER EXECUTOR BLOCKED: PAPER broker submissions NOT RELEASED; no broker order sent.",
                       file=sys.stderr)
+                set_stage("dispatch_release_gate")
+                runtime_receipt("blocked", reason="PAPER broker submissions NOT RELEASED", exit_code=2)
                 return 2
             artifact = json.loads(args.dispatch_file.read_text(encoding="utf-8"))
             components = _live_components()
@@ -508,8 +561,12 @@ def main(argv=None):
                        + result.get("mode", result.get("result", "BLOCKED"))
                        + "; broker orders=0; dispatch release remains false.")
         print(message)
+        runtime_receipt("completed", exit_code=0)
         return 0
     except TradeBlocked as exc:
+        safe_reason = str(exc)
+        runtime_receipt("blocked", error_type=type(exc).__name__,
+                        reason=safe_reason, exit_code=2)
         if dispatch_started:
             print("PAPER EXECUTOR DISPATCH OUTCOME UNKNOWN OR BLOCKED; perform independent broker reconciliation; NEVER retry this client order ID.",
                   file=sys.stderr)
@@ -517,7 +574,9 @@ def main(argv=None):
             print(f"PAPER EXECUTOR BLOCKED: {exc}; no broker order sent.",
                   file=sys.stderr)
         return 2
-    except Exception:
+    except Exception as exc:
+        runtime_receipt("error", error_type=type(exc).__name__,
+                        exit_code=2)
         if dispatch_started:
             print("PAPER EXECUTOR DISPATCH OUTCOME UNKNOWN OR BLOCKED; perform independent broker reconciliation; NEVER retry this client order ID.",
                   file=sys.stderr)

@@ -23,3 +23,15 @@ def test_launcher_runs_prepare_by_default_and_cleans_environment():
     assert "PAPER_ORDER_SUBMISSIONS_RELEASED" not in code
     assert 'Remove-Item "Env:$name"' in code
     assert "no secret values displayed" in code
+
+
+def test_launcher_records_specific_sanitized_failure_stage():
+    code = RUNNER.read_text(encoding="utf-8")
+    assert "$receipt = Join-Path $folder 'executor-runtime.json'" in code
+    assert "function Write-HdsRuntimeReceipt" in code
+    assert "stage = $stage" in code
+    assert "error_type = $errorType" in code
+    assert "details withheld to protect credentials" in code
+    assert "--runtime-receipt $receipt" in code
+    assert "$_ .Exception.Message" not in code
+    assert "Write-Host 'PAPER EXECUTOR BLOCKED: required protected configuration or runtime evidence unavailable.'" not in code

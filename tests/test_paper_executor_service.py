@@ -116,6 +116,41 @@ def test_prepare_cli_reports_safe_fail_closed_reason_without_exposing_exception(
     assert not (tmp_path / "receipt.json").exists()
 
 
+def test_runtime_failure_receipt_identifies_stage_and_type_without_exception_text(
+        monkeypatch, capsys, tmp_path):
+    from bot import paper_executor_service as service
+
+    secret_marker = "postgresql://user:private-password@db.example"
+    def fail(**_kwargs):
+        raise RuntimeError(secret_marker)
+    monkeypatch.setattr(service, "run_once", fail)
+    receipt = tmp_path / "runtime.json"
+    assert main(["--prepare", "--runtime-receipt", str(receipt)]) == 2
+    record = __import__("json").loads(receipt.read_text())
+    output = capsys.readouterr()
+    assert record["status"] == "error"
+    assert record["stage"] == "prepare_live_workflow"
+    assert record["error_type"] == "RuntimeError"
+    assert record["broker_order_attempted"] is False
+    assert secret_marker not in receipt.read_text()
+    assert secret_marker not in output.err
+
+
+def test_runtime_failure_receipt_records_safe_trade_block_reason(monkeypatch, tmp_path):
+    from bot import paper_executor_service as service
+
+    def fail(**_kwargs):
+        raise TradeBlocked("Independent supervisor lease is not healthy")
+    monkeypatch.setattr(service, "run_once", fail)
+    receipt = tmp_path / "runtime.json"
+    assert main(["--prepare", "--runtime-receipt", str(receipt)]) == 2
+    record = __import__("json").loads(receipt.read_text())
+    assert record["status"] == "blocked"
+    assert record["error_type"] == "TradeBlocked"
+    assert record["safe_reason"] == "Independent supervisor lease is not healthy"
+    assert record["exit_code"] == 2
+
+
 def test_live_coordinator_prepares_exact_proposal_without_any_broker_post(monkeypatch):
     from bot import paper_accounting, paper_executor_service as service
     from bot.paper_broker_transport import BoundedPaperSession
