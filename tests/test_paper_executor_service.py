@@ -151,6 +151,24 @@ def test_runtime_failure_receipt_records_safe_trade_block_reason(monkeypatch, tm
     assert record["exit_code"] == 2
 
 
+def test_runtime_failure_receipt_persists_individual_supervisor_checks(
+        monkeypatch, tmp_path):
+    from bot import paper_executor_service as service
+
+    def fail(*, check_observer, **_kwargs):
+        check_observer("cloudflare_external_ack", {
+            "status": "FAIL", "reason": "ack_not_recorded", "age_seconds": None})
+        check_observer("neon_supervisor_lease", {
+            "status": "PASS", "reason": None, "age_seconds": 4})
+        raise TradeBlocked("Cloudflare external heartbeat was not acknowledged")
+    monkeypatch.setattr(service, "run_once", fail)
+    receipt = tmp_path / "runtime.json"
+    assert main(["--prepare", "--runtime-receipt", str(receipt)]) == 2
+    record = __import__("json").loads(receipt.read_text())
+    assert record["checks"]["cloudflare_external_ack"]["status"] == "FAIL"
+    assert record["checks"]["neon_supervisor_lease"]["status"] == "PASS"
+
+
 def test_closed_flat_supervisor_is_reported_as_idle_not_stale(tmp_path):
     import json
     from bot.paper_executor_service import _verify_supervisor_receipt
@@ -159,10 +177,61 @@ def test_closed_flat_supervisor_is_reported_as_idle_not_stale(tmp_path):
     path = tmp_path / "supervisor.json"
     path.write_text(json.dumps({
         "status": "closed_flat_idle", "external_ack": True,
-        "observed_at_utc": now.isoformat(), "worker_id": "paper-test",
+        "observed_at_utc": now.isoformat(), "worker_id": "paper-test", "pid": 1234,
     }))
     with pytest.raises(TradeBlocked, match="closed/flat idle; no active trading lease"):
         _verify_supervisor_receipt(path, object(), now)
+
+
+def test_supervisor_verification_reports_receipt_ack_and_neon_lease_separately(tmp_path):
+    import json
+    from bot.paper_executor_service import _verify_supervisor_receipt
+
+    now = datetime(2026, 11, 5, 14, 46, tzinfo=timezone.utc)
+    path = tmp_path / "supervisor.json"
+    path.write_text(json.dumps({
+        "status": "read_only_poll_ok", "external_ack": False,
+        "observed_at_utc": now.isoformat(), "worker_id": "paper-test", "pid": 1234,
+    }))
+    class Heartbeat:
+        def inspect(self, *, expected_worker_id):
+            assert expected_worker_id == "paper-test"
+            return SimpleNamespace(healthy=True, age_seconds=3, blockers=())
+    checks = {}
+    with pytest.raises(TradeBlocked, match="Cloudflare external heartbeat was not acknowledged"):
+        _verify_supervisor_receipt(
+            path, Heartbeat(), now,
+            expected_pid=1234,
+            check_observer=lambda name, result: checks.update({name: result}))
+    assert checks["local_supervisor_receipt"]["status"] == "PASS"
+    assert checks["supervisor_poll_status"]["status"] == "PASS"
+    assert checks["cloudflare_external_ack"]["status"] == "FAIL"
+    assert checks["neon_supervisor_lease"]["status"] == "PASS"
+
+
+def test_supervisor_receipt_newer_than_preflight_start_passes_when_checked_at_current_time(tmp_path):
+    import json
+    from bot.paper_executor_service import _verify_supervisor_receipt
+
+    started = datetime(2026, 11, 5, 14, 46, tzinfo=timezone.utc)
+    observed = started + timedelta(seconds=35)
+    checked = observed + timedelta(seconds=2)
+    path = tmp_path / "supervisor.json"
+    path.write_text(json.dumps({
+        "status": "read_only_poll_ok", "external_ack": True,
+        "observed_at_utc": observed.isoformat(), "worker_id": "paper-test", "pid": 1234,
+    }))
+    class Heartbeat:
+        def inspect(self, *, expected_worker_id):
+            return SimpleNamespace(healthy=True, age_seconds=4, blockers=())
+    checks = {}
+    lease = _verify_supervisor_receipt(
+        path, Heartbeat(), checked,
+        expected_pid=1234,
+        check_observer=lambda name, result: checks.update({name: result}))
+    assert lease.healthy is True
+    assert checks["local_receipt_freshness"]["status"] == "PASS"
+    assert checks["local_receipt_freshness"]["age_seconds"] == 2
 
 
 def test_live_coordinator_prepares_exact_proposal_without_any_broker_post(monkeypatch):
@@ -253,8 +322,12 @@ def test_live_coordinator_prepares_exact_proposal_without_any_broker_post(monkey
     class Heartbeat:
         pass
 
-    monkeypatch.setattr(service, "_verify_supervisor_receipt", lambda *_a: SimpleNamespace(
-        healthy=True, age_seconds=3))
+    fresh_lease_times = []
+    fresh_now = now + timedelta(seconds=5)
+    def verify_fresh_lease(*args, **_kwargs):
+        fresh_lease_times.append(args[2])
+        return SimpleNamespace(healthy=True, age_seconds=3)
+    monkeypatch.setattr(service, "_verify_supervisor_receipt", verify_fresh_lease)
     monkeypatch.setattr(paper_accounting, "fetch_account_history",
                         lambda trading: (account, [], {}, True))
     monkeypatch.setattr(paper_accounting, "reconcile_cash_lifetime",
@@ -276,10 +349,11 @@ def test_live_coordinator_prepares_exact_proposal_without_any_broker_post(monkey
         "executor": executor, "reconciler": Reconciler(),
         "reconciler_trading": Trading(), "heartbeat": Heartbeat(),
         "expected_account_hash": ACCOUNT_HASH, "receipt_path": Path("unused.json"),
+        "expected_supervisor_pid": 1234,
     }
     persisted = []
     result = service.prepare_live_candidate(
-        components=components, now=now, symbols=("F",), utcnow=lambda: now,
+        components=components, now=now, symbols=("F",), utcnow=lambda: fresh_now,
         prepared_observer=lambda prepared: persisted.append(prepared.to_dict()))
     assert result["mode"] == "PREPARED_FOR_EXACT_OWNER_REVIEW"
     assert result["prepared"]["symbol"] == "F"
@@ -301,6 +375,7 @@ def test_live_coordinator_prepares_exact_proposal_without_any_broker_post(monkey
     assert len(executor.reserved) == 1
     assert persisted[0]["client_order_id"] == result["prepared"]["client_order_id"]
     assert trading.sent == []
+    assert fresh_lease_times and all(value == fresh_now for value in fresh_lease_times)
 
     # Synthetic dispatch only: simulate the separately enabled production
     # controls and owner approval, while keeping the real code gate OFF.

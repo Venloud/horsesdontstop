@@ -220,7 +220,9 @@ DIAGNOSTIC_STAGES = (
     "alpaca_account", "alpaca_positions_orders",
     "neon_journal", "neon_control", "observation_freshness",
     "reconciliation", "independent_assessment", "heartbeat_writer_role",
-    "external_liveness_config", "nyse_calendar", "continuous_supervisor_lease",
+    "external_liveness_config", "nyse_calendar", "supervisor_runtime_receipt",
+    "supervisor_process_identity", "cloudflare_external_ack",
+    "continuous_supervisor_lease",
 )
 # 09:20-09:29 New York: dependencies only. The opening baseline, a fresh
 # full observation and a market-hours supervisor lease cannot exist yet.
@@ -241,6 +243,8 @@ DIAGNOSTIC_REASONS = frozenset((
     "COMPETING_LEASE", "LEASE_STALE", "LEASE_UNVERIFIED",
     "PROCESS_NOT_RUNNING", "DUPLICATE_PROCESS", "PROCESS_UNVERIFIED",
     "SUPERVISOR_NOT_RUNNING",
+    "SUPERVISOR_IDLE", "LOCAL_RECEIPT_STALE", "LOCAL_RECEIPT_UNAVAILABLE",
+    "EXTERNAL_ACK_MISSING", "IDENTITY_MISMATCH",
     "HTTP_400", "HTTP_401", "HTTP_404", "HTTP_409", "HTTP_503",
 ))
 
@@ -373,6 +377,48 @@ def diagnostic_supervisor_lease(row):
     return True
 
 
+def diagnostic_local_supervisor_receipt(receipt_path, *, now=None):
+    """Validate the executor's same fresh active-poll receipt, read-only."""
+    import json
+    from pathlib import Path
+    from .paper_external_liveness import ID
+    now = now or datetime.now(timezone.utc)
+    try:
+        receipt = json.loads(Path(receipt_path).read_text(encoding="utf-8"))
+        observed = datetime.fromisoformat(
+            receipt["observed_at_utc"].replace("Z", "+00:00"))
+        if (not isinstance(receipt, dict)
+                or not isinstance(receipt.get("worker_id"), str)
+                or ID.fullmatch(receipt["worker_id"]) is None
+                or type(receipt.get("pid")) is not int
+                or receipt["pid"] < 1
+                or observed.tzinfo is None or observed.utcoffset() is None):
+            return "LOCAL_RECEIPT_UNAVAILABLE"
+        if receipt.get("status") == "closed_flat_idle":
+            return "SUPERVISOR_IDLE"
+        if receipt.get("status") != "read_only_poll_ok":
+            return "UNHEALTHY_OBSERVATION"
+        age = (now - observed).total_seconds()
+        if age < 0 or age > 120:
+            return "LOCAL_RECEIPT_STALE"
+        return receipt
+    except Exception:
+        return "LOCAL_RECEIPT_UNAVAILABLE"
+
+
+def diagnostic_supervisor_process_identity(receipt, expected_pid):
+    if (not isinstance(receipt, dict) or type(expected_pid) is not int
+            or expected_pid < 1 or receipt.get("pid") != expected_pid):
+        return "IDENTITY_MISMATCH"
+    return True
+
+
+def diagnostic_external_ack(receipt):
+    if not isinstance(receipt, dict):
+        return "LOCAL_RECEIPT_UNAVAILABLE"
+    return True if receipt.get("external_ack") is True else "EXTERNAL_ACK_MISSING"
+
+
 def diagnostic_phase(phase, now=None):
     """`auto` picks preopen before 09:30 New York time, else postopen."""
     if phase in ("preopen", "postopen"):
@@ -400,7 +446,8 @@ def diagnose_supervisor(*, phase="postopen", collector_instances=None,
     required = ("ALPACA_PAPER_API_KEY", "ALPACA_PAPER_SECRET_KEY",
                 "PAPER_JOURNAL_DSN", "PAPER_HEARTBEAT_DSN",
                 "PAPER_MONITOR_NTFY_TOPIC", "PAPER_EXTERNAL_LIVENESS_URL",
-                "PAPER_EXTERNAL_LIVENESS_TOKEN")
+                "PAPER_EXTERNAL_LIVENESS_TOKEN", "PAPER_SUPERVISOR_RECEIPT",
+                "PAPER_SUPERVISOR_ROOT_PID")
     state = {}
 
     def env():
@@ -413,6 +460,31 @@ def diagnose_supervisor(*, phase="postopen", collector_instances=None,
 
     def supervisor_process():
         return diagnostic_process_count(supervisor_instances)
+
+    def supervisor_runtime_receipt():
+        result = diagnostic_local_supervisor_receipt(
+            os.environ["PAPER_SUPERVISOR_RECEIPT"], now=datetime.now(timezone.utc))
+        if result is not True and not isinstance(result, dict):
+            raise DiagnosticFailure(result)
+        state["supervisor_receipt"] = result
+        return True
+
+    def supervisor_process_identity():
+        receipt = state.get("supervisor_receipt")
+        try:
+            expected_pid = int(os.environ["PAPER_SUPERVISOR_ROOT_PID"])
+        except (KeyError, ValueError):
+            raise DiagnosticFailure("IDENTITY_MISMATCH") from None
+        result = diagnostic_supervisor_process_identity(receipt, expected_pid)
+        if result is not True:
+            raise DiagnosticFailure(result)
+        return True
+
+    def external_ack():
+        result = diagnostic_external_ack(state.get("supervisor_receipt"))
+        if result is not True:
+            raise DiagnosticFailure(result)
+        return True
 
     def client():
         if "trading" not in state:
@@ -509,18 +581,20 @@ def diagnose_supervisor(*, phase="postopen", collector_instances=None,
         return True
 
     def supervisor_lease():
-        writer = state.get("writer") or PaperWorkerHeartbeat(
-            os.environ["PAPER_HEARTBEAT_DSN"])
-        # Restricted heartbeat connection; SELECT only, never show IDs.
-        with writer._connect() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT observed_at, poll_succeeded, clock_timestamp() "
-                    "FROM public.paper_worker_heartbeat WHERE singleton=TRUE")
-                row = cur.fetchone()
-        result = diagnostic_supervisor_lease(row)
-        if result is not True:
-            raise DiagnosticFailure(result)
+        receipt = state.get("supervisor_receipt")
+        if not isinstance(receipt, dict):
+            raise DiagnosticFailure("LOCAL_RECEIPT_UNAVAILABLE")
+        lease = PaperWorkerHeartbeat(os.environ["PAPER_JOURNAL_DSN"]).inspect(
+            expected_worker_id=receipt["worker_id"])
+        if lease.healthy is not True:
+            reasons = set(lease.blockers)
+            if "persistent_supervisor_heartbeat_stale_or_future" in reasons:
+                raise DiagnosticFailure("LEASE_STALE")
+            if "persistent_supervisor_identity_mismatch" in reasons:
+                raise DiagnosticFailure("IDENTITY_MISMATCH")
+            if "persistent_supervisor_broker_poll_not_proven" in reasons:
+                raise DiagnosticFailure("UNHEALTHY_OBSERVATION")
+            raise DiagnosticFailure("LEASE_UNVERIFIED")
         return True
 
     stages = {
@@ -537,6 +611,9 @@ def diagnose_supervisor(*, phase="postopen", collector_instances=None,
         "heartbeat_writer_role": heartbeat_writer,
         "external_liveness_config": liveness_config,
         "nyse_calendar": calendar,
+        "supervisor_runtime_receipt": supervisor_runtime_receipt,
+        "supervisor_process_identity": supervisor_process_identity,
+        "cloudflare_external_ack": external_ack,
         "continuous_supervisor_lease": supervisor_lease,
     }
     names = (PREOPEN_DIAGNOSTIC_STAGES if phase == "preopen"

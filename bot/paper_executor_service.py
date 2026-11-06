@@ -141,28 +141,95 @@ def _opening_and_peak(journal, now, sessions):
     return journal.read_equity_references(open_utc, now)
 
 
-def _verify_supervisor_receipt(receipt_path: Path, heartbeat_journal, now):
-    from .paper_worker_lease import PaperWorkerHeartbeat
+def _verify_supervisor_receipt(receipt_path: Path, heartbeat_journal, now,
+                               *, expected_pid=None, check_observer=None):
+    def record(name, status, reason=None, age_seconds=None):
+        if check_observer is not None:
+            check_observer(name, {
+                "status": status, "reason": reason,
+                "age_seconds": age_seconds,
+            })
+
     try:
         receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
         observed = datetime.fromisoformat(
             receipt["observed_at_utc"].replace("Z", "+00:00"))
     except Exception:
+        record("local_supervisor_receipt", "FAIL", "missing_or_malformed")
+        record("supervisor_process_identity", "NOT_VERIFIED", "receipt_unavailable")
+        record("supervisor_poll_status", "NOT_VERIFIED", "receipt_unavailable")
+        record("cloudflare_external_ack", "NOT_VERIFIED", "receipt_unavailable")
+        record("neon_supervisor_lease", "NOT_VERIFIED", "worker_identity_unavailable")
         raise TradeBlocked("Independent supervisor lease or external ACK is stale") from None
-    if receipt.get("status") == "closed_flat_idle":
+
+    record("local_supervisor_receipt", "PASS")
+    receipt_pid = receipt.get("pid")
+    if type(receipt_pid) is int and expected_pid is not None \
+            and receipt_pid == expected_pid:
+        record("supervisor_process_identity", "PASS")
+    else:
+        record("supervisor_process_identity", "FAIL", "pid_does_not_match_live_supervisor")
+    receipt_status = receipt.get("status")
+    if receipt_status == "read_only_poll_ok":
+        record("supervisor_poll_status", "PASS")
+    elif receipt_status == "closed_flat_idle":
+        record("supervisor_poll_status", "FAIL", "closed_flat_idle_not_trading_lease")
+    else:
+        record("supervisor_poll_status", "FAIL", "not_a_successful_active_poll")
+
+    if receipt.get("external_ack") is True:
+        record("cloudflare_external_ack", "PASS")
+    else:
+        record("cloudflare_external_ack", "FAIL", "ack_not_recorded")
+
+    age = None
+    if (observed.tzinfo is None or observed.utcoffset() is None
+            or now.tzinfo is None or now.utcoffset() is None):
+        record("local_receipt_freshness", "FAIL", "timestamp_not_timezone_aware")
+    else:
+        age = (now - observed).total_seconds()
+        if 0 <= age <= 120:
+            record("local_receipt_freshness", "PASS", age_seconds=age)
+        elif age < 0:
+            record("local_receipt_freshness", "FAIL", "receipt_timestamp_in_future",
+                   age_seconds=age)
+        else:
+            record("local_receipt_freshness", "FAIL", "receipt_older_than_120_seconds",
+                   age_seconds=age)
+
+    worker_id = receipt.get("worker_id")
+    try:
+        if not isinstance(worker_id, str):
+            raise ValueError
+        lease = heartbeat_journal.inspect(expected_worker_id=worker_id)
+    except Exception:
+        record("neon_supervisor_lease", "FAIL", "independent_inspection_failed")
+        lease = None
+    if lease is not None:
+        if lease.healthy is True:
+            record("neon_supervisor_lease", "PASS",
+                   age_seconds=lease.age_seconds)
+        else:
+            record("neon_supervisor_lease", "FAIL",
+                   ",".join(lease.blockers) or "lease_unhealthy",
+                   age_seconds=lease.age_seconds)
+
+    if receipt_status == "closed_flat_idle":
         raise TradeBlocked(
             "Supervisor is broker-verified closed/flat idle; no active trading lease")
-    if (receipt.get("status") != "read_only_poll_ok"
-            or receipt.get("external_ack") is not True
-            or observed.tzinfo is None or now - observed > timedelta(seconds=120)
-            or now < observed):
-        raise TradeBlocked("Independent supervisor lease or external ACK is stale")
-    try:
-        lease = heartbeat_journal.inspect(expected_worker_id=receipt["worker_id"])
-    except Exception:
-        raise TradeBlocked("Independent supervisor lease or external ACK is stale") from None
-    if lease.healthy is not True:
-        raise TradeBlocked("Independent supervisor lease is not healthy")
+    if receipt_status != "read_only_poll_ok":
+        raise TradeBlocked("Supervisor receipt does not prove a successful active poll")
+    if not (type(receipt_pid) is int and expected_pid is not None
+            and receipt_pid == expected_pid):
+        raise TradeBlocked("Supervisor receipt does not match the live supervisor process")
+    if receipt.get("external_ack") is not True:
+        raise TradeBlocked("Cloudflare external heartbeat was not acknowledged")
+    if age is None or not 0 <= age <= 120:
+        if age is not None and age < 0:
+            raise TradeBlocked("Supervisor receipt timestamp is ahead of executor clock")
+        raise TradeBlocked("Local supervisor receipt is older than 120 seconds")
+    if lease is None or lease.healthy is not True:
+        raise TradeBlocked("Independent Neon supervisor lease is stale or unhealthy")
     return lease
 
 
@@ -175,8 +242,10 @@ def _live_components(*, stage_observer=None):
     names = ("ALPACA_PAPER_API_KEY", "ALPACA_PAPER_SECRET_KEY",
              "PAPER_JOURNAL_DSN", "PAPER_EXECUTOR_DSN",
              "PAPER_RECONCILER_DSN", "PAPER_ACCOUNT_SHA256",
-             "PAPER_SUPERVISOR_RECEIPT")
-    if any(not os.environ.get(name) for name in names):
+             "PAPER_SUPERVISOR_RECEIPT", "PAPER_SUPERVISOR_ROOT_PID")
+    if (any(not os.environ.get(name) for name in names)
+            or not os.environ["PAPER_SUPERVISOR_ROOT_PID"].isdecimal()
+            or int(os.environ["PAPER_SUPERVISOR_ROOT_PID"]) < 1):
         raise TradeBlocked("Required DPAPI-backed PAPER runtime configuration missing")
     from alpaca.data.historical import StockHistoricalDataClient
     from .paper_store import PostgresPaperJournal
@@ -208,11 +277,13 @@ def _live_components(*, stage_observer=None):
         "reconciler_trading": reconciler_trading, "heartbeat": heartbeat,
         "expected_account_hash": os.environ["PAPER_ACCOUNT_SHA256"],
         "receipt_path": Path(os.environ["PAPER_SUPERVISOR_RECEIPT"]),
+        "expected_supervisor_pid": int(os.environ["PAPER_SUPERVISOR_ROOT_PID"]),
     }
 
 
 def prepare_live_candidate(*, components, now=None, symbols=None, utcnow=None,
-                          prepared_observer=None, stage_observer=None):
+                          prepared_observer=None, stage_observer=None,
+                          check_observer=None):
     """Read fresh evidence and reserve at most one exact proposal; never POST."""
     from alpaca.data.enums import DataFeed
     from alpaca.data.requests import StockLatestQuoteRequest
@@ -285,7 +356,12 @@ def prepare_live_candidate(*, components, now=None, symbols=None, utcnow=None,
     day_open, peak = _opening_and_peak(monitor, now, sessions)
     stage("verify_supervisor_lease_and_external_ack")
     lease = _verify_supervisor_receipt(
-        components["receipt_path"], components["heartbeat"], now)
+        # The supervisor updates its receipt every poll tick. A preflight can
+        # take long enough for that receipt to be newer than the initial `now`;
+        # compare against a fresh clock sample or valid evidence looks future.
+        components["receipt_path"], components["heartbeat"], utcnow(),
+        expected_pid=components["expected_supervisor_pid"],
+        check_observer=check_observer)
     stage("evaluate_strategy_candidates")
     candidates = research_candidates(
         market_data, symbols, now=now, required_session=latest_session)
@@ -310,12 +386,13 @@ def prepare_live_candidate(*, components, now=None, symbols=None, utcnow=None,
             symbol=symbol, quote=quote, equity=account.equity,
             available_cash=account.cash, now=now, market_open=clock.is_open)
         lease = _verify_supervisor_receipt(
-            components["receipt_path"], components["heartbeat"], now)
+            components["receipt_path"], components["heartbeat"], now,
+            expected_pid=components["expected_supervisor_pid"])
 
         def verify_watchdog():
             fresh_lease = _verify_supervisor_receipt(
                 components["receipt_path"], components["heartbeat"],
-                utcnow())
+                utcnow(), expected_pid=components["expected_supervisor_pid"])
             return int(fresh_lease.age_seconds)
 
         state = build_safety_state(
@@ -430,7 +507,8 @@ def dispatch_approved_artifact(*, components, artifact, now=None, utcnow=None):
     today, sessions, latest_session = _calendar_for_today(trading, now)
     day_open, peak = _opening_and_peak(monitor, now, sessions)
     lease = _verify_supervisor_receipt(
-        components["receipt_path"], components["heartbeat"], now)
+        components["receipt_path"], components["heartbeat"], now,
+        expected_pid=components["expected_supervisor_pid"])
     if not getattr(clock, "is_open", False) or latest_session is None:
         raise TradeBlocked("PAPER market session is not open")
     candidates = research_candidates(
@@ -455,7 +533,8 @@ def dispatch_approved_artifact(*, components, artifact, now=None, utcnow=None):
         symbol=plan.symbol, quote=quote, equity=account.equity,
         available_cash=account.cash, now=now, market_open=True)
     lease = _verify_supervisor_receipt(
-        components["receipt_path"], components["heartbeat"], now)
+        components["receipt_path"], components["heartbeat"], now,
+        expected_pid=components["expected_supervisor_pid"])
     state = build_safety_state(
         account=account, clock=clock, positions=positions, orders=orders,
         control=control, unresolved=(), day_open_equity=day_open,
@@ -473,7 +552,7 @@ def dispatch_approved_artifact(*, components, artifact, now=None, utcnow=None):
     def verify_watchdog():
         fresh_lease = _verify_supervisor_receipt(
             components["receipt_path"], components["heartbeat"],
-            utcnow())
+            utcnow(), expected_pid=components["expected_supervisor_pid"])
         return int(fresh_lease.age_seconds)
     # The dataclass above carries consistency terms only. The owner-only
     # approval row is checked/consumed atomically by the Neon dispatch function.
@@ -484,7 +563,8 @@ def dispatch_approved_artifact(*, components, artifact, now=None, utcnow=None):
         intent_already_reserved=True, verify_watchdog=verify_watchdog)
 
 
-def run_once(*, output: Path, reserve: bool = False, stage_observer=None):
+def run_once(*, output: Path, reserve: bool = False, stage_observer=None,
+             check_observer=None):
     if reserve is not True:
         raise TradeBlocked("Executor requires explicit --prepare to perform a durable reservation")
     components = _live_components(stage_observer=stage_observer)
@@ -498,7 +578,7 @@ def run_once(*, output: Path, reserve: bool = False, stage_observer=None):
         })
     report = prepare_live_candidate(
         components=components, prepared_observer=persist_before_reservation,
-        stage_observer=stage_observer)
+        stage_observer=stage_observer, check_observer=check_observer)
     _atomic_json(output, report)
     return report
 
@@ -516,9 +596,12 @@ def main(argv=None):
     dispatch_started = False
     current_stage = "parse_arguments"
     run_id = uuid4().hex
+    check_results = {}
     def set_stage(value):
         nonlocal current_stage
         current_stage = value
+    def record_check(name, result):
+        check_results[name] = result
     def runtime_receipt(status, *, error_type=None, reason=None, exit_code=None):
         if not args.runtime_receipt:
             return
@@ -530,13 +613,15 @@ def main(argv=None):
             "error_type": error_type, "safe_reason": reason,
             "exit_code": exit_code,
             "broker_order_attempted": bool(dispatch_started),
+            "checks": check_results,
         }
         _atomic_json(Path(args.runtime_receipt), record)
     try:
         if args.prepare:
             set_stage("prepare_live_workflow")
             result = run_once(output=Path(args.output), reserve=True,
-                              stage_observer=set_stage)
+                              stage_observer=set_stage,
+                              check_observer=record_check)
             broker_orders = 0
         else:
             from .paper_supervised_execution import PAPER_ORDER_SUBMISSIONS_RELEASED
