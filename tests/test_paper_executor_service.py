@@ -232,6 +232,53 @@ def test_supervisor_receipt_must_match_the_single_live_process_identity(tmp_path
     assert checks["neon_supervisor_lease"]["status"] == "PASS"
 
 
+def test_supervisor_receipt_writer_child_pid_is_valid_when_explicitly_live(tmp_path):
+    import json
+    from bot.paper_executor_service import _verify_supervisor_receipt
+
+    now = datetime(2026, 11, 5, 14, 46, tzinfo=timezone.utc)
+    path = tmp_path / "supervisor.json"
+    path.write_text(json.dumps({
+        "status": "read_only_poll_ok", "external_ack": True,
+        "observed_at_utc": now.isoformat(), "worker_id": "paper-test", "pid": 1234,
+    }))
+
+    class Heartbeat:
+        def inspect(self, *, expected_worker_id):
+            return SimpleNamespace(healthy=True, age_seconds=3, blockers=())
+
+    checks = {}
+    lease = _verify_supervisor_receipt(
+        path, Heartbeat(), now, expected_pid=1234,
+        check_observer=lambda name, result: checks.update({name: result}))
+    assert lease.healthy is True
+    assert checks["supervisor_process_identity"]["status"] == "PASS"
+
+
+def test_supervisor_lease_receipt_captures_safe_error_type_without_message(tmp_path):
+    import json
+    from bot.paper_executor_service import _verify_supervisor_receipt
+
+    now = datetime(2026, 11, 5, 14, 46, tzinfo=timezone.utc)
+    path = tmp_path / "supervisor.json"
+    path.write_text(json.dumps({
+        "status": "read_only_poll_ok", "external_ack": True,
+        "observed_at_utc": now.isoformat(), "worker_id": "paper-test", "pid": 1234,
+    }))
+
+    class Heartbeat:
+        def inspect(self, *, expected_worker_id):
+            raise PermissionError("secret DSN must never enter receipt")
+
+    checks = {}
+    with pytest.raises(TradeBlocked, match="Independent Neon supervisor lease"):
+        _verify_supervisor_receipt(
+            path, Heartbeat(), now, expected_pid=1234,
+            check_observer=lambda name, result: checks.update({name: result}))
+    assert checks["neon_supervisor_lease"]["error_type"] == "PermissionError"
+    assert "secret DSN" not in repr(checks)
+
+
 def test_supervisor_receipt_newer_than_preflight_start_passes_when_checked_at_current_time(tmp_path):
     import json
     from bot.paper_executor_service import _verify_supervisor_receipt

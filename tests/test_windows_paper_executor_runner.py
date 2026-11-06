@@ -43,13 +43,15 @@ def test_launcher_pins_receipt_to_exactly_one_live_supervisor_process():
     assert "Get-CimInstance Win32_Process" in code
     assert "-m\\s+bot\\.paper_supervisor_loop" in code
     assert "$supervisorRoots.Count -ne 1" in code
-    assert "$env:PAPER_SUPERVISOR_ROOT_PID" in code
+    assert "$env:PAPER_SUPERVISOR_RECEIPT_PID" in code
+    assert "$supervisorIds -notcontains $receiptPid" in code
 
 
 def test_market_diagnostic_uses_the_same_supervisor_pid_and_receipt():
     code = SUPERVISOR_RUNNER.read_text(encoding="utf-8")
     assert 'PAPER_SUPERVISOR_RECEIPT' in code
-    assert 'PAPER_SUPERVISOR_ROOT_PID' in code
+    assert 'PAPER_SUPERVISOR_RECEIPT_PID' in code
     assert '$script:HdsLastServiceRootPids' in code
-    assert 'if ($supervisorCount -eq 1)' in code
+    assert '$script:HdsLastServiceProcessIds' in code
+    assert '$supervisorCount -eq 1 -and' in code
     assert 'bot.paper_supervisor_loop' in code

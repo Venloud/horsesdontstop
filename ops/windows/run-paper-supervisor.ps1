@@ -33,6 +33,7 @@ function Get-HdsServiceInstances([string]$module) {
         $ids = @($procs | ForEach-Object { $_.ProcessId })
         $roots = @($procs | Where-Object { $ids -notcontains $_.ParentProcessId })
         $script:HdsLastServiceRootPids = @($roots | ForEach-Object { [int]$_.ProcessId })
+        $script:HdsLastServiceProcessIds = @($ids | ForEach-Object { [int]$_ })
         return $roots.Count
     }
     catch {
@@ -59,7 +60,7 @@ $envNames = @(
     "PAPER_EXTERNAL_LIVENESS_URL",
     "PAPER_EXTERNAL_LIVENESS_TOKEN",
     "PAPER_SUPERVISOR_RECEIPT",
-    "PAPER_SUPERVISOR_ROOT_PID"
+    "PAPER_SUPERVISOR_RECEIPT_PID"
 )
 
 try {
@@ -104,8 +105,17 @@ try {
             # per-unchanged-failure-per-day receipt file. No secrets written.
             $collectorCount = Get-HdsServiceInstances "bot.paper_opening_equity_daemon"
             $supervisorCount = Get-HdsServiceInstances "bot.paper_supervisor_loop"
-            $env:PAPER_SUPERVISOR_ROOT_PID = if ($supervisorCount -eq 1) {
-                [string]$script:HdsLastServiceRootPids[0]
+            $receiptPid = 0
+            if ($supervisorCount -eq 1 -and
+                (Test-Path -LiteralPath $env:PAPER_SUPERVISOR_RECEIPT)) {
+                try {
+                    $receiptPid = [int](Get-Content -LiteralPath $env:PAPER_SUPERVISOR_RECEIPT -Raw |
+                        ConvertFrom-Json).pid
+                } catch { $receiptPid = 0 }
+            }
+            $env:PAPER_SUPERVISOR_RECEIPT_PID = if (
+                $script:HdsLastServiceProcessIds -contains $receiptPid) {
+                [string]$receiptPid
             } else { "" }
             & $python -m bot.paper_supervisor_loop --diagnose --phase auto `
                 --collector-instances $collectorCount `

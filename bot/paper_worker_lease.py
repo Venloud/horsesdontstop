@@ -1,10 +1,8 @@
-"""UNDEPLOYED PAPER supervisor heartbeat lease, no order privileges.
+"""PAPER supervisor heartbeat lease, with no order privileges.
 
-Staged for a future independently hosted, continually running observer.
-The heartbeat role must be separate from both restricted broker executor
-and read-only paper monitor. Its DB connections write ONLY the new
-paper_worker_heartbeat table. No production migration or credentials are
-installed by this module. Zero Alpaca order calls.
+The heartbeat writer is separate from restricted broker and monitor roles.
+Its DB connections write ONLY the paper_worker_heartbeat table. Monitor
+roles inspect the row using SELECT-only privileges. Zero Alpaca order calls.
 
 A heartbeat proves that one attested process recently wrote a server-
 clock pulse. It DOES NOT establish continuous cloud uptime, actual

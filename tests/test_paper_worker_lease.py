@@ -210,9 +210,30 @@ def test_independent_reader_must_use_select_only_monitor_role(monkeypatch):
         PaperWorkerHeartbeat.assert_heartbeat_monitor_only.__get__(h)
     )
     assert h.inspect(expected_worker_id=W1).healthy is True
+    # The stable Windows runner has a distinct, least-privilege monitor
+    # login. It is allowed only under the same explicit privilege tuple.
+    data["reader_permissions"] = (
+        "hds_paper_win_monitor", False, False, True, False, False, False
+    )
+    assert h.inspect(expected_worker_id=W1).healthy is True
     data["reader_permissions"] = (
         HEARTBEAT_ROLE, False, False, True, True, False, False
     )
+    with pytest.raises(TradeBlocked, match="SELECT-only"):
+        h.inspect(expected_worker_id=W1)
+
+
+@pytest.mark.parametrize("role", ["hds_paper_win_monitor", "hds_paper_monitor"])
+def test_monitor_roles_with_inherited_or_write_privileges_are_rejected(monkeypatch, role):
+    h, data = lease(monkeypatch)
+    monkeypatch.setattr(
+        h, "assert_heartbeat_monitor_only",
+        PaperWorkerHeartbeat.assert_heartbeat_monitor_only.__get__(h)
+    )
+    data["reader_permissions"] = (role, True, False, True, False, False, False)
+    with pytest.raises(TradeBlocked, match="SELECT-only"):
+        h.inspect(expected_worker_id=W1)
+    data["reader_permissions"] = (role, False, False, True, True, False, False)
     with pytest.raises(TradeBlocked, match="SELECT-only"):
         h.inspect(expected_worker_id=W1)
 
@@ -239,3 +260,14 @@ def test_worker_lease_code_is_not_alpaca_broker_order_gateway():
     assert ".submit_order(" not in source
     assert "paper_control SET" not in source
     assert "UPDATE public.paper_intents" not in source
+
+
+def test_windows_monitor_compatibility_migration_grants_select_only():
+    from pathlib import Path
+    migration = (Path(__file__).resolve().parents[1] / "sql" /
+                 "paper_worker_heartbeat_win_monitor_select.sql")
+    statements = [line.strip().upper() for line in migration.read_text().splitlines()
+                  if line.strip() and not line.lstrip().startswith("--")]
+    assert statements == [
+        "GRANT SELECT ON PUBLIC.PAPER_WORKER_HEARTBEAT TO HDS_PAPER_WIN_MONITOR;"
+    ]

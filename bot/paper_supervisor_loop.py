@@ -454,7 +454,7 @@ def diagnose_supervisor(*, phase="postopen", collector_instances=None,
                 "PAPER_JOURNAL_DSN", "PAPER_HEARTBEAT_DSN",
                 "PAPER_MONITOR_NTFY_TOPIC", "PAPER_EXTERNAL_LIVENESS_URL",
                 "PAPER_EXTERNAL_LIVENESS_TOKEN", "PAPER_SUPERVISOR_RECEIPT",
-                "PAPER_SUPERVISOR_ROOT_PID")
+                "PAPER_SUPERVISOR_RECEIPT_PID")
     state = {}
 
     def env():
@@ -480,7 +480,7 @@ def diagnose_supervisor(*, phase="postopen", collector_instances=None,
     def supervisor_process_identity():
         receipt = state.get("supervisor_receipt")
         try:
-            expected_pid = int(os.environ["PAPER_SUPERVISOR_ROOT_PID"])
+            expected_pid = int(os.environ["PAPER_SUPERVISOR_RECEIPT_PID"])
         except (KeyError, ValueError):
             raise DiagnosticFailure("IDENTITY_MISMATCH") from None
         result = diagnostic_supervisor_process_identity(receipt, expected_pid)
