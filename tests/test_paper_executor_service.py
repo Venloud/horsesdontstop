@@ -209,6 +209,29 @@ def test_supervisor_verification_reports_receipt_ack_and_neon_lease_separately(t
     assert checks["neon_supervisor_lease"]["status"] == "PASS"
 
 
+def test_supervisor_receipt_must_match_the_single_live_process_identity(tmp_path):
+    import json
+    from bot.paper_executor_service import _verify_supervisor_receipt
+
+    now = datetime(2026, 11, 5, 14, 46, tzinfo=timezone.utc)
+    path = tmp_path / "supervisor.json"
+    path.write_text(json.dumps({
+        "status": "read_only_poll_ok", "external_ack": True,
+        "observed_at_utc": now.isoformat(), "worker_id": "paper-test", "pid": 1234,
+    }))
+    class Heartbeat:
+        def inspect(self, *, expected_worker_id):
+            return SimpleNamespace(healthy=True, age_seconds=3, blockers=())
+    checks = {}
+    with pytest.raises(TradeBlocked, match="does not match the live supervisor process"):
+        _verify_supervisor_receipt(
+            path, Heartbeat(), now, expected_pid=4321,
+            check_observer=lambda name, result: checks.update({name: result}))
+    assert checks["supervisor_process_identity"]["status"] == "FAIL"
+    assert checks["cloudflare_external_ack"]["status"] == "PASS"
+    assert checks["neon_supervisor_lease"]["status"] == "PASS"
+
+
 def test_supervisor_receipt_newer_than_preflight_start_passes_when_checked_at_current_time(tmp_path):
     import json
     from bot.paper_executor_service import _verify_supervisor_receipt

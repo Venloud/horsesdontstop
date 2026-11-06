@@ -393,17 +393,23 @@ def diagnostic_local_supervisor_receipt(receipt_path, *, now=None):
                 or type(receipt.get("pid")) is not int
                 or receipt["pid"] < 1
                 or observed.tzinfo is None or observed.utcoffset() is None):
-            return "LOCAL_RECEIPT_UNAVAILABLE"
+            return None, "LOCAL_RECEIPT_UNAVAILABLE"
+        safe_receipt = {
+            "worker_id": receipt["worker_id"], "pid": receipt["pid"],
+            "status": receipt["status"],
+            "external_ack": receipt.get("external_ack"),
+            "observed_at_utc": observed.isoformat(),
+        }
         if receipt.get("status") == "closed_flat_idle":
-            return "SUPERVISOR_IDLE"
+            return safe_receipt, "SUPERVISOR_IDLE"
         if receipt.get("status") != "read_only_poll_ok":
-            return "UNHEALTHY_OBSERVATION"
+            return safe_receipt, "UNHEALTHY_OBSERVATION"
         age = (now - observed).total_seconds()
         if age < 0 or age > 120:
-            return "LOCAL_RECEIPT_STALE"
-        return receipt
+            return safe_receipt, "LOCAL_RECEIPT_STALE"
+        return safe_receipt, True
     except Exception:
-        return "LOCAL_RECEIPT_UNAVAILABLE"
+        return None, "LOCAL_RECEIPT_UNAVAILABLE"
 
 
 def diagnostic_supervisor_process_identity(receipt, expected_pid):
@@ -440,6 +446,7 @@ def diagnose_supervisor(*, phase="postopen", collector_instances=None,
     from alpaca.trading.enums import QueryOrderStatus
     from alpaca.trading.requests import GetOrdersRequest, GetCalendarRequest
     from .paper_store import PostgresPaperJournal
+    from .paper_worker_lease import PaperWorkerHeartbeat
     from .paper_watchdog import run_once, make_paper_readonly_client
     from .paper_external_liveness import check_liveness_settings, probe_liveness
 
@@ -462,11 +469,12 @@ def diagnose_supervisor(*, phase="postopen", collector_instances=None,
         return diagnostic_process_count(supervisor_instances)
 
     def supervisor_runtime_receipt():
-        result = diagnostic_local_supervisor_receipt(
+        receipt, result = diagnostic_local_supervisor_receipt(
             os.environ["PAPER_SUPERVISOR_RECEIPT"], now=datetime.now(timezone.utc))
-        if result is not True and not isinstance(result, dict):
+        if receipt is not None:
+            state["supervisor_receipt"] = receipt
+        if result is not True:
             raise DiagnosticFailure(result)
-        state["supervisor_receipt"] = result
         return True
 
     def supervisor_process_identity():
@@ -584,8 +592,11 @@ def diagnose_supervisor(*, phase="postopen", collector_instances=None,
         receipt = state.get("supervisor_receipt")
         if not isinstance(receipt, dict):
             raise DiagnosticFailure("LOCAL_RECEIPT_UNAVAILABLE")
-        lease = PaperWorkerHeartbeat(os.environ["PAPER_JOURNAL_DSN"]).inspect(
-            expected_worker_id=receipt["worker_id"])
+        try:
+            lease = PaperWorkerHeartbeat(os.environ["PAPER_JOURNAL_DSN"]).inspect(
+                expected_worker_id=receipt["worker_id"])
+        except Exception:
+            raise DiagnosticFailure("LEASE_UNVERIFIED") from None
         if lease.healthy is not True:
             reasons = set(lease.blockers)
             if "persistent_supervisor_heartbeat_stale_or_future" in reasons:

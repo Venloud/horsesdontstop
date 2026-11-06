@@ -31,7 +31,9 @@ function Get-HdsServiceInstances([string]$module) {
                 $_.CommandLine -notmatch "--diagnose"
             })
         $ids = @($procs | ForEach-Object { $_.ProcessId })
-        return @($procs | Where-Object { $ids -notcontains $_.ParentProcessId }).Count
+        $roots = @($procs | Where-Object { $ids -notcontains $_.ParentProcessId })
+        $script:HdsLastServiceRootPids = @($roots | ForEach-Object { [int]$_.ProcessId })
+        return $roots.Count
     }
     catch {
         return -1
@@ -55,7 +57,9 @@ $envNames = @(
     "PAPER_HEARTBEAT_DSN",
     "PAPER_MONITOR_NTFY_TOPIC",
     "PAPER_EXTERNAL_LIVENESS_URL",
-    "PAPER_EXTERNAL_LIVENESS_TOKEN"
+    "PAPER_EXTERNAL_LIVENESS_TOKEN",
+    "PAPER_SUPERVISOR_RECEIPT",
+    "PAPER_SUPERVISOR_ROOT_PID"
 )
 
 try {
@@ -73,6 +77,7 @@ try {
     $env:PAPER_MONITOR_NTFY_TOPIC = Read-HdsSecret "paper-ntfy-topic.dpapi"
     $env:PAPER_EXTERNAL_LIVENESS_TOKEN = Read-HdsSecret "beat-token.dpapi"
     $env:PAPER_EXTERNAL_LIVENESS_URL = "https://horsesdontstop-liveness-staging.vancastech.workers.dev/v1/heartbeat"
+    $env:PAPER_SUPERVISOR_RECEIPT = Join-Path $folder "supervisor-runtime.json"
 
     $runTicks = if ($Continuous) { 0 } else { $MaxTicks }
     if ($TestAlert) {
@@ -99,6 +104,9 @@ try {
             # per-unchanged-failure-per-day receipt file. No secrets written.
             $collectorCount = Get-HdsServiceInstances "bot.paper_opening_equity_daemon"
             $supervisorCount = Get-HdsServiceInstances "bot.paper_supervisor_loop"
+            $env:PAPER_SUPERVISOR_ROOT_PID = if ($supervisorCount -eq 1) {
+                [string]$script:HdsLastServiceRootPids[0]
+            } else { "" }
             & $python -m bot.paper_supervisor_loop --diagnose --phase auto `
                 --collector-instances $collectorCount `
                 --supervisor-instances $supervisorCount `

@@ -15,7 +15,7 @@ def test_all_stages_pass_and_order_is_fixed(capsys):
     stages = good_stages()
     assert run_diagnostic_stages(stages) == 0
     lines = capsys.readouterr().out.splitlines()
-    assert len(lines) == len(DIAGNOSTIC_STAGES) == 14
+    assert len(lines) == len(DIAGNOSTIC_STAGES) == 17
     assert lines[-1] == "STAGE continuous_supervisor_lease: PASS"
     assert [x.split(":")[0] for x in lines] == [
         "STAGE " + name for name in DIAGNOSTIC_STAGES
@@ -39,6 +39,9 @@ def test_exactly_one_stage_fails_and_all_others_run(failed, capsys):
         "heartbeat_writer_role": "PERMISSION_DENIED",
         "external_liveness_config": "UNKNOWN",
         "nyse_calendar": "MARKET_CLOSED",
+        "supervisor_runtime_receipt": "LOCAL_RECEIPT_UNAVAILABLE",
+        "supervisor_process_identity": "IDENTITY_MISMATCH",
+        "cloudflare_external_ack": "EXTERNAL_ACK_MISSING",
         "continuous_supervisor_lease": "SUPERVISOR_NOT_RUNNING",
     }
     code = reasons[failed]
@@ -47,7 +50,7 @@ def test_exactly_one_stage_fails_and_all_others_run(failed, capsys):
     stages[failed] = fail
     assert run_diagnostic_stages(stages) == 2
     lines = capsys.readouterr().out.splitlines()
-    assert len(lines) == 14
+    assert len(lines) == 17
     assert [line for line in lines if ": FAIL " in line] == [
         "STAGE " + failed + ": FAIL " + code
     ]
@@ -146,7 +149,9 @@ def test_diagnostic_never_writes_lease_or_liveness():
 def test_preopen_stage_set_is_a_strict_dependency_subset():
     assert set(loop.PREOPEN_DIAGNOSTIC_STAGES) < set(DIAGNOSTIC_STAGES)
     for later in ("observation_freshness", "independent_assessment",
-                  "continuous_supervisor_lease", "reconciliation"):
+                  "supervisor_runtime_receipt", "supervisor_process_identity",
+                  "cloudflare_external_ack", "continuous_supervisor_lease",
+                  "reconciliation"):
         assert later not in loop.PREOPEN_DIAGNOSTIC_STAGES
 
 
@@ -189,6 +194,43 @@ def test_process_count_fails_closed(count, expected):
 ])
 def test_supervisor_lease_is_read_and_classified_strictly(row, expected):
     assert loop.diagnostic_supervisor_lease(row) == expected
+
+
+def test_diagnostic_local_receipt_and_identity_match_executor_requirements(tmp_path):
+    path = tmp_path / "supervisor.json"
+    receipt = {
+        "worker_id": "paper-" + "a" * 32, "pid": 123,
+        "sequence": 8, "status": "read_only_poll_ok", "external_ack": True,
+        "observed_at_utc": NOW.isoformat(),
+    }
+    path.write_text(json.dumps(receipt))
+    actual, result = loop.diagnostic_local_supervisor_receipt(path, now=NOW)
+    assert result is True
+    assert isinstance(actual, dict)
+    assert loop.diagnostic_supervisor_process_identity(actual, 123) is True
+    assert loop.diagnostic_supervisor_process_identity(actual, 124) == "IDENTITY_MISMATCH"
+    assert loop.diagnostic_external_ack(actual) is True
+    actual["external_ack"] = False
+    assert loop.diagnostic_external_ack(actual) == "EXTERNAL_ACK_MISSING"
+
+
+def test_diagnostic_local_receipt_fails_closed_for_idle_or_stale(tmp_path):
+    path = tmp_path / "supervisor.json"
+    receipt = {
+        "worker_id": "paper-" + "a" * 32, "pid": 123,
+        "sequence": 8, "status": "closed_flat_idle", "external_ack": True,
+        "observed_at_utc": NOW.isoformat(),
+    }
+    path.write_text(json.dumps(receipt))
+    actual, result = loop.diagnostic_local_supervisor_receipt(path, now=NOW)
+    assert result == "SUPERVISOR_IDLE"
+    assert actual["external_ack"] is True
+    receipt["status"] = "read_only_poll_ok"
+    receipt["observed_at_utc"] = (NOW - timedelta(seconds=121)).isoformat()
+    path.write_text(json.dumps(receipt))
+    actual, result = loop.diagnostic_local_supervisor_receipt(path, now=NOW)
+    assert result == "LOCAL_RECEIPT_STALE"
+    assert actual["worker_id"] == receipt["worker_id"]
 
 
 def test_alert_is_sent_once_per_unchanged_failure_per_day(tmp_path):
