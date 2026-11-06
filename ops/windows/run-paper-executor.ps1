@@ -40,7 +40,7 @@ function Read-HdsExecutorSecret([string]$name) {
 
 $names = @('ALPACA_PAPER_API_KEY','ALPACA_PAPER_SECRET_KEY','PAPER_JOURNAL_DSN',
            'PAPER_EXECUTOR_DSN','PAPER_RECONCILER_DSN','PAPER_ACCOUNT_SHA256',
-           'PAPER_SUPERVISOR_RECEIPT','PAPER_SUPERVISOR_ROOT_PID')
+           'PAPER_SUPERVISOR_RECEIPT','PAPER_SUPERVISOR_RECEIPT_PID')
 try {
     if ($repo -ne 'C:\Users\van02\horsesdontstop') { $stage='validate_stable_runtime_path'; throw 'Executor must run from the stable runtime checkout.' }
     if (-not (Test-Path -LiteralPath $python)) { $stage='validate_stable_python'; throw 'Stable runtime Python environment is missing.' }
@@ -81,7 +81,12 @@ try {
     if ($supervisorRoots.Count -ne 1) {
         throw 'Exactly one continuous supervisor process root is required.'
     }
-    $env:PAPER_SUPERVISOR_ROOT_PID = [string]$supervisorRoots[0].ProcessId
+    $runtime = Get-Content -LiteralPath $env:PAPER_SUPERVISOR_RECEIPT -Raw | ConvertFrom-Json
+    $receiptPid = [int]$runtime.pid
+    if ($supervisorIds -notcontains $receiptPid) {
+        throw 'Supervisor receipt writer is not in the live supervisor process tree.'
+    }
+    $env:PAPER_SUPERVISOR_RECEIPT_PID = [string]$receiptPid
     $output = Join-Path $folder 'paper-executor\latest.json'
     $stage = 'invoke_python_executor'
     Push-Location $repo

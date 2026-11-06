@@ -143,11 +143,12 @@ def _opening_and_peak(journal, now, sessions):
 
 def _verify_supervisor_receipt(receipt_path: Path, heartbeat_journal, now,
                                *, expected_pid=None, check_observer=None):
-    def record(name, status, reason=None, age_seconds=None):
+    def record(name, status, reason=None, age_seconds=None, error_type=None):
         if check_observer is not None:
             check_observer(name, {
                 "status": status, "reason": reason,
                 "age_seconds": age_seconds,
+                "error_type": error_type,
             })
 
     try:
@@ -202,8 +203,11 @@ def _verify_supervisor_receipt(receipt_path: Path, heartbeat_journal, now,
         if not isinstance(worker_id, str):
             raise ValueError
         lease = heartbeat_journal.inspect(expected_worker_id=worker_id)
-    except Exception:
-        record("neon_supervisor_lease", "FAIL", "independent_inspection_failed")
+    except Exception as exc:
+        # A fixed exception class distinguishes a role/permission failure from
+        # an unhealthy lease without persisting a DSN or driver error string.
+        record("neon_supervisor_lease", "FAIL", "independent_inspection_failed",
+               error_type=type(exc).__name__)
         lease = None
     if lease is not None:
         if lease.healthy is True:
@@ -242,10 +246,10 @@ def _live_components(*, stage_observer=None):
     names = ("ALPACA_PAPER_API_KEY", "ALPACA_PAPER_SECRET_KEY",
              "PAPER_JOURNAL_DSN", "PAPER_EXECUTOR_DSN",
              "PAPER_RECONCILER_DSN", "PAPER_ACCOUNT_SHA256",
-             "PAPER_SUPERVISOR_RECEIPT", "PAPER_SUPERVISOR_ROOT_PID")
+             "PAPER_SUPERVISOR_RECEIPT", "PAPER_SUPERVISOR_RECEIPT_PID")
     if (any(not os.environ.get(name) for name in names)
-            or not os.environ["PAPER_SUPERVISOR_ROOT_PID"].isdecimal()
-            or int(os.environ["PAPER_SUPERVISOR_ROOT_PID"]) < 1):
+            or not os.environ["PAPER_SUPERVISOR_RECEIPT_PID"].isdecimal()
+            or int(os.environ["PAPER_SUPERVISOR_RECEIPT_PID"]) < 1):
         raise TradeBlocked("Required DPAPI-backed PAPER runtime configuration missing")
     from alpaca.data.historical import StockHistoricalDataClient
     from .paper_store import PostgresPaperJournal
@@ -277,7 +281,7 @@ def _live_components(*, stage_observer=None):
         "reconciler_trading": reconciler_trading, "heartbeat": heartbeat,
         "expected_account_hash": os.environ["PAPER_ACCOUNT_SHA256"],
         "receipt_path": Path(os.environ["PAPER_SUPERVISOR_RECEIPT"]),
-        "expected_supervisor_pid": int(os.environ["PAPER_SUPERVISOR_ROOT_PID"]),
+        "expected_supervisor_pid": int(os.environ["PAPER_SUPERVISOR_RECEIPT_PID"]),
     }
 
 

@@ -143,8 +143,13 @@ class PaperWorkerHeartbeat:
                     "has_table_privilege(current_user,'public.paper_intents','INSERT')"
                 )
                 row = cur.fetchone()
-        if row != ("hds_paper_monitor", False, False,
-                   True, False, False, False):
+        # The installed Windows runtime uses its own restricted monitoring
+        # login.  It may inspect the heartbeat only after the identical
+        # no-elevation/no-write checks below; accepting the role name alone
+        # would be unsafe.
+        if (not isinstance(row, tuple) or len(row) != 7
+                or row[0] not in {"hds_paper_monitor", "hds_paper_win_monitor"}
+                or row[1:] != (False, False, True, False, False, False)):
             raise TradeBlocked(
                 "PAPER heartbeat inspector must use narrow SELECT-only monitor"
             )
