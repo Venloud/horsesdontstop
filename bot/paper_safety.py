@@ -187,7 +187,8 @@ def plan_paper_entry(symbol: str, day: date, reference_price: float,
     budget = account_equity * fraction
     by_risk = int((budget / max_loss_per_share).to_integral_value(rounding=ROUND_DOWN))
     by_cash = int((cash / estimated_fill).to_integral_value(rounding=ROUND_DOWN))
-    shares = min(by_risk, by_cash)
+    by_equity = int((account_equity / estimated_fill).to_integral_value(rounding=ROUND_DOWN))
+    shares = min(by_risk, by_cash, by_equity)
     if shares < 1:
         raise TradeBlocked("No affordable whole-share trade within the risk budget")
     return PaperOrderPlan(

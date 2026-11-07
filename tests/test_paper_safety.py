@@ -45,6 +45,17 @@ def test_whole_share_and_cash_budget_limits():
     assert trade.protective_stop < trade.estimated_entry
 
 
+def test_dynamic_risk_sizing_allows_realistic_notional_above_five_dollars():
+    # A $5 notional ceiling made even one share of a modestly priced symbol
+    # impossible. Size remains constrained by the 1% risk budget, cash and
+    # total equity exposure instead.
+    trade = plan_paper_entry("F", TODAY, 12.52, 500, 500, .01)
+    assert trade.estimated_cost > 5
+    assert trade.estimated_cost <= 500
+    assert trade.estimated_risk_usd <= trade.risk_budget_usd
+    assert trade.whole_shares >= 1
+
+
 def test_unaffordable_whole_share_rejected():
     with pytest.raises(TradeBlocked, match="No affordable"):
         plan_paper_entry("NVDA", TODAY, 300, 500, 500, .01)

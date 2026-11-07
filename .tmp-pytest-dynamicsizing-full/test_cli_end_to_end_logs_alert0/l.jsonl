@@ -1,0 +1,1 @@
+{"alert": "SENT", "at_utc": "2026-11-07T03:34:14.437267+00:00", "exit_code": 2, "phase": "preopen", "stages": {"opening_equity_collector": "FAIL PROCESS_NOT_RUNNING", "required_env": "PASS"}}

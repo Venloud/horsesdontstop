@@ -19,7 +19,7 @@ class FakePaperTrading:
 
     def get_account(self):
         self.calls.append("get_account")
-        return SimpleNamespace(equity="500", cash="500",
+        return SimpleNamespace(equity="500", cash="500", buying_power="500",
                                trading_blocked=False)
 
     def get_clock(self):

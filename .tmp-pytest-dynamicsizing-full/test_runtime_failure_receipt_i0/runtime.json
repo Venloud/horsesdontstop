@@ -1,0 +1,14 @@
+{
+  "broker_order_attempted": false,
+  "candidate_evaluations": [],
+  "checks": {},
+  "error_type": "RuntimeError",
+  "exit_code": 2,
+  "mode": "prepare",
+  "observed_at_utc": "2026-11-07T03:34:13.432250+00:00",
+  "run_id": "a0cf94c3638d4d9aa488d6c10286dd6f",
+  "safe_reason": null,
+  "schema": 1,
+  "stage": "prepare_live_workflow",
+  "status": "error"
+}
