@@ -1,0 +1,106 @@
+{
+  "schema": 1,
+  "project": "Venloud/horsesdontstop",
+  "verified_at_utc": "2026-11-07T04:24:27Z",
+  "code": {
+    "branch": "main",
+    "head": "b47c783783e237f57ce87e685689371adac5cb0f",
+    "dynamic_sizing_change_commit": "0b00f2e",
+    "migration": "sql/paper_dynamic_risk_sizing_review_only.sql",
+    "migration_sha256": "d19fd3db16c8700c5fcfc024c528b9879b0eeb264e6e53c22f8d923b4e25f98d",
+    "rollback": "sql/paper_dynamic_risk_sizing_rollback_review_only.sql",
+    "rollback_sha256": "6428d774e40687b148cc08d346ff1daf4ce282915d88b6e5b97bbacb412c44dc"
+  },
+  "policy": {
+    "fixed_purchase_notional_cap_removed": true,
+    "sizing_inputs": [
+      "authenticated current account equity",
+      "available cash",
+      "broker buying power",
+      "fresh IEX ask price and displayed ask size",
+      "1 percent stop-distance risk budget"
+    ],
+    "maximum_equity_exposure_fraction": 1.0,
+    "fee_reserve_usd": 0.5,
+    "kill_switch_active": true,
+    "submissions_enabled": false,
+    "paper_order_submissions_released": false,
+    "broker_orders_sent": 0
+  },
+  "independent_review": {
+    "result": "PASS_FOR_PREPARE_ONLY_MIGRATION_AND_DEPLOYMENT",
+    "conditions": [
+      "production kill remains ON",
+      "submissions remain OFF",
+      "code dispatch release flag remains false",
+      "database-side 1 percent risk verification remains a mandatory condition before any future dispatch release"
+    ],
+    "rollback_acceptance": "PASS",
+    "rollback_behavior": "Historical over-cap approvals remain readable and immutable; UPDATE and new over-cap INSERT fail check_violation under the NOT VALID restored ceiling."
+  },
+  "neon": {
+    "project_id": "misty-shadow-43891652",
+    "production": {
+      "branch_id": "br-restless-sunset-b5s18rj3",
+      "migration_applied_transactionally": true,
+      "verified_purchase_constraint": "CHECK (purchase_cost > 0)",
+      "kill_and_submission_controls": "true/false",
+      "intent_count": 0,
+      "approval_count": 0,
+      "executor_reserve_execute": true,
+      "executor_approval_execute": false,
+      "executor_direct_approval_insert": false,
+      "synthetic_125_usd_reservation_and_owner_approval": "PASS; savepoint rolled back; zero residual rows",
+      "executor_approval_and_direct_insert_attacks": "DENIED; SQLSTATE 42501"
+    },
+    "isolated": {
+      "branch_id": "br-misty-dawn-b5dbnr90",
+      "synthetic_125_usd_reservation_and_owner_approval": "PASS; savepoint rolled back; zero residual rows",
+      "executor_approval_and_direct_insert_attacks": "DENIED; SQLSTATE 42501",
+      "rollback_preservation_and_not_valid_constraint_checks": "PASS; all synthetic data rolled back"
+    },
+    "recovery_branch": {
+      "branch_id": "br-bold-dew-b5hi2gl2",
+      "name": "hds-pre-dynamic-sizing-prod-backup-20261106",
+      "parent_branch_id": "br-restless-sunset-b5s18rj3",
+      "parent_lsn": "0/451D688",
+      "compute_enabled": false,
+      "disposition": "KEEP through production migration rollback retention"
+    },
+    "snapshot": {
+      "fresh_manual_snapshot": "NOT_CREATED; Neon returned snapshots limit exceeded",
+      "older_snapshot_preserved": "snap-raspy-haze-b52ygtmj"
+    },
+    "synthetic_production_rows_remaining": 0
+  },
+  "windows": {
+    "stable_path": "C:\\Users\\van02\\horsesdontstop",
+    "previous_commit": "a7c942d6cda6b4ef006db1d0a0d53b49a59cd475",
+    "deployed_commit": "b47c783783e237f57ce87e685689371adac5cb0f",
+    "rollback_record": "%LOCALAPPDATA%\\horsesdontstop\\paper-executor\\deployment-rollback-before-19e5727.txt",
+    "executor_task": "HorsesDontStop-PAPER-Executor",
+    "task_state": "Ready",
+    "task_action": "C:\\Users\\van02\\horsesdontstop\\ops\\windows\\run-paper-executor.ps1",
+    "last_run": "2026-11-06T09:46:46-05:00",
+    "last_result": 2,
+    "next_run": "2026-11-09T09:36:36-05:00",
+    "restart_performed": false,
+    "focused_stable_tests": "155 passed",
+    "runtime_proposal_generated": false
+  },
+  "tests": {
+    "focused_local_python": "229 passed",
+    "full_local_python": "1292 passed, 4 skipped",
+    "stable_focused_python": "155 passed",
+    "worker_node": "12 passed using node --test --test-isolation=none",
+    "node_default_runner_environment_issue": "Windows spawn EPERM; same unmodified tests passed in-process",
+    "github_ci_head": "b47c783783e237f57ce87e685689371adac5cb0f",
+    "github_ci_run": "https://github.com/Venloud/horsesdontstop/actions/runs/42336502174",
+    "github_ci_conclusion": "success"
+  },
+  "trading_decision": {
+    "status": "NO TRADE",
+    "reason": "After-hours; no current market-session signal or proposal was produced.",
+    "separate_exact_order_owner_approval_required": true
+  }
+}
