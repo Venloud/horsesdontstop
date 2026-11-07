@@ -6,7 +6,7 @@ import pytest
 from alpaca.trading.enums import OrderClass, OrderSide, TimeInForce
 
 from bot.live_quotes import (
-    MAX_SPREAD_BPS, PILOT_FEE_RESERVE_USD, PILOT_MAX_PURCHASE_USD,
+    MAX_POSITION_EQUITY_FRACTION, MAX_SPREAD_BPS, PILOT_FEE_RESERVE_USD,
     build_live_protected_oto_request, inspect_live_quote,
     preview_live_paper_entry,
 )
@@ -38,7 +38,7 @@ def test_fresh_quote_creates_unsent_one_percent_protected_limit_oto():
     assert p.shares > 0
     assert p.risk_budget_usd == 5.00
     assert p.stop_distance_risk_usd <= 5.0
-    assert p.max_limit_purchase_usd <= PILOT_MAX_PURCHASE_USD
+    assert p.max_limit_purchase_usd <= 500 * MAX_POSITION_EQUITY_FRACTION
     assert p.fee_reserve_usd == PILOT_FEE_RESERVE_USD
     assert p.order_time_in_force == "gtc"
     assert p.buy_limit_usd > p.ask_usd
@@ -57,31 +57,44 @@ def test_fresh_quote_creates_unsent_one_percent_protected_limit_oto():
 def test_max_one_percent_budget_strict_no_two_percent_default():
     with pytest.raises(TradeBlocked, match="restricted to 1%"):
         plan(risk_fraction=.02)
-    smaller = plan(equity=400, available_cash=400)
-    larger = plan(equity=600, available_cash=600)
+    liquid_quote = quote(bid=1.50, ask=1.51, asize=500)
+    smaller = plan(q=liquid_quote, equity=400, available_cash=400)
+    larger = plan(q=liquid_quote, equity=600, available_cash=600)
     assert smaller.risk_budget_usd == 4.0
     assert larger.risk_budget_usd == 6.0
-    assert smaller.max_limit_purchase_usd <= 4.0
-    assert larger.max_limit_purchase_usd <= 5.0
+    assert smaller.stop_distance_risk_usd <= smaller.risk_budget_usd
+    assert larger.stop_distance_risk_usd <= larger.risk_budget_usd
+    assert smaller.max_limit_purchase_usd > 5.0
+    assert larger.max_limit_purchase_usd > smaller.max_limit_purchase_usd
+    assert larger.max_limit_purchase_usd <= 600 * MAX_POSITION_EQUITY_FRACTION
 
 
 def test_quote_liquidity_constrains_whole_shares():
     p = plan(quote(bid=1.50, ask=1.51, asize=1))
     assert p.shares == 1
-    assert p.max_limit_purchase_usd <= PILOT_MAX_PURCHASE_USD
+    assert p.max_limit_purchase_usd == pytest.approx(p.buy_limit_usd)
 
 
-def test_first_pilot_purchase_cap_is_five_dollars_plus_separate_fee_reserve():
-    p = plan(equity=500, available_cash=500)
-    assert p.max_limit_purchase_usd <= 5.00
-    assert p.fee_reserve_usd == .50
-    assert p.max_limit_purchase_usd + p.fee_reserve_usd <= 5.50
-    with pytest.raises(TradeBlocked, match="No affordable whole"):
-        plan(quote=quote(bid=5.00, ask=5.01), equity=500,
+def test_notional_sizes_from_risk_cash_equity_and_fee_reserve():
+    p = plan(quote=quote(bid=5.00, ask=5.01), equity=500,
              available_cash=500)
+    assert p.max_limit_purchase_usd > 5.00
+    assert p.fee_reserve_usd == .50
+    assert p.max_limit_purchase_usd + p.fee_reserve_usd <= 500.00
+    assert p.stop_distance_risk_usd <= 5.00
+    assert p.max_limit_purchase_usd <= 500 * MAX_POSITION_EQUITY_FRACTION
     with pytest.raises(TradeBlocked, match="No affordable whole"):
         plan(quote=quote(bid=4.48, ask=4.50), equity=500,
              available_cash=4.50)
+
+
+def test_dynamic_notional_obeys_lower_buying_power_without_margin():
+    q = quote(bid=12.51, ask=12.52, asize=100)
+    p = plan(q, equity=500, available_cash=500, available_buying_power=100)
+    assert p.max_limit_purchase_usd > 5.00
+    assert p.max_limit_purchase_usd + p.fee_reserve_usd <= 100.00
+    assert p.max_limit_purchase_usd <= 500.00
+    assert p.stop_distance_risk_usd <= 5.00
 
 
 def test_market_closed_rejected_even_with_recent_price():
@@ -116,14 +129,16 @@ def test_quote_diagnostic_reports_actual_spread_and_unchanged_limit():
                                  market_open=True)
 
 
-def test_tight_quote_can_still_fail_five_dollar_whole_share_cap():
+def test_tight_quote_at_realistic_share_price_passes_dynamic_sizing():
     q = quote(bid=12.51, ask=12.52)
     metrics = inspect_live_quote(q, now=NOW)
     assert metrics.spread_bps < MAX_SPREAD_BPS
-    with pytest.raises(TradeBlocked, match="No affordable whole share"):
-        preview_live_paper_entry(symbol="F", quote=q, equity=500,
+    p = preview_live_paper_entry(symbol="F", quote=q, equity=500,
                                  available_cash=500, now=NOW,
                                  market_open=True)
+    assert p.shares > 1
+    assert p.max_limit_purchase_usd > 5.0
+    assert p.stop_distance_risk_usd <= 5.0
 
 
 @pytest.mark.parametrize("bsize,asize", [(0, 10), (10, 0), (-1, 10),

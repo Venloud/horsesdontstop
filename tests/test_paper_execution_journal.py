@@ -119,6 +119,12 @@ def test_production_kill_switch_blocks_reservation(monkeypatch):
     assert db["keys"] == set()
 
 
+def test_risk_limited_gtc_intent_can_exceed_five_dollars():
+    plan = replace(sample(), time_in_force="gtc")
+    assert plan.estimated_cost > 5.0
+    PaperExecutorJournal.validate_protected_intent(plan)
+
+
 def test_atomic_unique_reservation_stops_duplicate_order_id(monkeypatch):
     j, db = journal(monkeypatch, allow=True)
     plan = sample()

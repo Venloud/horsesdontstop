@@ -5,7 +5,7 @@ read-only until a durable journal, reconciliation and worker are deployed.
 """
 from dataclasses import asdict, dataclass
 from datetime import date
-from decimal import Decimal, InvalidOperation, ROUND_DOWN
+from decimal import Decimal, InvalidOperation, ROUND_DOWN, ROUND_UP
 from hashlib import sha256
 import re
 
@@ -178,7 +178,7 @@ def plan_paper_entry(symbol: str, day: date, reference_price: float,
         raise TradeBlocked("Invalid price, cash or risk parameters")
     if cash > account_equity * Decimal("1.1"):
         raise TradeBlocked("Unexpected cash exceeds equity")
-    estimated_fill = price * (1 + buffer)
+    estimated_fill = (price * (1 + buffer)).quantize(CENT, rounding=ROUND_UP)
     stop = (price * (1 - stop_fraction)).quantize(CENT, rounding=ROUND_DOWN)
     if stop <= 0 or stop >= estimated_fill:
         raise TradeBlocked("Invalid protective stop")
@@ -192,7 +192,7 @@ def plan_paper_entry(symbol: str, day: date, reference_price: float,
         raise TradeBlocked("No affordable whole-share trade within the risk budget")
     return PaperOrderPlan(
         symbol=symbol, strategy=strategy, trading_day=day.isoformat(),
-        client_order_id=id_, estimated_entry=float(estimated_fill.quantize(CENT)),
+        client_order_id=id_, estimated_entry=float(estimated_fill),
         protective_stop=float(stop), whole_shares=shares,
         estimated_cost=float((estimated_fill * shares).quantize(CENT)),
         risk_budget_usd=float(budget.quantize(CENT)),

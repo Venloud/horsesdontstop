@@ -56,16 +56,14 @@ def render_owner_approval_sql(prepared, *, now: datetime | None = None) -> str:
         raise TradeBlocked("Invalid prepared share quantity")
     limit_price = money(preview.buy_limit_usd)
     stop_price = money(preview.stop_usd)
-    purchase_cap = money(preview.max_limit_purchase_usd)
+    purchase_cost = money(preview.max_limit_purchase_usd)
     database_scale = Decimal("0.000001")
     if (limit_price != limit_price.quantize(database_scale)
             or stop_price != stop_price.quantize(database_scale)
             or limit_price <= 0 or stop_price <= 0 or stop_price >= limit_price
-            or purchase_cap > money("5.00")
-            or limit_price * shares > money("5.00")
-            or purchase_cap != limit_price * shares
+            or purchase_cost != limit_price * shares
             or money(getattr(prepared, "fee_reserve_usd", None)) != money("0.50")):
-        raise TradeBlocked("Prepared order violates bounded pilot limits")
+        raise TradeBlocked("Prepared order has inconsistent price, quantity, or fee terms")
     # Bind every human-visible term to both the reserved intent and the
     # actual SDK request. Never accept a caller-supplied digest as proof of
     # what is displayed: that permits approving one order and dispatching

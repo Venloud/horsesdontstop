@@ -270,7 +270,7 @@ def test_disarmed_preparation_returns_exact_order_without_broker_write():
     assert proposal["symbol"] == "F" and proposal["side"] == "buy"
     assert proposal["quantity"] == p.shares
     assert proposal["time_in_force"] == "gtc"
-    assert proposal["purchase_cost_cap"] <= 5.00
+    assert proposal["purchase_cost_cap"] > 5.00
     assert proposal["fee_reserve"] == .50
     assert proposal["stop_price"] == p.stop_usd
     assert proposal["submitted"] is False

@@ -25,9 +25,9 @@ class Prepared:
     fee_reserve_usd: float = .50
 
 
-def prepared(**changes):
+def prepared(*, bid=1.50, ask=1.51, **changes):
     quote = SimpleNamespace(
-        bid_price=1.50, ask_price=1.51, bid_size=50, ask_size=50,
+        bid_price=bid, ask_price=ask, bid_size=50, ask_size=50,
         timestamp=NOW,
     )
     preview = preview_live_paper_entry(
@@ -50,6 +50,7 @@ def prepared(**changes):
 def test_renders_exact_owner_only_short_lived_approval_call():
     sql = render_owner_approval_sql(prepared(), now=NOW)
     p = prepared().preview
+    assert p.max_limit_purchase_usd > 5.00
     assert "paper_approve_bounded_pilot" in sql
     assert f"'{p.client_order_id}', 'F', {p.shares}" in sql
     assert f"{p.buy_limit_usd:.6f}, {p.stop_usd:.6f}" in sql
@@ -116,7 +117,7 @@ def test_refuses_silent_numeric_rounding_and_inconsistent_cost_summary():
         _request_sha256(build_live_protected_oto_request(precise_preview)),
         base.account_id_sha256,
     )
-    with pytest.raises(TradeBlocked, match="bounded pilot limits"):
+    with pytest.raises(TradeBlocked, match="inconsistent price, quantity"):
         render_owner_approval_sql(precise, now=NOW)
 
     inconsistent_preview = replace(
@@ -127,5 +128,5 @@ def test_refuses_silent_numeric_rounding_and_inconsistent_cost_summary():
         _plan_from_quoted_preview(inconsistent_preview), inconsistent_preview,
         base.request_sha256, base.account_id_sha256,
     )
-    with pytest.raises(TradeBlocked, match="bounded pilot limits"):
+    with pytest.raises(TradeBlocked, match="inconsistent price, quantity"):
         render_owner_approval_sql(inconsistent, now=NOW)

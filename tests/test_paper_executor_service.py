@@ -448,7 +448,9 @@ def test_live_coordinator_prepares_exact_proposal_without_any_broker_post(monkey
     assert evaluations == result["candidate_evaluations"]
     assert result["prepared"]["time_in_force"] == "gtc"
     assert result["prepared"]["order_class"] == "oto"
-    assert result["prepared"]["purchase_cost_cap"] <= 5.00
+    assert result["prepared"]["purchase_cost_cap"] > 5.00
+    assert result["prepared"]["purchase_cost_cap"] <= 500.00
+    assert result["prepared"]["quote_preview"]["stop_distance_risk_usd"] <= 5.00
     assert result["prepared"]["fee_reserve"] == 0.50
     assert result["owner_approval_sql"].startswith("-- OWNER ACTION:")
     from bot.paper_pilot_approval_cli import approval_sql_from_document
