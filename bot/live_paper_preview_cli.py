@@ -71,6 +71,7 @@ def preview_live_quotes(trading, market_data, journal, *,
                 proposal = preview_live_paper_entry(
                     symbol=symbol, quote=quote,
                     equity=account.equity, available_cash=account.cash,
+                    available_buying_power=account.buying_power,
                     now=now, market_open=bool(clock.is_open))
                 request = build_live_protected_oto_request(proposal)
                 suggestions.append({

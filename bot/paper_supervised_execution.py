@@ -47,7 +47,6 @@ class ExplicitPaperTradeApproval:
     expires_at_utc: datetime
     order_time_in_force: str = "gtc"
     order_class: str = "oto"
-    maximum_purchase_cost_usd: float = 5.00
     fee_reserve_usd: float = 0.50
     account_id_sha256: str = ""
 
@@ -113,10 +112,10 @@ def _validate_approval(approval, preview, now, expected_account_sha256):
         raise TradeBlocked("Approval does not match exact paper order")
     if (approval.order_time_in_force != "gtc"
             or approval.order_class != "oto"
-            or money(approval.maximum_purchase_cost_usd) != money("5.00")
             or money(approval.fee_reserve_usd) != money("0.50")
-            or money(preview.max_limit_purchase_usd) > money("5.00")):
-        raise TradeBlocked("Approval does not match bounded GTC OTO pilot policy")
+            or money(preview.max_limit_purchase_usd)
+               != money(preview.buy_limit_usd) * preview.shares):
+        raise TradeBlocked("Approval does not match risk-limited GTC OTO order terms")
     if (not isinstance(expected_account_sha256, str)
             or len(expected_account_sha256) != 64
             or any(c not in "0123456789abcdef" for c in expected_account_sha256)
@@ -394,7 +393,9 @@ def submit_paper_once_supervised(
     # balances, and today's Alpaca clock; reject stale/swapped previews.
     recomputed = preview_live_paper_entry(
         symbol=preview.symbol, quote=market_quote, equity=account.equity,
-        available_cash=account.cash, now=now, market_open=bool(clock.is_open))
+        available_cash=account.cash,
+        available_buying_power=account.buying_power,
+        now=now, market_open=bool(clock.is_open))
     for key in (
         "client_order_id", "quote_at_utc", "bid_usd", "ask_usd",
         "buy_limit_usd", "stop_usd", "shares", "risk_budget_usd",
@@ -441,7 +442,9 @@ def submit_paper_once_supervised(
         final_now = now + timedelta(seconds=monotonic() - started)
         final_preview = preview_live_paper_entry(
             symbol=preview.symbol, quote=market_quote, equity=account.equity,
-            available_cash=account.cash, now=final_now, market_open=True)
+            available_cash=account.cash,
+            available_buying_power=account.buying_power,
+            now=final_now, market_open=True)
         for key in (
             "client_order_id", "quote_at_utc", "bid_usd", "ask_usd",
             "buy_limit_usd", "stop_usd", "shares", "risk_budget_usd",
@@ -475,7 +478,9 @@ def submit_paper_once_supervised(
                                expected_account_sha256)
             preview_live_paper_entry(
                 symbol=preview.symbol, quote=market_quote, equity=account.equity,
-                available_cash=account.cash, now=final_now, market_open=True)
+                available_cash=account.cash,
+                available_buying_power=account.buying_power,
+                now=final_now, market_open=True)
             _verify_paper_market_session(trading, clock, now=final_now)
             # Refresh account/exposure again after reservation and lock waits.
             final_account = trading.get_account()
@@ -506,7 +511,9 @@ def submit_paper_once_supervised(
                                expected_account_sha256)
             preview_live_paper_entry(
                 symbol=preview.symbol, quote=market_quote, equity=final_account.equity,
-                available_cash=final_account.cash, now=send_now, market_open=True)
+                available_cash=final_account.cash,
+                available_buying_power=final_account.buying_power,
+                now=send_now, market_open=True)
             if send_now - final_now > timedelta(seconds=3):
                 raise TradeBlocked("PAPER final broker verification exceeded freshness budget")
             if send_now >= final_clock.next_close - timedelta(minutes=30):

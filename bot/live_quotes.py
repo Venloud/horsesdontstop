@@ -21,7 +21,7 @@ ENTRY_LIMIT_BUFFER = Decimal(".001")
 STOP_DISTANCE = Decimal(".03")
 PILOT_MAX_PURCHASE_USD = Decimal("5.00")
 PILOT_FEE_RESERVE_USD = Decimal("0.50")
-PILOT_MAX_EQUITY_FRACTION = Decimal("0.01")
+MAX_POSITION_EQUITY_FRACTION = Decimal("1.00")
 
 
 @dataclass(frozen=True)
@@ -139,7 +139,7 @@ def inspect_live_quote(quote, *, now: datetime,
 
 
 def preview_live_paper_entry(
-    *, symbol: str, quote, equity, available_cash,
+    *, symbol: str, quote, equity, available_cash, available_buying_power=None,
     now: datetime, market_open: bool, risk_fraction=Decimal(".01"),
     max_quote_age_seconds=MAX_QUOTE_AGE_SECONDS,
 ) -> LivePaperEntryPreview:
@@ -173,6 +173,9 @@ def preview_live_paper_entry(
 
     e = _quote_number(equity, "paper equity")
     cash = _quote_number(available_cash, "paper buying cash")
+    buying_power = _quote_number(
+        cash if available_buying_power is None else available_buying_power,
+        "paper buying power")
     if cash > e * Decimal("1.1"):
         raise TradeBlocked("Unexpected paper cash exceeds equity")
     risk = money(risk_fraction)
@@ -186,14 +189,19 @@ def preview_live_paper_entry(
         raise TradeBlocked("Invalid attached stop trigger")
     risk_per_share = buy_limit - stop
     budget = e * risk
-    purchase_cap = min(PILOT_MAX_PURCHASE_USD,
-                       e * PILOT_MAX_EQUITY_FRACTION)
-    cash_after_fee_reserve = cash - PILOT_FEE_RESERVE_USD
+    # Do not use margin or exceed account equity. Size by the smallest of
+    # stop-risk capacity, cash, broker buying power, equity exposure, and
+    # displayed ask liquidity. The fee reserve is additional spendable-cash
+    # headroom, not a purchase-notional limit.
+    max_equity_exposure = e * MAX_POSITION_EQUITY_FRACTION
+    spendable = min(cash, buying_power, max_equity_exposure)
+    cash_after_fee_reserve = spendable - PILOT_FEE_RESERVE_USD
     shares = min(int(budget // risk_per_share),
-                 int(cash_after_fee_reserve // buy_limit),
-                 int(purchase_cap // buy_limit), ask_size)
+                 int(cash_after_fee_reserve // buy_limit), ask_size)
     if shares < 1:
-        raise TradeBlocked("No affordable whole share at 1% risk and current spread")
+        raise TradeBlocked(
+            "No affordable whole share within 1% risk, equity exposure, "
+            "and available buying power")
     # Deterministic symbol/day ID, derived from New York clock, not server UTC.
     session_day = now.astimezone(ZoneInfo("America/New_York")).date()
     cid = make_client_order_id(session_day, symbol)

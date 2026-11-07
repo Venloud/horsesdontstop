@@ -181,12 +181,10 @@ class PaperExecutorJournal(PostgresPaperJournal):
         if (entry <= 0 or stop <= 0 or stop >= entry
                 or budget <= 0 or cost <= 0
                 or expected_loss < 0 or expected_loss > budget
-                or (plan.time_in_force == "gtc"
-                    and cost > money("5.00"))
-                or cost + money('0.02') < entry * plan.whole_shares
+                or abs(cost - entry * plan.whole_shares) > money("0.000001")
                 or expected_loss + money('0.02') <
                    (entry - stop) * plan.whole_shares):
-            raise TradeBlocked("Unprotected or over-budget order intent")
+            raise TradeBlocked("Unprotected or inconsistent order intent")
 
     def reserve_if_enabled(self, plan: PaperOrderPlan) -> bool:
         """PR38 atomic reservation: no executor direct INSERT privilege.

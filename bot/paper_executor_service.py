@@ -431,7 +431,9 @@ def prepare_live_candidate(*, components, now=None, symbols=None, utcnow=None,
         try:
             preview = preview_live_paper_entry(
                 symbol=symbol, quote=quote, equity=account.equity,
-                available_cash=account.cash, now=now, market_open=clock.is_open)
+                available_cash=account.cash,
+                available_buying_power=account.buying_power,
+                now=now, market_open=clock.is_open)
         except TradeBlocked as exc:
             if str(exc) not in candidate_rejections:
                 raise
@@ -479,7 +481,7 @@ def prepare_live_candidate(*, components, now=None, symbols=None, utcnow=None,
             "kill_switch_active": True,
         }
         return result
-    return {"mode": "NO_TRADE", "reason": "No candidate passed live IEX quote and $5 whole-share gates",
+    return {"mode": "NO_TRADE", "reason": "No candidate passed live quote, risk, exposure, cash, buying-power, and whole-share gates",
             "candidate_evaluations": candidate_evaluations,
             "broker_orders": 0, "database_writes": 0}
 
@@ -580,7 +582,9 @@ def dispatch_approved_artifact(*, components, artifact, now=None, utcnow=None):
     from .live_quotes import preview_live_paper_entry
     live_preview = preview_live_paper_entry(
         symbol=plan.symbol, quote=quote, equity=account.equity,
-        available_cash=account.cash, now=utcnow(), market_open=True)
+        available_cash=account.cash,
+        available_buying_power=account.buying_power,
+        now=utcnow(), market_open=True)
     if (prepared_doc.get("account_id_sha256") != expected_hash
             or _request_sha256(build_live_protected_oto_request(live_preview))
             != prepared_doc.get("request_sha256")):
@@ -588,7 +592,9 @@ def dispatch_approved_artifact(*, components, artifact, now=None, utcnow=None):
     now = utcnow()
     live_preview = preview_live_paper_entry(
         symbol=plan.symbol, quote=quote, equity=account.equity,
-        available_cash=account.cash, now=now, market_open=True)
+        available_cash=account.cash,
+        available_buying_power=account.buying_power,
+        now=now, market_open=True)
     lease = _verify_supervisor_receipt(
         components["receipt_path"], components["heartbeat"], now,
         expected_pid=components["expected_supervisor_pid"])
@@ -604,7 +610,7 @@ def dispatch_approved_artifact(*, components, artifact, now=None, utcnow=None):
         protective_stop_usd=plan.protective_stop,
         approved_at_utc=now, expires_at_utc=now + timedelta(seconds=120),
         order_time_in_force="gtc", order_class="oto",
-        maximum_purchase_cost_usd=5.00, fee_reserve_usd=0.50,
+        fee_reserve_usd=0.50,
         account_id_sha256=expected_hash)
     def verify_watchdog():
         fresh_lease = _verify_supervisor_receipt(
