@@ -2,7 +2,8 @@ import json
 import os
 from datetime import date, datetime, timedelta
 
-from alpaca.data.enums import DataFeed, Sort
+from alpaca.common.enums import Sort
+from alpaca.data.enums import DataFeed
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockQuotesRequest
 

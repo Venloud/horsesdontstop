@@ -52,6 +52,31 @@ class LivePaperEntryPreview:
         return asdict(self)
 
 
+@dataclass(frozen=True)
+class LiveQuoteMetrics:
+    quote_at_utc: str
+    quote_age_seconds: float
+    bid: Decimal
+    ask: Decimal
+    bid_size: int
+    ask_size: int
+    spread_bps: Decimal
+
+    def diagnostic(self):
+        """Safe public quote fields for per-candidate rejection receipts."""
+        return {
+            "quote_at_utc": self.quote_at_utc,
+            "quote_age_seconds": self.quote_age_seconds,
+            "bid_usd": float(self.bid),
+            "ask_usd": float(self.ask),
+            "bid_size": self.bid_size,
+            "ask_size": self.ask_size,
+            "spread_bps": round(float(self.spread_bps), 2),
+            "max_spread_bps": float(MAX_SPREAD_BPS),
+            "quote_feed": "IEX_ONLY_NOT_NBBO",
+        }
+
+
 def _quote_number(value, name):
     n = money(value)
     if n <= 0:
@@ -73,6 +98,41 @@ def _size(value, name):
     if n < 1 or exact != n:
         raise TradeBlocked(f"Invalid {name}")
     return n
+
+
+def inspect_live_quote(quote, *, now: datetime,
+                       max_quote_age_seconds=MAX_QUOTE_AGE_SECONDS) -> LiveQuoteMetrics:
+    """Validate and describe a single IEX quote without applying spread policy.
+
+    This function never authorizes an entry. `preview_live_paper_entry` remains
+    the enforcing path and applies the immutable spread, account, cost, and risk
+    limits after the same normalized quote fields are inspected.
+    """
+    if not isinstance(now, datetime) or now.tzinfo is None:
+        raise TradeBlocked("Missing timezone-aware clock")
+    if not isinstance(max_quote_age_seconds, int) or not 1 <= max_quote_age_seconds <= 60:
+        raise TradeBlocked("Invalid quote freshness tolerance")
+    quote_ts = getattr(quote, "timestamp", None)
+    if not isinstance(quote_ts, datetime) or quote_ts.tzinfo is None:
+        raise TradeBlocked("Quote missing timezone-aware timestamp")
+    age = (now.astimezone(timezone.utc) -
+           quote_ts.astimezone(timezone.utc)).total_seconds()
+    if not -3 <= age <= max_quote_age_seconds:
+        raise TradeBlocked("Live market quote is stale or timestamp is in the future")
+    bid = _quote_number(getattr(quote, "bid_price", None), "bid")
+    ask = _quote_number(getattr(quote, "ask_price", None), "ask")
+    bid_size = _size(getattr(quote, "bid_size", None), "bid_size")
+    ask_size = _size(getattr(quote, "ask_size", None), "ask_size")
+    if ask <= bid:
+        raise TradeBlocked("Crossed or zero-spread quote cannot be trusted")
+    midpoint = (bid + ask) / 2
+    spread = (ask - bid) / midpoint * Decimal("10000")
+    return LiveQuoteMetrics(
+        quote_at_utc=quote_ts.astimezone(timezone.utc).isoformat(),
+        quote_age_seconds=round(max(age, 0), 3),
+        bid=bid, ask=ask, bid_size=bid_size, ask_size=ask_size,
+        spread_bps=spread,
+    )
 
 
 def preview_live_paper_entry(
@@ -99,26 +159,14 @@ def preview_live_paper_entry(
     ny_clock = now.astimezone(ZoneInfo("America/New_York")).time()
     if not time(9, 30) <= ny_clock < time(15, 30):
         raise TradeBlocked("PAPER entry outside safe regular-session window")
-    if not isinstance(max_quote_age_seconds, int) or not 1 <= max_quote_age_seconds <= 60:
-        raise TradeBlocked("Invalid quote freshness tolerance")
-    quote_ts = getattr(quote, "timestamp", None)
-    if not isinstance(quote_ts, datetime) or quote_ts.tzinfo is None:
-        raise TradeBlocked("Quote missing timezone-aware timestamp")
-    age = (now.astimezone(timezone.utc) -
-           quote_ts.astimezone(timezone.utc)).total_seconds()
-    if not -3 <= age <= max_quote_age_seconds:
-        raise TradeBlocked("Live market quote is stale or timestamp is in the future")
-
-    bid = _quote_number(getattr(quote, "bid_price", None), "bid")
-    ask = _quote_number(getattr(quote, "ask_price", None), "ask")
-    bid_size = _size(getattr(quote, "bid_size", None), "bid_size")
-    ask_size = _size(getattr(quote, "ask_size", None), "ask_size")
-    if ask <= bid:
-        raise TradeBlocked("Crossed or zero-spread quote cannot be trusted")
-    midpoint = (bid + ask) / 2
-    spread = (ask - bid) / midpoint * Decimal("10000")
-    if spread > MAX_SPREAD_BPS:
+    metrics = inspect_live_quote(
+        quote, now=now, max_quote_age_seconds=max_quote_age_seconds)
+    if metrics.spread_bps > MAX_SPREAD_BPS:
         raise TradeBlocked("Spread too wide for risk-controlled entry")
+    quote_ts = getattr(quote, "timestamp")
+    bid, ask = metrics.bid, metrics.ask
+    bid_size, ask_size = metrics.bid_size, metrics.ask_size
+    spread = metrics.spread_bps
 
     e = _quote_number(equity, "paper equity")
     cash = _quote_number(available_cash, "paper buying cash")
@@ -151,7 +199,7 @@ def preview_live_paper_entry(
         quote_at_utc=quote_ts.astimezone(timezone.utc).isoformat(),
         bid_usd=float(bid), ask_usd=float(ask),
         bid_size=bid_size, ask_size=ask_size,
-        quote_age_seconds=round(max(age, 0), 3),
+        quote_age_seconds=metrics.quote_age_seconds,
         spread_bps=round(float(spread), 2),
         buy_limit_usd=float(buy_limit), stop_usd=float(stop),
         shares=shares,
