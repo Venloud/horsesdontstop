@@ -312,7 +312,7 @@ def test_live_coordinator_prepares_exact_proposal_without_any_broker_post(monkey
     now = datetime(2026, 11, 2, 15, 0, tzinfo=timezone.utc)
     today, prior = date(2026, 11, 2), date(2026, 10, 30)
     account = SimpleNamespace(
-        id=ACCOUNT_ID, equity="500", cash="500", buying_power="500",
+        id=ACCOUNT_ID, equity="500", cash="500", buying_power="30",
         trading_blocked=False, currency="USD",
         created_at=datetime(2026, 10, 1, tzinfo=timezone.utc))
     sessions = [
@@ -356,6 +356,9 @@ def test_live_coordinator_prepares_exact_proposal_without_any_broker_post(monkey
                 "WMT": SimpleNamespace(
                     timestamp=now - timedelta(seconds=1), bid_price=1.00,
                     ask_price=1.02, bid_size=20, ask_size=20),
+                "KO": SimpleNamespace(
+                    timestamp=now - timedelta(seconds=1), bid_price=50.00,
+                    ask_price=50.02, bid_size=100, ask_size=100),
                 "F": SimpleNamespace(
                     timestamp=now - timedelta(seconds=2), bid_price=1.00,
                     ask_price=1.004, bid_size=20, ask_size=20),
@@ -418,6 +421,8 @@ def test_live_coordinator_prepares_exact_proposal_without_any_broker_post(monkey
     ranked = [
         {"symbol": "WMT", "momentum_score": 0.8,
          "prior_completed_bar_date": prior.isoformat(), "reference_close": 1.0},
+        {"symbol": "KO", "momentum_score": 0.7,
+         "prior_completed_bar_date": prior.isoformat(), "reference_close": 50.0},
         {"symbol": "F", "momentum_score": 0.5,
          "prior_completed_bar_date": prior.isoformat(), "reference_close": 1.0},
     ]
@@ -436,21 +441,30 @@ def test_live_coordinator_prepares_exact_proposal_without_any_broker_post(monkey
     persisted = []
     evaluations = []
     result = service.prepare_live_candidate(
-        components=components, now=now, symbols=("WMT", "F"), utcnow=lambda: fresh_now,
+        components=components, now=now, symbols=("WMT", "KO", "F"), utcnow=lambda: fresh_now,
         prepared_observer=lambda prepared: persisted.append(prepared.to_dict()),
         candidate_evaluation_observer=evaluations.append)
     assert result["mode"] == "PREPARED_FOR_EXACT_OWNER_REVIEW"
     assert result["prepared"]["symbol"] == "F"
-    assert [row["symbol"] for row in result["candidate_evaluations"]] == ["WMT", "F"]
+    assert [row["symbol"] for row in result["candidate_evaluations"]] == ["WMT", "KO", "F"]
     assert result["candidate_evaluations"][0]["reason"] == "Spread too wide for risk-controlled entry"
     assert result["candidate_evaluations"][0]["spread_bps"] > result["candidate_evaluations"][0]["max_spread_bps"]
-    assert result["candidate_evaluations"][1]["status"] == "ELIGIBLE"
+    assert result["candidate_evaluations"][1]["status"] == "BLOCKED"
     assert evaluations == result["candidate_evaluations"]
     assert result["prepared"]["time_in_force"] == "gtc"
     assert result["prepared"]["order_class"] == "oto"
     assert result["prepared"]["purchase_cost_cap"] > 5.00
     assert result["prepared"]["purchase_cost_cap"] <= 500.00
     assert result["prepared"]["quote_preview"]["stop_distance_risk_usd"] <= 5.00
+    assert [row["symbol"] for row in result["candidate_evaluations"]] == ["WMT", "KO", "F"]
+    assert result["risk_inputs"]["account_equity_usd"] == 500.0
+    assert result["candidate_evaluations"][1]["reason"] == (
+        "No affordable whole share within 1% risk, equity exposure, and available buying power")
+    assert result["candidate_evaluations"][2]["status"] == "ELIGIBLE"
+    assert result["risk_inputs"]["available_buying_power_usd"] == 30.0
+    assert result["risk_inputs"]["available_notional_after_reserve_usd"] == 29.5
+    assert result["risk_inputs"]["order_notional_usd"] == result["prepared"]["purchase_cost_cap"]
+    assert result["risk_inputs"]["estimated_stop_risk_usd"] <= result["risk_inputs"]["per_trade_risk_budget_usd"]
     assert result["prepared"]["fee_reserve"] == 0.50
     assert result["owner_approval_sql"].startswith("-- OWNER ACTION:")
     from bot.paper_pilot_approval_cli import approval_sql_from_document

@@ -13,7 +13,8 @@ def test_dynamic_migration_removes_only_fixed_notional_ceiling():
     assert "p_expected_entry * p_whole_shares > 5.00" not in SQL
     assert "v_cost > 5.00" not in SQL
     assert "PAPER_MAX_PURCHASE" not in SQL
-    assert "CHECK (fee_reserve = 0.50)" not in SQL  # existing $0.50 constraint is preserved
+    assert "DROP CONSTRAINT IF EXISTS paper_pilot_approvals_fee_reserve_check" not in SQL
+    assert "fee_reserve IS DISTINCT FROM 0.50" in SQL
     assert "kill ON and submissions OFF" in SQL
 
 

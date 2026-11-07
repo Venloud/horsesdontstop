@@ -31,7 +31,7 @@ def render_owner_approval_sql(prepared, *, now: datetime | None = None) -> str:
 
     The only interpolated user-controlled strings are strictly validated IDs,
     symbols, and SHA-256 digests. Decimal values are normalized before render.
-    The owner function checks today's reserved intent and cap. A later
+    The owner function checks today's reserved intent and exact notional. A later
     dispatch function checks controls, single-use state and dispatch receipt.
     """
     plan = getattr(prepared, "plan", None)
@@ -105,6 +105,7 @@ def render_owner_approval_sql(prepared, *, now: datetime | None = None) -> str:
     return "\n".join((
         "-- OWNER ACTION: running this call approves this exact PAPER order for 120 seconds.",
         f"-- Exact order: BUY {shares} {symbol}, GTC OTO limit ${limit_price:.6f}, stop ${stop_price:.6f}.",
+        f"-- Order notional: ${purchase_cost:.2f}; estimated stop risk: ${preview.stop_distance_risk_usd:.2f}; fee reserve: $0.50.",
         "-- Verify the pinned PAPER account hash and safety state before running this owner-only call.",
         "-- This does not enable dispatch; database controls and the executor release gate still apply.",
         "SELECT public.paper_approve_bounded_pilot(",

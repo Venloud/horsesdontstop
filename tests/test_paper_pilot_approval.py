@@ -58,6 +58,8 @@ def test_renders_exact_owner_only_short_lived_approval_call():
     assert f"'{approved.request_sha256}', '{approved.account_id_sha256}'" in sql
     assert "2026-11-02T14:37:00.000000+00:00" in sql
     assert "OWNER ACTION" in sql
+    assert "Order notional:" in sql
+    assert "estimated stop risk:" in sql
     assert "does not enable dispatch" in sql
 
 
