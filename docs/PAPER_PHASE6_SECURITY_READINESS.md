@@ -641,7 +641,18 @@ PostgreSQL. Any future dispatch release must continue to require verified
 equity/cash/buying-power/quote sizing, 1% risk checks, separate exact-order
 owner approval, protective-order acceptance, and all existing gates.
 
-**REMAINING:** Stable Windows executor is not yet updated to 19e5727, and
-after-hours testing did not generate a proposal. Deploy only to the existing
-stable checkout after confirming rollback state; next scheduled executor run
-is November 9 at 09:36 ET. Current trading decision remains NO TRADE.
+**RUNTIME UPDATE:** The clean stable Windows checkout is now deployed at
+b47c783783e237f57ce87e685689371adac5cb0f. The prior a7c942d6cda6b4ef006db1d0a0d53b49a59cd475
+SHA and migration hash are preserved in
+%LOCALAPPDATA%/horsesdontstop/paper-executor/deployment-rollback-before-19e5727.txt.
+Stable focused no-order tests passed 155. The existing executor task remains
+Ready, points to the stable run-paper-executor.ps1, and is scheduled for
+November 9 at 09:36:36 ET. No long-running monitor was restarted and no
+after-hours executor invocation was made.
+
+The documentation/evidence head 719dc0e6d3ab3b4e7c482be47e3567d9a264a715
+passed exact-head GitHub CI [42338392509](https://github.com/Venloud/horsesdontstop/actions/runs/42338392509).
+That run includes the complete Python suite and 12 Worker tests. After-hours
+testing did not generate a proposal. Current trading decision remains
+**NO TRADE** until fresh market-session data, signal, risk and exact-order
+owner approval are present.
