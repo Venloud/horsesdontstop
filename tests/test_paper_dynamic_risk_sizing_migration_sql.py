@@ -33,8 +33,10 @@ def test_exact_owner_approval_and_single_use_dispatch_boundaries_remain():
     assert "Earlier PAPER order requires reconciliation" in SQL
 
 
-def test_rollback_refuses_to_restore_cap_when_larger_orders_are_recorded():
-    assert "purchase_cost > 5.00" in ROLLBACK
-    assert "expected_entry * whole_shares > 5.00" in ROLLBACK
+def test_rollback_preserves_history_and_blocks_new_over_cap_approvals():
+    assert "CHECK (purchase_cost > 0 AND purchase_cost <= 5.00) NOT VALID" in ROLLBACK
+    assert "Historical >$5 approvals are preserved" in ROLLBACK
+    assert "DELETE FROM public.paper_pilot_approvals" not in ROLLBACK
+    assert "DELETE FROM public.paper_intents" not in ROLLBACK
+    assert "Rollback unsafe: larger notional intent or approval exists" not in ROLLBACK
     assert "status IN ('reserved','submitted','accepted','unknown')" in ROLLBACK
-    assert "paper_pilot_approvals" in ROLLBACK

@@ -1,5 +1,6 @@
 -- REVIEW ONLY. Use only with owner authorization and after quiescing the new
--- executor. The whole transaction fails if any >$5 approval or intent exists.
+-- executor. Historical >$5 approvals are preserved; the NOT VALID constraint
+-- blocks new over-cap approvals without deleting or rewriting that evidence.
 BEGIN;
 
 DO $preflight$
@@ -11,12 +12,6 @@ BEGIN
         RAISE EXCEPTION 'Rollback requires kill ON and submissions OFF'
             USING ERRCODE='42501';
     END IF;
-    IF EXISTS (SELECT 1 FROM public.paper_pilot_approvals WHERE purchase_cost > 5.00)
-       OR EXISTS (SELECT 1 FROM public.paper_intents
-                  WHERE expected_entry * whole_shares > 5.00) THEN
-        RAISE EXCEPTION 'Rollback unsafe: larger notional intent or approval exists'
-            USING ERRCODE='55000';
-    END IF;
 END;
 $preflight$;
 
@@ -24,7 +19,7 @@ ALTER TABLE public.paper_pilot_approvals
     DROP CONSTRAINT IF EXISTS paper_pilot_approvals_purchase_cost_check;
 ALTER TABLE public.paper_pilot_approvals
     ADD CONSTRAINT paper_pilot_approvals_purchase_cost_check
-        CHECK (purchase_cost > 0 AND purchase_cost <= 5.00);
+        CHECK (purchase_cost > 0 AND purchase_cost <= 5.00) NOT VALID;
 
 CREATE OR REPLACE FUNCTION public.paper_reserve_bounded_pilot_intent(
     p_client_order_id text, p_strategy text, p_symbol text,
