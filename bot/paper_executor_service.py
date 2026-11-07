@@ -287,7 +287,8 @@ def _live_components(*, stage_observer=None):
 
 def prepare_live_candidate(*, components, now=None, symbols=None, utcnow=None,
                           prepared_observer=None, stage_observer=None,
-                          check_observer=None):
+                          check_observer=None,
+                          candidate_evaluation_observer=None):
     """Read fresh evidence and reserve at most one exact proposal; never POST."""
     from alpaca.data.enums import DataFeed
     from alpaca.data.requests import StockLatestQuoteRequest
@@ -340,6 +341,9 @@ def prepare_live_candidate(*, components, now=None, symbols=None, utcnow=None,
     # Authentic GET-only reconciliation is performed even for an empty queue.
     stage("independent_broker_reconciliation")
     from .paper_status_reconciler import reconcile_pending_once
+    from .live_quotes import (
+        MAX_SPREAD_BPS, inspect_live_quote, preview_live_paper_entry,
+    )
     if reconcile_pending_once(
             trading=components["reconciler_trading"],
             journal=reconciler, record=False):
@@ -374,6 +378,42 @@ def prepare_live_candidate(*, components, now=None, symbols=None, utcnow=None,
                 "session": today.isoformat(), "broker_orders": 0,
                 "database_writes": 0}
 
+    candidate_evaluations = []
+
+    def record_candidate(candidate, quote, at, *, status, reason=None,
+                         preview=None):
+        row = {
+            "symbol": candidate["symbol"],
+            "momentum_score": candidate["momentum_score"],
+            "status": status,
+            "reason": reason,
+        }
+        if quote is not None and at is not None:
+            try:
+                row.update(inspect_live_quote(quote, now=at).diagnostic())
+            except TradeBlocked as exc:
+                row["quote_validation_reason"] = str(exc)
+            row["max_spread_bps"] = float(MAX_SPREAD_BPS)
+        if preview is not None:
+            row.update({
+                "shares": preview.shares,
+                "buy_limit_usd": preview.buy_limit_usd,
+                "stop_usd": preview.stop_usd,
+            })
+        candidate_evaluations.append(row)
+        if candidate_evaluation_observer is not None:
+            candidate_evaluation_observer(row)
+
+    candidate_rejections = {
+        "Spread too wide for risk-controlled entry",
+        "No affordable whole share at 1% risk and current spread",
+        "Live market quote is stale or timestamp is in the future",
+        "Quote missing timezone-aware timestamp",
+        "Crossed or zero-spread quote cannot be trusted",
+        "Invalid bid", "Invalid ask", "Missing bid_size", "Invalid bid_size",
+        "Missing ask_size", "Invalid ask_size", "Invalid attached stop trigger",
+    }
+
     for candidate in candidates:
         symbol = candidate["symbol"]
         stage("verify_live_quote_and_risk")
@@ -381,14 +421,25 @@ def prepare_live_candidate(*, components, now=None, symbols=None, utcnow=None,
             StockLatestQuoteRequest(symbol_or_symbols=symbol, feed=DataFeed.IEX))
         quote = latest.get(symbol)
         if quote is None:
+            record_candidate(candidate, None, None, status="BLOCKED",
+                             reason="latest_quote_unavailable")
             continue
         if (getattr(clock, "is_open", None) is not True
                 or getattr(account, "trading_blocked", None) is not False):
             raise TradeBlocked("PAPER account or regular market session is not eligible")
         now = utcnow()
-        preview = preview_live_paper_entry(
-            symbol=symbol, quote=quote, equity=account.equity,
-            available_cash=account.cash, now=now, market_open=clock.is_open)
+        try:
+            preview = preview_live_paper_entry(
+                symbol=symbol, quote=quote, equity=account.equity,
+                available_cash=account.cash, now=now, market_open=clock.is_open)
+        except TradeBlocked as exc:
+            if str(exc) not in candidate_rejections:
+                raise
+            record_candidate(candidate, quote, now, status="BLOCKED",
+                             reason=str(exc))
+            continue
+        record_candidate(candidate, quote, now, status="ELIGIBLE",
+                         preview=preview)
         lease = _verify_supervisor_receipt(
             components["receipt_path"], components["heartbeat"], now,
             expected_pid=components["expected_supervisor_pid"])
@@ -419,6 +470,7 @@ def prepare_live_candidate(*, components, now=None, symbols=None, utcnow=None,
             "prepared": prepared.to_dict(),
             "owner_approval_sql": render_owner_approval_sql(prepared, now=now),
             "momentum_score": candidate["momentum_score"],
+            "candidate_evaluations": candidate_evaluations,
             "risk_gate": "PASS_FOR_PROPOSAL_ONLY",
             "durable_reservation_written": True,
             "database_writes": 1,
@@ -427,7 +479,8 @@ def prepare_live_candidate(*, components, now=None, symbols=None, utcnow=None,
             "kill_switch_active": True,
         }
         return result
-    return {"mode": "NO_TRADE", "reason": "No candidate passed live IEX quote checks",
+    return {"mode": "NO_TRADE", "reason": "No candidate passed live IEX quote and $5 whole-share gates",
+            "candidate_evaluations": candidate_evaluations,
             "broker_orders": 0, "database_writes": 0}
 
 
@@ -568,7 +621,7 @@ def dispatch_approved_artifact(*, components, artifact, now=None, utcnow=None):
 
 
 def run_once(*, output: Path, reserve: bool = False, stage_observer=None,
-             check_observer=None):
+             check_observer=None, candidate_evaluation_observer=None):
     if reserve is not True:
         raise TradeBlocked("Executor requires explicit --prepare to perform a durable reservation")
     components = _live_components(stage_observer=stage_observer)
@@ -582,7 +635,8 @@ def run_once(*, output: Path, reserve: bool = False, stage_observer=None,
         })
     report = prepare_live_candidate(
         components=components, prepared_observer=persist_before_reservation,
-        stage_observer=stage_observer, check_observer=check_observer)
+        stage_observer=stage_observer, check_observer=check_observer,
+        candidate_evaluation_observer=candidate_evaluation_observer)
     _atomic_json(output, report)
     return report
 
@@ -601,6 +655,7 @@ def main(argv=None):
     current_stage = "parse_arguments"
     run_id = uuid4().hex
     check_results = {}
+    candidate_evaluations = []
     def set_stage(value):
         nonlocal current_stage
         current_stage = value
@@ -618,6 +673,7 @@ def main(argv=None):
             "exit_code": exit_code,
             "broker_order_attempted": bool(dispatch_started),
             "checks": check_results,
+            "candidate_evaluations": candidate_evaluations,
         }
         _atomic_json(Path(args.runtime_receipt), record)
     try:
@@ -625,7 +681,8 @@ def main(argv=None):
             set_stage("prepare_live_workflow")
             result = run_once(output=Path(args.output), reserve=True,
                               stage_observer=set_stage,
-                              check_observer=record_check)
+                              check_observer=record_check,
+                              candidate_evaluation_observer=candidate_evaluations.append)
             broker_orders = 0
         else:
             from .paper_supervised_execution import PAPER_ORDER_SUBMISSIONS_RELEASED

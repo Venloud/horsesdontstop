@@ -6,8 +6,9 @@ import pytest
 from alpaca.trading.enums import OrderClass, OrderSide, TimeInForce
 
 from bot.live_quotes import (
-    PILOT_FEE_RESERVE_USD, PILOT_MAX_PURCHASE_USD,
-    build_live_protected_oto_request, preview_live_paper_entry,
+    MAX_SPREAD_BPS, PILOT_FEE_RESERVE_USD, PILOT_MAX_PURCHASE_USD,
+    build_live_protected_oto_request, inspect_live_quote,
+    preview_live_paper_entry,
 )
 from bot.paper_safety import TradeBlocked
 
@@ -99,6 +100,30 @@ def test_stale_or_future_quotes_rejected(age):
 def test_bad_or_wide_quotes_rejected(bid, ask):
     with pytest.raises(TradeBlocked):
         plan(quote(bid=bid, ask=ask))
+
+
+def test_quote_diagnostic_reports_actual_spread_and_unchanged_limit():
+    q = quote(bid=121.00, ask=124.82)
+    metrics = inspect_live_quote(q, now=NOW)
+    summary = metrics.diagnostic()
+    assert summary["bid_usd"] == 121.0
+    assert summary["ask_usd"] == 124.82
+    assert summary["spread_bps"] == pytest.approx(310.8, abs=.1)
+    assert summary["max_spread_bps"] == float(MAX_SPREAD_BPS) == 75.0
+    with pytest.raises(TradeBlocked, match="Spread too wide"):
+        preview_live_paper_entry(symbol="WMT", quote=q, equity=500,
+                                 available_cash=500, now=NOW,
+                                 market_open=True)
+
+
+def test_tight_quote_can_still_fail_five_dollar_whole_share_cap():
+    q = quote(bid=12.51, ask=12.52)
+    metrics = inspect_live_quote(q, now=NOW)
+    assert metrics.spread_bps < MAX_SPREAD_BPS
+    with pytest.raises(TradeBlocked, match="No affordable whole share"):
+        preview_live_paper_entry(symbol="F", quote=q, equity=500,
+                                 available_cash=500, now=NOW,
+                                 market_open=True)
 
 
 @pytest.mark.parametrize("bsize,asize", [(0, 10), (10, 0), (-1, 10),

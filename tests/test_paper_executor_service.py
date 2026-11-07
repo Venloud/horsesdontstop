@@ -352,9 +352,15 @@ def test_live_coordinator_prepares_exact_proposal_without_any_broker_post(monkey
 
     class Data:
         def get_stock_latest_quote(self, request):
-            return {"F": SimpleNamespace(
-                timestamp=now - timedelta(seconds=2), bid_price=1.00,
-                ask_price=1.004, bid_size=20, ask_size=20)}
+            quotes = {
+                "WMT": SimpleNamespace(
+                    timestamp=now - timedelta(seconds=1), bid_price=1.00,
+                    ask_price=1.02, bid_size=20, ask_size=20),
+                "F": SimpleNamespace(
+                    timestamp=now - timedelta(seconds=2), bid_price=1.00,
+                    ask_price=1.004, bid_size=20, ask_size=20),
+            }
+            return {request.symbol_or_symbols: quotes[request.symbol_or_symbols]}
 
     class Monitor:
         kill = True
@@ -409,10 +415,16 @@ def test_live_coordinator_prepares_exact_proposal_without_any_broker_post(monkey
                             "equity": "500", "cash": "500",
                         })
     import bot.paper_readiness_cli as readiness
-    monkeypatch.setattr(readiness, "research_candidates", lambda *a, **kw: [{
-        "symbol": "F", "momentum_score": 0.5,
-        "prior_completed_bar_date": prior.isoformat(), "reference_close": 1.0,
-    }])
+    ranked = [
+        {"symbol": "WMT", "momentum_score": 0.8,
+         "prior_completed_bar_date": prior.isoformat(), "reference_close": 1.0},
+        {"symbol": "F", "momentum_score": 0.5,
+         "prior_completed_bar_date": prior.isoformat(), "reference_close": 1.0},
+    ]
+    monkeypatch.setattr(readiness, "research_candidates",
+                        lambda _data, requested, **_kw: [
+                            row for row in ranked if row["symbol"] in requested
+                        ])
     trading, executor = Trading(), Executor()
     components = {
         "trading": trading, "market_data": Data(), "monitor": Monitor(),
@@ -422,11 +434,18 @@ def test_live_coordinator_prepares_exact_proposal_without_any_broker_post(monkey
         "expected_supervisor_pid": 1234,
     }
     persisted = []
+    evaluations = []
     result = service.prepare_live_candidate(
-        components=components, now=now, symbols=("F",), utcnow=lambda: fresh_now,
-        prepared_observer=lambda prepared: persisted.append(prepared.to_dict()))
+        components=components, now=now, symbols=("WMT", "F"), utcnow=lambda: fresh_now,
+        prepared_observer=lambda prepared: persisted.append(prepared.to_dict()),
+        candidate_evaluation_observer=evaluations.append)
     assert result["mode"] == "PREPARED_FOR_EXACT_OWNER_REVIEW"
     assert result["prepared"]["symbol"] == "F"
+    assert [row["symbol"] for row in result["candidate_evaluations"]] == ["WMT", "F"]
+    assert result["candidate_evaluations"][0]["reason"] == "Spread too wide for risk-controlled entry"
+    assert result["candidate_evaluations"][0]["spread_bps"] > result["candidate_evaluations"][0]["max_spread_bps"]
+    assert result["candidate_evaluations"][1]["status"] == "ELIGIBLE"
+    assert evaluations == result["candidate_evaluations"]
     assert result["prepared"]["time_in_force"] == "gtc"
     assert result["prepared"]["order_class"] == "oto"
     assert result["prepared"]["purchase_cost_cap"] <= 5.00
@@ -451,6 +470,11 @@ def test_live_coordinator_prepares_exact_proposal_without_any_broker_post(monkey
     # controls and owner approval, while keeping the real code gate OFF.
     from bot import paper_supervised_execution as gateway
     monkeypatch.setattr(gateway, "PAPER_ORDER_SUBMISSIONS_RELEASED", True)
+    monkeypatch.setattr(readiness, "research_candidates",
+                        lambda _data, requested, **_kw: [
+                            row for row in ranked
+                            if row["symbol"] == "F" and row["symbol"] in requested
+                        ])
     components["monitor"].kill = False
     components["monitor"].enabled = True
     executor.approval_saved = True

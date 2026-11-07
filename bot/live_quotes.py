@@ -78,7 +78,10 @@ class LiveQuoteMetrics:
 
 
 def _quote_number(value, name):
-    n = money(value)
+    try:
+        n = money(value)
+    except TradeBlocked:
+        raise TradeBlocked(f"Invalid {name}") from None
     if n <= 0:
         raise TradeBlocked(f"Invalid {name}")
     return n
