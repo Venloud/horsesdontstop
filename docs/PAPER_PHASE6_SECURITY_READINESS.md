@@ -589,3 +589,59 @@ has a post-commit kill race; an already committed dispatch cannot be recalled.
 Genuine GTC OTO child, partial-fill and overnight stop behavior and live
 post-trade accounting remain unverified. Fresh market-session, strategy and
 risk checks plus separate exact-transaction approval are still required.
+
+## November 7, 2026 - remove fixed $5 purchase ceiling
+
+**WHY:** The $5 notional cap prevented whole-share proposals for otherwise
+eligible symbols despite the approved $500 PAPER starting account context.
+Sizing must follow fresh account equity, available cash and buying power, live
+ask liquidity, and the existing 1% stop-distance risk limit.
+
+**HOW:** Main 19e5727702eb56b6af7c06dbe3adbb164cfe4527 includes dynamic
+whole-share sizing in bot/live_quotes.py and bot/paper_safety.py; the SQL
+change is sql/paper_dynamic_risk_sizing_review_only.sql (SHA-256
+d19fd3db16c8700c5fcfc024c528b9879b0eeb264e6e53c22f8d923b4e25f98d). It
+removes the approval table's $5 ceiling and the same checks from reservation
+and owner-approval functions. Equity exposure, cash, buying power, ask size,
+fee reserve and 1% stop-risk sizing remain in the live Python calculation.
+Production dispatch remains independently disabled: database kill is ON,
+submissions are OFF, and PAPER_ORDER_SUBMISSIONS_RELEASED is false.
+
+The existing isolated branch br-misty-dawn-b5dbnr90 passed real PostgreSQL
+acceptance. Restricted hds_paper_executor reserved a synthetic $125 intent;
+the owner approval function accepted exact terms; the executor's approval
+call and direct approval-table insert were denied (42501). Savepoint rollback
+left zero intents/approvals. Independent source review identified the rollback
+immutability edge. The revised rollback script uses a NOT VALID $5 check:
+isolated acceptance preserved an existing $125 approval, denied its update and
+a new over-cap insert (check_violation), then rolled back all synthetic rows.
+The dynamic constraint was restored afterward.
+
+Production br-restless-sunset-b5s18rj3 was migrated transactionally after
+isolated acceptance and independent review. Its live purchase constraint is
+now CHECK (purchase_cost > 0). A recovery branch,
+br-bold-dew-b5hi2gl2 (hds-pre-dynamic-sizing-prod-backup-20261106), was
+created from production LSN 0/451D688 because Neon rejected a new manual
+snapshot at the project snapshot limit; the older October 31 snapshot was
+preserved. Actual production checks confirm kill ON/submissions OFF, zero
+intents/approvals, executor reserve EXECUTE true, executor approval EXECUTE
+false, and executor approval-table INSERT false. A real restricted executor
+login reserved a synthetic $125 intent; owner approval succeeded; both
+operations were rolled back to savepoints with zero residual rows. Executor
+approval and direct INSERT attempts were denied with SQLSTATE 42501.
+
+**DID IT WORK:** Local focused tests passed 229; full Python suite passed
+1,292 with four existing skips. Worker Node suite passed 12/12 using
+node --test --test-isolation=none (the default subprocess runner was blocked
+by Windows spawn EPERM, with no tests changed). Exact-head GitHub CI for
+19e5727 passed: https://github.com/Venloud/horsesdontstop/actions/runs/42335575792.
+No broker call or order occurred. This migration removes the fixed notional
+ceiling; it does not authorize dispatch or independently calculate risk in
+PostgreSQL. Any future dispatch release must continue to require verified
+equity/cash/buying-power/quote sizing, 1% risk checks, separate exact-order
+owner approval, protective-order acceptance, and all existing gates.
+
+**REMAINING:** Stable Windows executor is not yet updated to 19e5727, and
+after-hours testing did not generate a proposal. Deploy only to the existing
+stable checkout after confirming rollback state; next scheduled executor run
+is November 9 at 09:36 ET. Current trading decision remains NO TRADE.
