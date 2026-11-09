@@ -1,4 +1,4 @@
-"""Isolated broker/DB fakes: NO broker POST and NO live Neon credentials.
+﻿"""Isolated broker/DB fakes: NO broker POST and NO live Neon credentials.
 
 The runtime and SQL privilege rollout are still NOT deployed or authorized.
 """
@@ -206,7 +206,7 @@ def test_expired_is_terminal_and_only_reachable_from_reserved():
 def test_expiry_migration_sql_keeps_every_guard():
     from pathlib import Path
     sql = Path(__file__).resolve().parents[1].joinpath(
-        "sql", "paper_reservation_expiry.sql").read_text(encoding="utf-8")
+        "sql", "migrations", "001_reservation_expiry.sql").read_text(encoding="utf-8")
     for guard in (
             "p_broker_order_absent IS DISTINCT FROM TRUE",
             "horsesdontstop-paper-exclusive-intent",
