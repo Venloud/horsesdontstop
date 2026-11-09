@@ -14,7 +14,8 @@ SELECT /* paper_acl_boundary */
    SELECT 1 FROM pg_roles r
    WHERE (r.rolsuper OR r.rolcreaterole OR r.rolcreatedb OR r.rolreplication
           OR r.rolbypassrls OR r.rolname IN
-          ('hds_paper_status_owner','hds_paper_reservation_guard','neondb_owner'))
+          ('hds_paper_status_owner','hds_paper_reservation_guard','neondb_owner',
+           'hds_paper_operator','hds_paper_control_owner'))
      AND pg_has_role(current_user,r.oid,'MEMBER'))
  AND NOT has_schema_privilege(current_user,'public','CREATE')
  AND NOT has_database_privilege(current_user,current_database(),'CREATE')

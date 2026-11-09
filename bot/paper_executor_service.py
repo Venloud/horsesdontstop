@@ -286,6 +286,43 @@ def _live_components(*, stage_observer=None):
     }
 
 
+def _run_maintenance(trading, monitor, positions, orders, now):
+    """Plan/apply risk-reducing actions; re-plan once after a cancel."""
+    from alpaca.trading.enums import QueryOrderStatus
+    from alpaca.trading.requests import GetOrdersRequest
+    from .paper_position_manager import execute_maintenance, plan_maintenance
+    from .paper_supervised_execution import PAPER_ORDER_SUBMISSIONS_RELEASED
+    released = PAPER_ORDER_SUBMISSIONS_RELEASED is True
+    results, unexplained, writes = [], set(), 0
+    for _ in range(2):
+        if not positions and not orders:
+            break
+        plan = plan_maintenance(
+            positions=positions, orders=orders,
+            unresolved=monitor.read_unresolved_intents(limit=501),
+            approved_stops=monitor.read_approved_stop_intents(limit=501), now=now)
+        unexplained.update(plan.unexplained_symbols)
+        if not plan.actions:
+            break
+        done = execute_maintenance(trading, plan, released=released)
+        results.extend(done)
+        applied = [d for d in done if d[0] in ("canceled", "flatten_submitted")]
+        writes += len(applied)
+        for kind, action, cid in applied:
+            _notify("risk action", f"{kind} for {cid}", "high")
+        if not any(d[0] == "canceled" for d in done):
+            break
+        positions = trading.get_all_positions()
+        orders = trading.get_orders(filter=GetOrdersRequest(
+            status=QueryOrderStatus.OPEN, nested=True, limit=500))
+    if unexplained:
+        _notify("unexplained position",
+                "Not touched: " + ",".join(sorted(unexplained)), "urgent")
+    return ({"results": [list(r) for r in results],
+             "unexplained_symbols": sorted(unexplained),
+             "released": released, "broker_writes": writes}, positions, orders)
+
+
 def _managed_position_report(monitor, positions, orders, unresolved):
     """Holding: prove the exposure is journaled and stop-protected, or block."""
     from .paper_reconcile import reconcile_observation
@@ -342,11 +379,11 @@ def prepare_live_candidate(*, components, now=None, symbols=None, utcnow=None,
     executor.assert_executor_permissions(reservation=True)
     stage("read_safety_controls")
     control = monitor.read_control()
+    paused = False
     if autonomous is True:
-        if (control.kill_switch_active, control.submissions_enabled) == (True, False):
-            return {"mode": "PAUSED", "reason": "Kill switch engaged; no entries",
-                    "broker_orders": 0, "database_writes": 0}
-        if (control.kill_switch_active, control.submissions_enabled) != (False, True):
+        paused = (control.kill_switch_active, control.submissions_enabled) == (True, False)
+        if not paused and (control.kill_switch_active,
+                           control.submissions_enabled) != (False, True):
             raise TradeBlocked("PAPER controls are incoherent")
     elif control.kill_switch_active is not True or control.submissions_enabled is not False:
         raise TradeBlocked("PAPER preparation requires kill ON and submissions OFF")
@@ -360,6 +397,16 @@ def prepare_live_candidate(*, components, now=None, symbols=None, utcnow=None,
     positions = trading.get_all_positions()
     orders = trading.get_orders(filter=GetOrdersRequest(
         status=QueryOrderStatus.OPEN, nested=True, limit=500))
+    maintenance = None
+    if autonomous is True:
+        stage("risk_reducing_maintenance")
+        maintenance, positions, orders = _run_maintenance(
+            trading, monitor, positions, orders, utcnow())
+        if paused:
+            return {"mode": "PAUSED", "reason": "Kill switch engaged; no entries",
+                    "maintenance": maintenance,
+                    "broker_orders": maintenance["broker_writes"],
+                    "database_writes": 0}
     # Independent GET-only reconciliation runs before the blocker check so an
     # earlier unapproved, never-dispatched proposal can expire (audited, via
     # the reconciler role) instead of blocking every later session forever.
@@ -389,7 +436,9 @@ def prepare_live_candidate(*, components, now=None, symbols=None, utcnow=None,
                 "expired_client_order_ids": expired,
                 "broker_orders": 0, "database_writes": len(expired)}
     if autonomous is True and (positions or orders):
-        return _managed_position_report(monitor, positions, orders, unresolved)
+        report = _managed_position_report(monitor, positions, orders, unresolved)
+        report["maintenance"] = maintenance
+        return report
     if unresolved or positions or orders:
         raise TradeBlocked("Earlier PAPER orders or existing exposure require reconciliation")
     if pending_blockers(reconciled):

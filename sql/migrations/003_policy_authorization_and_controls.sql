@@ -16,6 +16,8 @@
 --    Callable by executor, reconciler and operator: anything may stop.
 -- 4. paper_arm_autonomous_trading(): ARM (kill OFF, submissions ON) + audit.
 --    Callable ONLY by hds_paper_operator (human-held operator login).
+--    The operator login password is never stored on the trading host;
+--    set-paper-trading.ps1 -Arm prompts for it each time.
 BEGIN;
 
 CREATE TABLE IF NOT EXISTS public.paper_trading_policy (
@@ -30,7 +32,9 @@ CREATE TABLE IF NOT EXISTS public.paper_trading_policy (
 INSERT INTO public.paper_trading_policy
     (singleton, autonomous_entries_enabled, max_trade_risk_fraction,
      max_position_fraction, max_entries_per_day, entry_window_start, entry_window_end)
-VALUES (TRUE, TRUE, 0.01, 1.0, 1, '09:35', '15:30')
+-- Installed DISABLED. Enabling is a separate owner release step
+-- (sql/release/enable_autonomous_entries.sql) after the supervised proof.
+VALUES (TRUE, FALSE, 0.01, 1.0, 1, '09:35', '15:30')
 ON CONFLICT (singleton) DO NOTHING;
 REVOKE ALL ON TABLE public.paper_trading_policy FROM PUBLIC;
 

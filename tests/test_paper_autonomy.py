@@ -170,19 +170,30 @@ def test_reconciler_identity_change_still_stops_in_recover_mode(monkeypatch):
 
 # ---- executor modes ----
 
-def test_autonomous_executor_paused_by_kill_switch_does_nothing():
+def test_autonomous_executor_paused_still_maintains_but_never_enters(monkeypatch):
     from bot import paper_executor_service as service
     from bot.paper_safety import PAPER_ENDPOINT
+    from hashlib import sha256
+    account_id = "00000000-0000-0000-0000-000000000001"
     monitor = SimpleNamespace(
         assert_monitor_only=lambda: None,
-        read_control=lambda: SimpleNamespace(kill_switch_active=True, submissions_enabled=False))
-    trading = SimpleNamespace(_base_url=PAPER_ENDPOINT,
-                              get_account=lambda: pytest.fail("no broker read when paused"))
+        read_control=lambda: SimpleNamespace(kill_switch_active=True, submissions_enabled=False),
+        read_unresolved_intents=lambda limit: [],
+        read_approved_stop_intents=lambda limit: [])
+    trading = SimpleNamespace(
+        _base_url=PAPER_ENDPOINT,
+        get_account=lambda: SimpleNamespace(id=account_id),
+        get_clock=lambda: SimpleNamespace(is_open=True),
+        get_all_positions=lambda: [], get_orders=lambda filter: [],
+        submit_order=lambda **k: pytest.fail("no entry while paused"))
     result = service.prepare_live_candidate(components={
         "trading": trading, "market_data": None, "monitor": monitor,
         "executor": SimpleNamespace(assert_executor_permissions=lambda **k: None),
-        "reconciler": None}, now=NOW, autonomous=True)
+        "reconciler": None,
+        "expected_account_hash": sha256(account_id.encode()).hexdigest()},
+        now=NOW, autonomous=True)
     assert result["mode"] == "PAUSED" and result["broker_orders"] == 0
+    assert result["maintenance"]["broker_writes"] == 0
 
 
 def test_managed_position_report_requires_verified_stop():
@@ -244,3 +255,24 @@ def test_migration_ledger_refuses_edited_applied_files(tmp_path):
     assert [p.name for p, _ in pending(applied, files)] == ["002_b.sql"]
     with pytest.raises(SystemExit):
         pending({"001_a.sql": "0" * 64}, files)
+
+
+def test_policy_installs_disabled_and_enable_is_a_separate_release_step():
+    sql = (ROOT / "sql" / "migrations" / "003_policy_authorization_and_controls.sql").read_text()
+    assert "VALUES (TRUE, FALSE, 0.01, 1.0, 1, '09:35', '15:30')" in sql
+    assert not list((ROOT / "sql" / "migrations").glob("*enable*"))
+    assert (ROOT / "sql" / "release" / "enable_autonomous_entries.sql").exists()
+
+
+def test_arm_credential_is_never_stored_or_readable_by_unattended_services():
+    ops = ROOT / "ops" / "windows"
+    for script in ops.glob("*.ps1"):
+        text = script.read_text(encoding="utf-8", errors="ignore")
+        assert "neon-operator-dsn" not in text, script.name
+        assert "neon-owner-dsn" not in text, script.name
+        if script.name != "set-paper-trading.ps1":
+            assert "hds_paper_operator_login" not in text, script.name
+    arm = (ops / "set-paper-trading.ps1").read_text()
+    assert "Read-Host -AsSecureString 'hds_paper_operator_login password (not stored)'" in arm
+    from bot.paper_role_boundary import BOUNDARY_SQL
+    assert "'hds_paper_operator','hds_paper_control_owner'" in BOUNDARY_SQL
