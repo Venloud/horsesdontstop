@@ -1,5 +1,5 @@
 # Independent restricted DB login and broker GET-only reconciliation.
-# Status writing is deliberately NOT requested. No lease or control writes.
+# Status writing requested (released); expiry/retire remain DB-gated. No lease or control writes.
 $ErrorActionPreference = 'Stop'
 $folder = Join-Path $env:LOCALAPPDATA 'horsesdontstop'
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
@@ -17,7 +17,7 @@ try {
     $env:PAPER_RECONCILER_ACCOUNT_SHA256 = (Get-Content -LiteralPath (Join-Path $folder 'paper-account-sha256.txt') -Raw).Trim()
     Push-Location $repo
     try {
-        & (Join-Path $repo '.venv\Scripts\python.exe') -m bot.paper_reconciler_service --continuous --receipt-file (Join-Path $folder 'reconciler-runtime.json')
+        & (Join-Path $repo '.venv\Scripts\python.exe') -m bot.paper_reconciler_service --continuous --apply-status --receipt-file (Join-Path $folder 'reconciler-runtime.json')
         exit $LASTEXITCODE
     } finally { Pop-Location }
 } catch {

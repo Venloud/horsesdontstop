@@ -88,7 +88,10 @@ def test_builder_rejects_malformed_lifetime_values():
         build_safety_state(**inputs(lifetime_evidence=evidence))
 
 
-def test_dispatch_cli_is_hard_disabled_before_reading_or_connecting(capsys):
+def test_dispatch_cli_is_hard_disabled_before_reading_or_connecting(capsys, monkeypatch):
+    # Release build: the gate is ON in source; prove the gate still blocks when OFF.
+    monkeypatch.setattr(
+        "bot.paper_supervised_execution.PAPER_ORDER_SUBMISSIONS_RELEASED", False)
     assert main(["--dispatch-file", "does-not-exist.json"]) == 2
     output = capsys.readouterr()
     assert "PAPER broker submissions NOT RELEASED" in output.err

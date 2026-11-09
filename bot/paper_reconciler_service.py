@@ -14,7 +14,7 @@ from .paper_broker_transport import make_reconciler_paper_client
 from .paper_status_reconciler import PaperStatusReconcilerJournal, reconcile_pending_once
 from .paper_safety import TradeBlocked
 
-PAPER_RECONCILIATION_SERVICE_RELEASED = False
+PAPER_RECONCILIATION_SERVICE_RELEASED = True
 
 
 def run_service(*, trading, journal, apply_status=False, max_ticks=1,

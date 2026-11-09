@@ -26,7 +26,7 @@ from .paper_safety import (
 
 # Locked code-level release switch, separate from the Neon kill switch.
 # Change only with explicit owner approval and verified persistent watchdog.
-PAPER_ORDER_SUBMISSIONS_RELEASED = False
+PAPER_ORDER_SUBMISSIONS_RELEASED = True
 
 
 @dataclass(frozen=True)

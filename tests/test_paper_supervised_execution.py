@@ -211,8 +211,8 @@ def execute(p=None, *, broker=None, journal=None, state=None,
     )
 
 
-def test_release_is_off_by_default_and_blocks_before_any_network():
-    assert entry.PAPER_ORDER_SUBMISSIONS_RELEASED is False
+def test_release_is_off_by_default_and_blocks_before_any_network(monkeypatch):
+    monkeypatch.setattr(entry, "PAPER_ORDER_SUBMISSIONS_RELEASED", False)
     p = preview()
     broker, journal = FakeBroker(p), FakeJournal()
     with pytest.raises(TradeBlocked, match="NOT RELEASED"):
@@ -936,8 +936,8 @@ def test_fatal_process_crash_and_delayed_visibility_never_reuse_durable_id(monke
 
 
 def test_last_database_ack_cannot_make_a_remote_broker_post_atomic(monkeypatch):
-    """Document the residual race with fakes; the real release stays OFF."""
-    assert entry.PAPER_ORDER_SUBMISSIONS_RELEASED is False
+    """Document the residual race with fakes (gate patched OFF for the setup)."""
+    monkeypatch.setattr(entry, "PAPER_ORDER_SUBMISSIONS_RELEASED", False)
     p=preview();broker=FakeBroker(p);state={'db_alive':True,'kill':False}
     journal=FakeJournal()
     @contextmanager
@@ -987,7 +987,8 @@ def policy_execute(*, journal, broker=None, approval=None):
         policy_authorize=True, verify_watchdog=lambda: 2)
 
 
-def test_policy_path_is_still_behind_the_code_release_gate():
+def test_policy_path_is_still_behind_the_code_release_gate(monkeypatch):
+    monkeypatch.setattr(entry, "PAPER_ORDER_SUBMISSIONS_RELEASED", False)
     journal = PolicyJournal()
     with pytest.raises(TradeBlocked, match="NOT RELEASED"):
         policy_execute(journal=journal)
