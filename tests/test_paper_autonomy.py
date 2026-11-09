@@ -275,7 +275,8 @@ def test_arm_credential_is_never_stored_or_readable_by_unattended_services():
         if script.name != "set-paper-trading.ps1":
             assert "hds_paper_operator_login" not in text, script.name
     arm = (ops / "set-paper-trading.ps1").read_text()
-    assert "Read-Host -AsSecureString 'hds_paper_operator_login password (not stored)'" in arm
+    assert "Read-Hidden 'hds_paper_operator_login password (not stored)'" in arm
+    assert "Read-Host -AsSecureString" in arm
     from bot.paper_role_boundary import BOUNDARY_SQL
     assert "'hds_paper_operator','hds_paper_control_owner'" in BOUNDARY_SQL
 

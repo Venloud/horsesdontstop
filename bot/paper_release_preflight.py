@@ -104,11 +104,10 @@ def main(argv=None):
     gate("alpaca: market open", clock.is_open is True, f"is_open={clock.is_open}", required=supervised)
     gate("alpaca: equity", True, f"equity={account.equity} buying_power={account.buying_power}",
          required=False)
-    try:
-        broker._session.request("POST", "https://paper-api.alpaca.markets/v2/orders")
-        gate("transport: reconciler client is GET-only", False)
-    except Exception:
-        gate("transport: reconciler client is GET-only", True)
+    from .paper_broker_transport import ReadOnlyPaperSession
+    # Type check only: never send a write request to prove it would fail.
+    gate("transport: reconciler client is GET-only",
+         type(broker._session) is ReadOnlyPaperSession)
 
     folder = Path(os.environ["LOCALAPPDATA"]) / "horsesdontstop"
     sup, sup_age = _age(folder / "supervisor-runtime.json")
