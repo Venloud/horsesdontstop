@@ -210,9 +210,22 @@ class PostgresPaperJournal:
                     "protective_stop, broker_order_id" + tif + " "
                     "FROM paper_intents "
                     "WHERE status IN ('accepted','filled') "
-                    "ORDER BY created_at ASC LIMIT %s", (limit,))
+                    "ORDER BY created_at DESC LIMIT %s", (limit,))
                 rows = cur.fetchall()
                 return rows if has_tif else [tuple(row) + ("day",) for row in rows]
+
+    def count_entries_today(self) -> int:
+        """Non-expired intents for today's New York trading day (read only)."""
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT count(*) FROM paper_intents WHERE status <> 'expired' "
+                    "AND trading_day = (clock_timestamp() AT TIME ZONE "
+                    "'America/New_York')::date")
+                row = cur.fetchone()
+        if not row or type(row[0]) is not int:
+            raise TradeBlocked("Daily PAPER entry count unavailable")
+        return row[0]
 
     def read_equity_references(self, day_start_utc, as_of_utc):
         """Read only. Require an equity sample very near the NYSE opening.

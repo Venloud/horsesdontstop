@@ -25,7 +25,7 @@ CREATE TABLE IF NOT EXISTS public.paper_trading_policy (
     autonomous_entries_enabled boolean NOT NULL DEFAULT FALSE,
     max_trade_risk_fraction numeric NOT NULL CHECK (max_trade_risk_fraction > 0 AND max_trade_risk_fraction <= 0.02),
     max_position_fraction numeric NOT NULL CHECK (max_position_fraction > 0 AND max_position_fraction <= 1),
-    max_entries_per_day integer NOT NULL CHECK (max_entries_per_day BETWEEN 1 AND 5),
+    max_entries_per_day integer NOT NULL CHECK (max_entries_per_day = 1)  -- one live intent/day (002 unique index),
     entry_window_start time NOT NULL,
     entry_window_end time NOT NULL CHECK (entry_window_end > entry_window_start),
     updated_at timestamptz NOT NULL DEFAULT clock_timestamp());
@@ -38,8 +38,16 @@ VALUES (TRUE, FALSE, 0.01, 1.0, 1, '09:35', '15:30')
 ON CONFLICT (singleton) DO NOTHING;
 REVOKE ALL ON TABLE public.paper_trading_policy FROM PUBLIC;
 
-CREATE ROLE hds_paper_control_owner NOLOGIN NOINHERIT;
-CREATE ROLE hds_paper_operator NOLOGIN NOINHERIT;
+DO $roles$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'hds_paper_control_owner') THEN
+        CREATE ROLE hds_paper_control_owner NOLOGIN NOINHERIT;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'hds_paper_operator') THEN
+        CREATE ROLE hds_paper_operator NOLOGIN NOINHERIT;
+    END IF;
+END;
+$roles$;
 GRANT USAGE ON SCHEMA public TO hds_paper_control_owner, hds_paper_operator;
 GRANT SELECT, UPDATE (kill_switch_active, submissions_enabled, updated_at)
     ON TABLE public.paper_control TO hds_paper_control_owner;
@@ -114,13 +122,14 @@ BEGIN
     IF v_entries >= v_policy.max_entries_per_day THEN
         RAISE EXCEPTION 'Daily PAPER entry limit reached' USING ERRCODE = '42501';
     END IF;
-    -- Independent equity reference: today's opening snapshot (09:30-09:35 NY),
-    -- written by the separate opening-equity collector, never by this caller.
-    SELECT s.equity INTO v_open_equity FROM public.paper_equity_snapshots s
+    -- Equity reference: today's opening window (09:30-09:35 NY). The opening
+    -- collector stamps database time, but the executor role can also insert
+    -- snapshots, so use the LOWEST equity in the window: an extra or inflated
+    -- row can only shrink the limits, never enlarge them.
+    SELECT min(s.equity) INTO v_open_equity FROM public.paper_equity_snapshots s
      WHERE (s.observed_at AT TIME ZONE 'America/New_York')::date = v_today
        AND (s.observed_at AT TIME ZONE 'America/New_York')::time >= '09:30'
-       AND (s.observed_at AT TIME ZONE 'America/New_York')::time <  '09:35'
-     ORDER BY s.observed_at LIMIT 1;
+       AND (s.observed_at AT TIME ZONE 'America/New_York')::time <  '09:35';
     IF v_open_equity IS NULL OR v_open_equity <= 0 THEN
         RAISE EXCEPTION 'Verified opening equity missing' USING ERRCODE = '42501';
     END IF;
@@ -163,6 +172,9 @@ BEGIN
     UPDATE public.paper_control
        SET kill_switch_active = TRUE, submissions_enabled = FALSE, updated_at = now()
      WHERE singleton;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'PAPER control row missing' USING ERRCODE = '42501';
+    END IF;
     INSERT INTO public.paper_audit_events(client_order_id, kind, summary)
     VALUES (NULL, 'kill_switch_engaged',
             left(coalesce(p_reason, 'unspecified'), 200) || ' by ' || session_user);
@@ -181,6 +193,9 @@ BEGIN
     UPDATE public.paper_control
        SET kill_switch_active = FALSE, submissions_enabled = TRUE, updated_at = now()
      WHERE singleton;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'PAPER control row missing' USING ERRCODE = '42501';
+    END IF;
     INSERT INTO public.paper_audit_events(client_order_id, kind, summary)
     VALUES (NULL, 'trading_armed',
             left(coalesce(p_reason, 'unspecified'), 200) || ' by ' || session_user);
@@ -188,12 +203,55 @@ BEGIN
 END;
 $arm$;
 
-GRANT CREATE ON SCHEMA public TO hds_paper_control_owner, hds_paper_reservation_guard;
+-- A dispatch can be committed (intent UNKNOWN, receipt written) and then
+-- abort before its single POST (freshness budget, account change, lost lease).
+-- Retire such an intent ONLY when: still UNKNOWN, a dispatch receipt exists,
+-- the caller attests a definite broker 404 for the client order ID, and at
+-- least 15 minutes have passed since it became UNKNOWN (a real POST would be
+-- visible at the broker by then). Audited; never authorizes a retry.
+CREATE OR REPLACE FUNCTION public.paper_retire_unsent_dispatch(
+    p_client_order_id text, p_broker_order_absent boolean)
+RETURNS boolean LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog
+AS $retire$
+DECLARE v_status text; v_updated timestamptz;
+BEGIN
+    IF p_broker_order_absent IS DISTINCT FROM TRUE OR p_client_order_id IS NULL THEN
+        RAISE EXCEPTION 'Retirement requires a definite broker not-found observation'
+            USING ERRCODE = '42501';
+    END IF;
+    PERFORM pg_advisory_xact_lock(hashtext('horsesdontstop-paper-exclusive-intent'));
+    SELECT status, updated_at INTO v_status, v_updated FROM public.paper_intents
+     WHERE client_order_id = p_client_order_id FOR UPDATE;
+    IF NOT FOUND OR v_status IS DISTINCT FROM 'unknown' THEN
+        RAISE EXCEPTION 'Only an UNKNOWN PAPER intent can be retired' USING ERRCODE = '42501';
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM public.paper_pilot_dispatch_receipts
+                    WHERE client_order_id = p_client_order_id) THEN
+        RAISE EXCEPTION 'No dispatch receipt; manual reconciliation required' USING ERRCODE = '42501';
+    END IF;
+    IF v_updated > clock_timestamp() - interval '15 minutes' THEN
+        RETURN FALSE;
+    END IF;
+    UPDATE public.paper_intents SET status = 'canceled', updated_at = now()
+     WHERE client_order_id = p_client_order_id AND status = 'unknown';
+    INSERT INTO public.paper_audit_events(client_order_id, kind, summary)
+    VALUES (p_client_order_id, 'dispatch_never_reached_broker',
+            'UNKNOWN for >=15 min with broker 404; retired as canceled; never retried');
+    RETURN TRUE;
+END;
+$retire$;
+
+GRANT CREATE ON SCHEMA public TO hds_paper_control_owner, hds_paper_reservation_guard,
+    hds_paper_status_owner;
+ALTER FUNCTION public.paper_retire_unsent_dispatch(text, boolean) OWNER TO hds_paper_status_owner;
 ALTER FUNCTION public.paper_policy_authorize_entry(text,text,text,date,integer,numeric,numeric,text,text)
     OWNER TO hds_paper_reservation_guard;
 ALTER FUNCTION public.paper_engage_kill_switch(text) OWNER TO hds_paper_control_owner;
 ALTER FUNCTION public.paper_arm_autonomous_trading(text) OWNER TO hds_paper_control_owner;
-REVOKE CREATE ON SCHEMA public FROM hds_paper_control_owner, hds_paper_reservation_guard;
+REVOKE CREATE ON SCHEMA public FROM hds_paper_control_owner, hds_paper_reservation_guard,
+    hds_paper_status_owner;
+REVOKE ALL ON FUNCTION public.paper_retire_unsent_dispatch(text, boolean) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.paper_retire_unsent_dispatch(text, boolean) TO hds_paper_reconciler;
 
 REVOKE ALL ON FUNCTION public.paper_policy_authorize_entry(text,text,text,date,integer,numeric,numeric,text,text) FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.paper_engage_kill_switch(text) FROM PUBLIC;

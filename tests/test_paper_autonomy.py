@@ -182,14 +182,16 @@ def test_autonomous_executor_paused_still_maintains_but_never_enters(monkeypatch
         read_approved_stop_intents=lambda limit: [])
     trading = SimpleNamespace(
         _base_url=PAPER_ENDPOINT,
-        get_account=lambda: SimpleNamespace(id=account_id),
+        get_account=lambda: SimpleNamespace(id=account_id, trading_blocked=False),
         get_clock=lambda: SimpleNamespace(is_open=True),
         get_all_positions=lambda: [], get_orders=lambda filter: [],
         submit_order=lambda **k: pytest.fail("no entry while paused"))
     result = service.prepare_live_candidate(components={
         "trading": trading, "market_data": None, "monitor": monitor,
         "executor": SimpleNamespace(assert_executor_permissions=lambda **k: None),
-        "reconciler": None,
+        "reconciler": SimpleNamespace(assert_reconciler_permissions=lambda: None,
+                                      read_pending_plans=lambda: []),
+        "reconciler_trading": trading,
         "expected_account_hash": sha256(account_id.encode()).hexdigest()},
         now=NOW, autonomous=True)
     assert result["mode"] == "PAUSED" and result["broker_orders"] == 0
@@ -276,3 +278,57 @@ def test_arm_credential_is_never_stored_or_readable_by_unattended_services():
     assert "Read-Host -AsSecureString 'hds_paper_operator_login password (not stored)'" in arm
     from bot.paper_role_boundary import BOUNDARY_SQL
     assert "'hds_paper_operator','hds_paper_control_owner'" in BOUNDARY_SQL
+
+
+def test_orphan_open_sell_on_flat_symbol_is_never_managed():
+    sell = order("stop-x", side="sell", kind="stop", status="new", cid="hds-c-x")
+    rec = reconcile_observation([], [sell], [], order_fetch_complete=True,
+                                approved_stops=[("hds-c-x", "filled", "F", 2, 24, "p", "gtc")])
+    assert rec.managed_exposure is False
+
+
+def test_executor_status_writes_follow_the_reconciler_release_flag():
+    src = (ROOT / "bot" / "paper_executor_service.py").read_text()
+    assert "PAPER_RECONCILIATION_SERVICE_RELEASED is True" in src
+    assert "record=autonomous is True," not in src
+    # Maintenance must run after the executor's own reconciliation.
+    assert src.index("reconcile_pending_once(") < src.index('stage("risk_reducing_maintenance")')
+
+
+def test_unsent_dispatch_is_retired_only_after_broker_404():
+    from bot.paper_status_reconciler import reconcile_verified_paper_order
+    from bot.paper_safety import plan_paper_entry
+    from datetime import date
+    from alpaca.common.exceptions import APIError
+    plan = plan_paper_entry("F", date(2026, 11, 10), 25, 500, 500, .01)
+    class Journal:
+        calls = []
+        def __init__(self, ready): self.ready = ready
+        def assert_reconciler_permissions(self): pass
+        def get_durable_intent_terms(self, cid):
+            return ("unknown", None, plan.strategy, plan.symbol, date(2026, 11, 10),
+                    plan.whole_shares, plan.estimated_entry, plan.protective_stop,
+                    plan.time_in_force)
+        def retire_unsent_dispatch(self, cid):
+            self.calls.append(cid); return self.ready
+    class Broker:
+        _base_url = "https://paper-api.alpaca.markets"
+        def get_all_positions(self): return []
+        def get_order_by_client_id(self, cid):
+            raise APIError("nf", http_error=SimpleNamespace(response=SimpleNamespace(status_code=404)))
+    assert reconcile_verified_paper_order(trading=Broker(), journal=Journal(True), plan=plan,
+                                          record=False, expire_unapproved=True) == "canceled"
+    assert reconcile_verified_paper_order(trading=Broker(), journal=Journal(False), plan=plan,
+                                          record=False, expire_unapproved=True) == "unknown"
+    with pytest.raises(TradeBlocked):   # observe-only callers never retire
+        reconcile_verified_paper_order(trading=Broker(), journal=Journal(True), plan=plan)
+
+
+def test_003_review_fixes_present():
+    sql = (ROOT / "sql" / "migrations" / "003_policy_authorization_and_controls.sql").read_text()
+    assert "CHECK (max_entries_per_day = 1)" in sql
+    assert "SELECT min(s.equity) INTO v_open_equity" in sql
+    assert sql.count("RAISE EXCEPTION 'PAPER control row missing'") == 2
+    assert "IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'hds_paper_operator')" in sql
+    assert "interval '15 minutes'" in sql and "dispatch_never_reached_broker" in sql
+    assert "paper_retire_unsent_dispatch(text, boolean) TO hds_paper_reconciler;" in sql

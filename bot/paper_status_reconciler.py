@@ -138,6 +138,18 @@ class PaperStatusReconcilerJournal(PostgresPaperJournal):
             raise TradeBlocked("Unverifiable PAPER reservation expiry")
         return row[0]
 
+    def retire_unsent_dispatch(self, client_order_id):
+        """Audited unknown -> canceled after a caller-verified broker 404."""
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SET LOCAL statement_timeout = '3000ms'")
+                cur.execute("SELECT public.paper_retire_unsent_dispatch(%s,%s)",
+                            (client_order_id, True))
+                row = cur.fetchone()
+        if not isinstance(row, tuple) or len(row) != 1 or type(row[0]) is not bool:
+            raise TradeBlocked("Unverifiable PAPER dispatch retirement")
+        return row[0]
+
     def record_broker_verified_state(self, client_order_id, old, new, broker_id):
         """Call restricted function, never direct UPDATE or audit INSERT.
 
@@ -234,6 +246,14 @@ def reconcile_verified_paper_order(*, trading, journal, plan, record=True,
                     plan.client_order_id) is True:
                 return "expired"
             return "reserved"
+    if (old == "unknown" and original_broker_id is None and expire_unapproved is True
+            and hasattr(journal, "retire_unsent_dispatch")):
+        if _broker_definitely_lacks_order(trading, plan.client_order_id):
+            if positions:
+                raise TradeBlocked("Unexpected PAPER position for an unsent dispatch")
+            if journal.retire_unsent_dispatch(plan.client_order_id) is True:
+                return "canceled"
+            return "unknown"
     try:
         audit = recover_by_client_id(trading, plan, position_qty=exposure)
     except Exception:

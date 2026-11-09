@@ -23,7 +23,8 @@ CREATE TABLE IF NOT EXISTS public.hds_schema_migrations (
 def pending(applied, files):
     out = []
     for path in files:
-        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        # Hash LF-normalized text so Windows (CRLF) and Git (LF) agree.
+        digest = hashlib.sha256(path.read_bytes().replace(b"\r\n", b"\n")).hexdigest()
         if path.name in applied:
             if applied[path.name] != digest:
                 raise SystemExit(f"Applied migration changed on disk: {path.name}")

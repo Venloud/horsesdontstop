@@ -88,13 +88,25 @@ def plan_maintenance(*, positions, orders, unresolved, approved_stops, now) -> M
     cid_by_symbol = {}
     for cid, symbol in symbols_by_cid.items():
         cid_by_symbol.setdefault(symbol, []).append(cid)
+    open_sell_symbols = {
+        getattr(o, "symbol", None) for o in nested
+        if value(getattr(o, "side", None)) == "sell"
+        and value(getattr(o, "status", None)) in OPEN_STATUSES}
     unexplained = []
     for position in positions:
         symbol = getattr(position, "symbol", None)
         if symbol not in rec.uncovered_symbols:
             continue
-        cids = cid_by_symbol.get(symbol, [])
-        if len(cids) != 1:
+        cids = sorted(cid_by_symbol.get(symbol, []))
+        if not cids:
+            unexplained.append(symbol)
+            continue
+        # Client IDs embed the trading day (hds-YYYYMMDD-...): newest wins.
+        cids = cids[-1:]
+        if symbol in open_sell_symbols:
+            # A live SELL (e.g. the stop leg) still holds these shares; a
+            # second SELL could double-sell. Alert instead of flattening.
+            notes.append(f"{symbol}: open SELL exists; not flattening")
             unexplained.append(symbol)
             continue
         if symbol in open_parent_symbols:
@@ -129,8 +141,13 @@ def execute_maintenance(trading, plan: MaintenancePlan, *, released: bool, sleep
         return tuple(("dry_run", a.kind, a.client_order_id) for a in plan.actions)
     cancels = [a for a in plan.actions if a.kind == "cancel_entry"][:1]
     flattens = [a for a in plan.actions if a.kind == "flatten"][:1]
+    from alpaca.trading.enums import QueryOrderStatus
+    from alpaca.trading.requests import GetOrdersRequest
     for action in cancels:
-        trading.cancel_order_by_id(action.broker_order_id)
+        try:
+            trading.cancel_order_by_id(action.broker_order_id)
+        except APIError:
+            raise TradeBlocked("Stale entry cancel rejected by broker") from None
         done.append(("canceled", action.kind, action.client_order_id))
         sleeper(3)  # allow the broker to settle legs before any flatten decision
     for action in flattens:
@@ -146,9 +163,18 @@ def execute_maintenance(trading, plan: MaintenancePlan, *, released: bool, sleep
                      if getattr(p, "symbol", None) == action.symbol]
         if len(positions) != 1 or money(positions[0].qty) != money(action.shares):
             raise TradeBlocked("Position changed before flatten; re-evaluate next run")
-        trading.submit_order(order_data=MarketOrderRequest(
-            symbol=action.symbol, qty=float(money(action.shares)),
-            side=OrderSide.SELL, time_in_force=TimeInForce.DAY,
-            client_order_id=exit_cid))
+        live = order_legs(trading.get_orders(filter=GetOrdersRequest(
+            status=QueryOrderStatus.OPEN, nested=True, limit=500)))
+        if any(getattr(o, "symbol", None) == action.symbol
+               and value(getattr(o, "side", None)) == "sell"
+               and value(getattr(o, "status", None)) in OPEN_STATUSES for o in live):
+            raise TradeBlocked("Open SELL appeared before flatten; not double-selling")
+        try:
+            trading.submit_order(order_data=MarketOrderRequest(
+                symbol=action.symbol, qty=float(money(action.shares)),
+                side=OrderSide.SELL, time_in_force=TimeInForce.DAY,
+                client_order_id=exit_cid))
+        except APIError:
+            raise TradeBlocked("Flatten order rejected by broker") from None
         done.append(("flatten_submitted", action.kind, action.client_order_id))
     return tuple(done)

@@ -99,6 +99,8 @@ class Broker:
             return SimpleNamespace(id="x", client_order_id=cid)
         raise APIError("nf", http_error=SimpleNamespace(response=SimpleNamespace(status_code=404)))
     def get_all_positions(self): return [SimpleNamespace(symbol="F", qty=self.position_qty)]
+    open_orders = ()
+    def get_orders(self, *, filter): return list(self.open_orders)
     def submit_order(self, *, order_data): self.calls.append(("submit", order_data))
 
 
@@ -233,3 +235,37 @@ def test_missing_baselines_block_entries():
     from bot.paper_safety import execution_blockers
     b = execution_blockers(state(day_open_equity=None, recorded_peak_equity=None))
     assert {"missing_daily_open_equity", "missing_durable_equity_peak"} <= set(b)
+
+
+def test_no_flatten_while_an_open_sell_holds_the_shares():
+    # Stop leg live but unverified (e.g. journal still UNKNOWN): never double-sell.
+    leg = stop_leg("new")
+    filled = order(status="filled", filled=2, filled_at=NOW - timedelta(minutes=5), legs=(leg,))
+    p = plan([SimpleNamespace(symbol="F", qty="2")], [filled], ((CID, "unknown", "F", 2),))
+    assert p.actions == () and p.unexplained_symbols == ("F",)
+
+
+def test_flatten_aborts_if_a_sell_appears_before_post():
+    broker = Broker()
+    broker.open_orders = [stop_leg("new", qty=1)]
+    p = plan([SimpleNamespace(symbol="F", qty="1")], [])
+    with pytest.raises(TradeBlocked, match="Open SELL appeared"):
+        execute_maintenance(broker, p, released=True)
+    assert not any(c[0] == "submit" for c in broker.calls)
+
+
+def test_broker_rejection_becomes_a_clean_block():
+    class Rejecting(Broker):
+        def submit_order(self, *, order_data):
+            raise APIError("rejected", http_error=SimpleNamespace(response=SimpleNamespace(status_code=403)))
+    p = plan([SimpleNamespace(symbol="F", qty="1")], [])
+    with pytest.raises(TradeBlocked, match="rejected by broker"):
+        execute_maintenance(Rejecting(), p, released=True)
+
+
+def test_newest_intent_explains_a_repeat_symbol():
+    old = ("hds-20261101-F-aaaaaaaaaaaa", "filled", "F", 2, 24, "old-parent", "gtc")
+    p = plan([SimpleNamespace(symbol="F", qty="1")], [], (), [old])
+    assert [a.client_order_id for a in p.actions] == [old[0]]
+    p2 = plan([SimpleNamespace(symbol="F", qty="1")], [], ((CID, "accepted", "F", 2),), [old])
+    assert p2.actions[0].client_order_id == CID

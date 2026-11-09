@@ -397,16 +397,6 @@ def prepare_live_candidate(*, components, now=None, symbols=None, utcnow=None,
     positions = trading.get_all_positions()
     orders = trading.get_orders(filter=GetOrdersRequest(
         status=QueryOrderStatus.OPEN, nested=True, limit=500))
-    maintenance = None
-    if autonomous is True:
-        stage("risk_reducing_maintenance")
-        maintenance, positions, orders = _run_maintenance(
-            trading, monitor, positions, orders, utcnow())
-        if paused:
-            return {"mode": "PAUSED", "reason": "Kill switch engaged; no entries",
-                    "maintenance": maintenance,
-                    "broker_orders": maintenance["broker_writes"],
-                    "database_writes": 0}
     # Independent GET-only reconciliation runs before the blocker check so an
     # earlier unapproved, never-dispatched proposal can expire (audited, via
     # the reconciler role) instead of blocking every later session forever.
@@ -415,10 +405,25 @@ def prepare_live_candidate(*, components, now=None, symbols=None, utcnow=None,
     from .live_quotes import (
         MAX_SPREAD_BPS, inspect_live_quote, preview_live_paper_entry,
     )
+    from .paper_reconciler_service import PAPER_RECONCILIATION_SERVICE_RELEASED
     reconciled = reconcile_pending_once(
         trading=components["reconciler_trading"], journal=reconciler,
-        record=autonomous is True, expire_unapproved=True)
+        record=(autonomous is True
+                and PAPER_RECONCILIATION_SERVICE_RELEASED is True),
+        expire_unapproved=True)
     expired = [cid for cid, status in reconciled if status == "expired"]
+    maintenance = None
+    if autonomous is True:
+        # After reconciliation so a just-filled entry is judged on current
+        # journal state; risk-reducing, so it also runs while paused.
+        stage("risk_reducing_maintenance")
+        maintenance, positions, orders = _run_maintenance(
+            trading, monitor, positions, orders, utcnow())
+        if paused:
+            return {"mode": "PAUSED", "reason": "Kill switch engaged; no entries",
+                    "maintenance": maintenance,
+                    "broker_orders": maintenance["broker_writes"],
+                    "database_writes": len(expired)}
     stage("read_positions_orders_and_journal")
     unresolved = monitor.read_unresolved_intents(limit=501)
     if len(unresolved) >= 501:
@@ -441,6 +446,10 @@ def prepare_live_candidate(*, components, now=None, symbols=None, utcnow=None,
         return report
     if unresolved or positions or orders:
         raise TradeBlocked("Earlier PAPER orders or existing exposure require reconciliation")
+    if autonomous is True and monitor.count_entries_today() >= 1:
+        return {"mode": "NO_TRADE", "reason": "Daily PAPER entry already used",
+                "expired_client_order_ids": expired,
+                "broker_orders": 0, "database_writes": len(expired)}
     if pending_blockers(reconciled):
         raise TradeBlocked("Existing PAPER order requires independent reconciliation")
     stage("verify_account_lifetime_history")
@@ -907,7 +916,7 @@ def main(argv=None):
         runtime_receipt("blocked", error_type=type(exc).__name__,
                         reason=safe_reason, exit_code=2)
         alert_once(re.sub(r"[^A-Za-z0-9_:;,. -]", "", safe_reason),
-                   "urgent" if dispatch_started else "high")
+                   "urgent" if "UNKNOWN" in safe_reason else "high")
         if dispatch_started:
             print("PAPER EXECUTOR DISPATCH OUTCOME UNKNOWN OR BLOCKED; perform independent broker reconciliation; NEVER retry this client order ID.",
                   file=sys.stderr)
@@ -918,8 +927,7 @@ def main(argv=None):
     except Exception as exc:
         runtime_receipt("error", error_type=type(exc).__name__,
                         exit_code=2)
-        alert_once("unexpected " + type(exc).__name__,
-                   "urgent" if dispatch_started else "high")
+        alert_once("unexpected " + type(exc).__name__, "high")
         if dispatch_started:
             print("PAPER EXECUTOR DISPATCH OUTCOME UNKNOWN OR BLOCKED; perform independent broker reconciliation; NEVER retry this client order ID.",
                   file=sys.stderr)

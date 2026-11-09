@@ -330,8 +330,16 @@ def reconcile_observation(
     if unresolved and all(status == "accepted" and cid in open_parent_clients
                           for cid, status in unresolved):
         tolerated.add("unresolved_order_intent_requires_broker_lookup")
+    position_symbols = {getattr(p, "symbol", None) for p in positions}
+    open_buy_symbols = {getattr(o, "symbol", None) for o in open_orders
+                        if value(getattr(o, "side", None)) == "buy"}
+    orphan_sell = any(
+        value(getattr(o, "side", None)) == "sell"
+        and getattr(o, "symbol", None) not in position_symbols
+        and getattr(o, "symbol", None) not in open_buy_symbols
+        for o in open_orders)
     managed = (bool(positions or open_orders) and not uncovered
-               and set(reasons) <= tolerated)
+               and not orphan_sell and set(reasons) <= tolerated)
     return Reconciliation(
         consistent=not reasons, blockers=reasons,
         open_broker_orders=len(open_orders), open_broker_positions=len(positions),
