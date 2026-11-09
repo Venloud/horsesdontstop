@@ -15,6 +15,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import sys
 from tempfile import NamedTemporaryFile
 from zoneinfo import ZoneInfo
@@ -285,11 +286,32 @@ def _live_components(*, stage_observer=None):
     }
 
 
+def _managed_position_report(monitor, positions, orders, unresolved):
+    """Holding: prove the exposure is journaled and stop-protected, or block."""
+    from .paper_reconcile import reconcile_observation
+    rec = reconcile_observation(
+        positions, orders, unresolved, order_fetch_complete=len(orders) < 500,
+        approved_stops=monitor.read_approved_stop_intents(limit=501))
+    if rec.managed_exposure is not True or rec.uncovered_symbols:
+        raise TradeBlocked("Open PAPER exposure is not verified as stop-protected")
+    return {
+        "mode": "POSITION_MANAGED",
+        "reason": "Open PAPER exposure verified against durable GTC OTO stop",
+        "positions": [{"symbol": getattr(p, "symbol", None),
+                       "qty": str(getattr(p, "qty", None)),
+                       "unrealized_pl": str(getattr(p, "unrealized_pl", None))}
+                      for p in positions],
+        "open_orders": rec.open_broker_orders,
+        "broker_orders": 0, "database_writes": 0,
+    }
+
+
 def prepare_live_candidate(*, components, now=None, symbols=None, utcnow=None,
                           prepared_observer=None, stage_observer=None,
                           check_observer=None,
-                          candidate_evaluation_observer=None):
-    """Read fresh evidence and reserve at most one exact proposal; never POST."""
+                          candidate_evaluation_observer=None, autonomous=False):
+    """Read fresh evidence; reserve one proposal, or in autonomous mode
+    policy-authorize and submit at most one protected PAPER entry."""
     from alpaca.data.enums import DataFeed
     from alpaca.data.requests import StockLatestQuoteRequest
     from alpaca.trading.enums import QueryOrderStatus
@@ -320,7 +342,13 @@ def prepare_live_candidate(*, components, now=None, symbols=None, utcnow=None,
     executor.assert_executor_permissions(reservation=True)
     stage("read_safety_controls")
     control = monitor.read_control()
-    if control.kill_switch_active is not True or control.submissions_enabled is not False:
+    if autonomous is True:
+        if (control.kill_switch_active, control.submissions_enabled) == (True, False):
+            return {"mode": "PAUSED", "reason": "Kill switch engaged; no entries",
+                    "broker_orders": 0, "database_writes": 0}
+        if (control.kill_switch_active, control.submissions_enabled) != (False, True):
+            raise TradeBlocked("PAPER controls are incoherent")
+    elif control.kill_switch_active is not True or control.submissions_enabled is not False:
         raise TradeBlocked("PAPER preparation requires kill ON and submissions OFF")
     stage("authenticate_alpaca_paper_account")
     account = trading.get_account()
@@ -342,7 +370,7 @@ def prepare_live_candidate(*, components, now=None, symbols=None, utcnow=None,
     )
     reconciled = reconcile_pending_once(
         trading=components["reconciler_trading"], journal=reconciler,
-        record=False, expire_unapproved=True)
+        record=autonomous is True, expire_unapproved=True)
     expired = [cid for cid, status in reconciled if status == "expired"]
     stage("read_positions_orders_and_journal")
     unresolved = monitor.read_unresolved_intents(limit=501)
@@ -360,6 +388,8 @@ def prepare_live_candidate(*, components, now=None, symbols=None, utcnow=None,
                 "pending_client_order_ids": awaiting,
                 "expired_client_order_ids": expired,
                 "broker_orders": 0, "database_writes": len(expired)}
+    if autonomous is True and (positions or orders):
+        return _managed_position_report(monitor, positions, orders, unresolved)
     if unresolved or positions or orders:
         raise TradeBlocked("Earlier PAPER orders or existing exposure require reconciliation")
     if pending_blockers(reconciled):
@@ -475,6 +505,35 @@ def prepare_live_candidate(*, components, now=None, symbols=None, utcnow=None,
             lifetime_evidence=lifetime, lease=lease,
             calendar_verified=True, quote_age_seconds=preview.quote_age_seconds,
             journal_healthy=True, broker_reconciled=True)
+        from .paper_safety import execution_blockers
+        cutoffs = {"daily_three_percent_loss_cutoff",
+                   "fifteen_percent_drawdown_cutoff"} & set(execution_blockers(state))
+        if cutoffs:
+            # Independent self-stop: any service may PAUSE; only the operator re-arms.
+            executor.engage_kill_switch("executor: " + ",".join(sorted(cutoffs)))
+            raise TradeBlocked("Loss cutoff reached; kill switch engaged")
+        if autonomous is True:
+            stage("policy_authorize_and_submit")
+            submitted = submit_paper_once_supervised(
+                trading=trading, journal=executor, market_quote=quote,
+                preview=preview, safety_state=state, approval=None, now=now,
+                expected_account_sha256=expected_hash, market_data=market_data,
+                policy_authorize=True, verify_watchdog=verify_watchdog)
+            return {
+                "mode": "SUBMITTED_POLICY_AUTHORIZED",
+                "client_order_id": submitted.client_order_id,
+                "broker_order_id": submitted.broker_order_id,
+                "result": submitted.result,
+                "symbol": preview.symbol, "shares": preview.shares,
+                "buy_limit_usd": preview.buy_limit_usd,
+                "stop_usd": preview.stop_usd,
+                "estimated_stop_risk_usd": preview.stop_distance_risk_usd,
+                "order_notional_usd": preview.max_limit_purchase_usd,
+                "momentum_score": candidate["momentum_score"],
+                "candidate_evaluations": candidate_evaluations,
+                "expired_client_order_ids": expired,
+                "broker_orders": int(submitted.submitted_to_paper_broker),
+            }
         stage("reserve_exact_pilot_proposal")
         prepared = submit_paper_once_supervised(
             trading=trading, journal=executor, market_quote=quote,
@@ -657,8 +716,21 @@ def dispatch_approved_artifact(*, components, artifact, now=None, utcnow=None):
         intent_already_reserved=True, verify_watchdog=verify_watchdog)
 
 
+def _notify(title, message, priority="default"):
+    """Best effort; never affects trading outcome. Topic from DPAPI runner."""
+    topic = os.environ.get("PAPER_MONITOR_NTFY_TOPIC")
+    if not topic:
+        return False
+    try:
+        from .monitor_notify import send_activity_ntfy
+        return send_activity_ntfy(title, message, topic=topic, priority=priority)
+    except Exception:
+        return False
+
+
 def run_once(*, output: Path, reserve: bool = False, stage_observer=None,
-             check_observer=None, candidate_evaluation_observer=None):
+             check_observer=None, candidate_evaluation_observer=None,
+             autonomous=False):
     if reserve is not True:
         raise TradeBlocked("Executor requires explicit --prepare to perform a durable reservation")
     components = _live_components(stage_observer=stage_observer)
@@ -673,8 +745,16 @@ def run_once(*, output: Path, reserve: bool = False, stage_observer=None,
     report = prepare_live_candidate(
         components=components, prepared_observer=persist_before_reservation,
         stage_observer=stage_observer, check_observer=check_observer,
-        candidate_evaluation_observer=candidate_evaluation_observer)
+        candidate_evaluation_observer=candidate_evaluation_observer,
+        autonomous=autonomous)
     _atomic_json(output, report)
+    if report.get("mode") == "SUBMITTED_POLICY_AUTHORIZED":
+        _notify("entry submitted",
+                f"BUY {report['shares']} {report['symbol']} limit ${report['buy_limit_usd']} "
+                f"stop ${report['stop_usd']}; risk ${report['estimated_stop_risk_usd']}; "
+                f"cost ${report['order_notional_usd']}", "high")
+    for cid in report.get("expired_client_order_ids") or ():
+        _notify("proposal expired", f"Unfilled proposal {cid} expired and was audited")
     return report
 
 
@@ -683,6 +763,8 @@ def main(argv=None):
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--prepare", action="store_true",
                       help="allow one guarded durable proposal reservation; never submit")
+    mode.add_argument("--autonomous", action="store_true",
+                      help="policy-authorized entry: Neon policy + armed controls; one protected order max")
     mode.add_argument("--dispatch-file", type=Path,
                       help="single approved proposal artifact; hard release gate still applies")
     parser.add_argument("--output", default=".state/paper-executor/latest.json")
@@ -694,8 +776,10 @@ def main(argv=None):
     check_results = {}
     candidate_evaluations = []
     def set_stage(value):
-        nonlocal current_stage
+        nonlocal current_stage, dispatch_started
         current_stage = value
+        if value == "policy_authorize_and_submit":
+            dispatch_started = True
     def record_check(name, result):
         check_results[name] = result
     def runtime_receipt(status, *, error_type=None, reason=None, exit_code=None):
@@ -704,7 +788,8 @@ def main(argv=None):
         record = {
             "schema": 1, "run_id": run_id,
             "observed_at_utc": datetime.now(timezone.utc).isoformat(),
-            "mode": "prepare" if args.prepare else "dispatch",
+            "mode": ("prepare" if args.prepare else
+                     "autonomous" if args.autonomous else "dispatch"),
             "stage": current_stage, "status": status,
             "error_type": error_type, "safe_reason": reason,
             "exit_code": exit_code,
@@ -713,14 +798,30 @@ def main(argv=None):
             "candidate_evaluations": candidate_evaluations,
         }
         _atomic_json(Path(args.runtime_receipt), record)
+    def alert_once(reason, priority="high"):
+        if not (args.autonomous and args.runtime_receipt):
+            return
+        path = Path(args.runtime_receipt).with_name("executor-alerts.json")
+        try:
+            sent = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            sent = {}
+        now_s = datetime.now(timezone.utc).timestamp()
+        key = f"{current_stage}:{reason}"[:200]
+        if now_s - sent.get(key, 0) < 3600:
+            return
+        if _notify("executor blocked", f"Stage {current_stage}: {reason}"[:600], priority):
+            sent[key] = now_s
+            _atomic_json(path, sent)
     try:
-        if args.prepare:
-            set_stage("prepare_live_workflow")
+        if args.prepare or args.autonomous:
+            set_stage("autonomous_live_workflow" if args.autonomous else "prepare_live_workflow")
             result = run_once(output=Path(args.output), reserve=True,
                               stage_observer=set_stage,
                               check_observer=record_check,
-                              candidate_evaluation_observer=candidate_evaluations.append)
-            broker_orders = 0
+                              candidate_evaluation_observer=candidate_evaluations.append,
+                              autonomous=bool(args.autonomous))
+            broker_orders = int(result.get("broker_orders") or 0)
         else:
             from .paper_supervised_execution import PAPER_ORDER_SUBMISSIONS_RELEASED
             if PAPER_ORDER_SUBMISSIONS_RELEASED is not True:
@@ -756,6 +857,8 @@ def main(argv=None):
         safe_reason = str(exc)
         runtime_receipt("blocked", error_type=type(exc).__name__,
                         reason=safe_reason, exit_code=2)
+        alert_once(re.sub(r"[^A-Za-z0-9_:;,. -]", "", safe_reason),
+                   "urgent" if dispatch_started else "high")
         if dispatch_started:
             print("PAPER EXECUTOR DISPATCH OUTCOME UNKNOWN OR BLOCKED; perform independent broker reconciliation; NEVER retry this client order ID.",
                   file=sys.stderr)
@@ -766,6 +869,8 @@ def main(argv=None):
     except Exception as exc:
         runtime_receipt("error", error_type=type(exc).__name__,
                         exit_code=2)
+        alert_once("unexpected " + type(exc).__name__,
+                   "urgent" if dispatch_started else "high")
         if dispatch_started:
             print("PAPER EXECUTOR DISPATCH OUTCOME UNKNOWN OR BLOCKED; perform independent broker reconciliation; NEVER retry this client order ID.",
                   file=sys.stderr)

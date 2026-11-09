@@ -44,6 +44,16 @@ EXPOSURE_DANGER = frozenset({
     "daily_three_percent_loss_cutoff",
     "fifteen_percent_drawdown_cutoff",
 })
+LOSS_CUTOFFS = frozenset({
+    "daily_three_percent_loss_cutoff", "fifteen_percent_drawdown_cutoff",
+})
+# Expected while a verified, protected position or accepted entry is open.
+MANAGED_EXPOSURE_BLOCKERS = frozenset({
+    "existing_position_or_open_order",
+    "unresolved_order_intent_requires_broker_lookup",
+    "broker_orders_not_reconciled",
+    "stale_or_unmaintained_equity_peak",
+})
 NO_TRADE_MODE = "ALPACA_PAPER_READ_ONLY_PREFLIGHT"
 
 
@@ -77,6 +87,8 @@ def make_incident(level: str, code: str, reasons, *, observation=None,
     fingerprint = sha256(key.encode("utf-8")).hexdigest()[:32]
     friendly = {
         "idle": "Read-only paper monitor: no exposure detected.",
+        "managed_exposure": "PAPER position/entry is journaled and protected by a verified GTC stop.",
+        "loss_cutoff": "PAPER daily-loss or drawdown cutoff reached; new entries are blocked.",
         "degraded": "Read-only paper monitor is degraded; manual review needed.",
         "unverifiable": "Paper broker or Neon state cannot be verified; investigate immediately.",
         "unsafe_exposure": "Paper holdings or orders may lack adequate protection; investigate immediately.",
@@ -170,8 +182,13 @@ def assess_read_only_report(report: Mapping, *, now=None,
             ("read_only_contract_broken",), observation=dtstr,
             positions=positions, orders=orders)
 
-    if (report.get("journal_kill_switch_active") is not True
-            or report.get("journal_submissions_enabled") is not False):
+    # Two coherent control states exist: PAUSED (kill ON, submissions OFF)
+    # and ARMED for policy-authorized PAPER trading (kill OFF, submissions
+    # ON). Any other combination or non-boolean value is critical.
+    controls = (report.get("journal_kill_switch_active"),
+                report.get("journal_submissions_enabled"))
+    if controls not in ((True, False), (False, True)) or not all(
+            type(x) is bool for x in controls):
         return make_incident(
             "critical", "security_switch", ("paper_controls_not_locked",),
             observation=dtstr, positions=positions, orders=orders)
@@ -189,6 +206,25 @@ def assess_read_only_report(report: Mapping, *, now=None,
                 "critical", "missing_opening_equity",
                 ("opening_equity_not_recorded",),
                 observation=dtstr, positions=positions, orders=orders)
+
+    if (rec.get("consistent") is not True
+            and rec.get("managed_exposure") is True
+            and (positions or orders) and not rec.get("uncovered_symbols")):
+        # Live exposure that the reconciliation proved journaled and
+        # protected by exactly one verified durable GTC OTO stop (or an
+        # accepted, broker-matched entry). Loss cutoffs still page.
+        if blockers & LOSS_CUTOFFS:
+            return make_incident(
+                "critical", "loss_cutoff", blockers & LOSS_CUTOFFS,
+                observation=dtstr, positions=positions, orders=orders)
+        unexpected = blockers - EXPECTED_READ_ONLY_BLOCKERS - MANAGED_EXPOSURE_BLOCKERS
+        if unexpected:
+            return make_incident(
+                "warning", "degraded", unexpected,
+                observation=dtstr, positions=positions, orders=orders)
+        return make_incident(
+            "idle", "managed_exposure", (),
+            observation=dtstr, positions=positions, orders=orders)
 
     if rec.get("consistent") is not True:
         if positions or orders or rec.get("uncovered_symbols"):

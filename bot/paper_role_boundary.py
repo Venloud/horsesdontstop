@@ -45,6 +45,8 @@ SELECT /* paper_acl_boundary */
         'paper_consume_submission_authorization(text)',
         'paper_record_reconciled_intent_status(text,text,text,text)',
         'paper_expire_unapproved_reservation(text,boolean)',
+        'paper_policy_authorize_entry(text,text,text,date,integer,numeric,numeric,text,text)',
+        'paper_engage_kill_switch(text)',
         'paper_authorize_unknown_submission(text,text,text,date,integer,numeric,numeric)'))
 """
 
@@ -58,7 +60,8 @@ def assert_journal_acl_boundary(cursor, *, reconciler=False):
             ('paper_reserve_intent_if_enabled','paper_reserve_bounded_pilot_intent',
              'paper_commit_bounded_pilot_dispatch','paper_mark_reserved_intent_unknown',
              'paper_consume_submission_authorization',
-             'paper_authorize_unknown_submission','paper_reservation_control_guard')
+             'paper_authorize_unknown_submission','paper_reservation_control_guard',
+             'paper_policy_authorize_entry','paper_arm_autonomous_trading')
             AND has_function_privilege(current_user,p.oid,'EXECUTE'))"""
     cursor.execute(sql)
     if cursor.fetchone() != (True,):

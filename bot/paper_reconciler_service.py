@@ -19,7 +19,8 @@ PAPER_RECONCILIATION_SERVICE_RELEASED = False
 
 def run_service(*, trading, journal, apply_status=False, max_ticks=1,
                 interval_seconds=30, sleeper=time.sleep, alert=None,
-                expected_account_hash=None, tick_observer=None):
+                expected_account_hash=None, tick_observer=None,
+                recover=False, alert_cooldown_seconds=3600, clock=time.monotonic):
     if apply_status is True and PAPER_RECONCILIATION_SERVICE_RELEASED is not True:
         raise TradeBlocked("PAPER status-writing service NOT RELEASED")
     if type(max_ticks) is not int or max_ticks < 0 or type(interval_seconds) is not int or interval_seconds < 30:
@@ -27,12 +28,15 @@ def run_service(*, trading, journal, apply_status=False, max_ticks=1,
     if max_ticks == 0 and alert is None:
         raise TradeBlocked("Continuous reconciler requires critical alert transport")
     ticks = 0
+    last_alert = None
     while max_ticks == 0 or ticks < max_ticks:
+        identity_failure = False
         try:
             if expected_account_hash is not None:
                 account = trading.get_account()
                 actual = hashlib.sha256(str(account.id).encode()).hexdigest()
                 if actual != expected_account_hash:
+                    identity_failure = True
                     raise TradeBlocked("Independent reconciler account identity changed")
             # Broker-status writes stay unreleased. Expiring an unapproved,
             # broker-404, never-dispatched proposal is a separate, narrower,
@@ -42,6 +46,20 @@ def run_service(*, trading, journal, apply_status=False, max_ticks=1,
             if tick_observer is not None:
                 tick_observer(ticks + 1)
         except Exception:
+            # Continuous service: a transient broker/DB failure must not end
+            # reconciliation for the day. Alert (rate-limited), back off and
+            # keep the durable state as-is; identity changes still stop hard.
+            if recover is True and max_ticks == 0 and not identity_failure:
+                now_s = clock()
+                if alert is not None and (last_alert is None
+                                          or now_s - last_alert >= alert_cooldown_seconds):
+                    try:
+                        if alert() is True:
+                            last_alert = now_s
+                    except Exception:
+                        pass
+                sleeper(interval_seconds)
+                continue
             if alert is not None:
                 try:
                     if alert() is not True:
@@ -90,7 +108,8 @@ def main(argv=None):
         })) if args.receipt_file else None
         ticks = run_service(trading=trading, journal=journal, apply_status=args.apply_status,
                             max_ticks=0 if args.continuous else 1, alert=alert,
-                            expected_account_hash=account_hash, tick_observer=observer)
+                            expected_account_hash=account_hash, tick_observer=observer,
+                            recover=bool(args.continuous))
         print(f"PAPER reconciler completed {ticks} ticks; broker writes=0; observe_only={not args.apply_status}")
         return 0
     except Exception:

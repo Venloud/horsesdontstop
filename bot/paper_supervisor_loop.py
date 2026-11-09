@@ -22,6 +22,10 @@ from .paper_safety import PAPER_ENDPOINT, TradeBlocked
 from .paper_worker_lease import PaperWorkerHeartbeat
 from .paper_neon_idle import make_paper_closed_flat_probe, verified_flat_journal_baseline
 
+# Healthy supervision covers a flat account and verified, stop-protected
+# exposure; both must be independently re-derived from the same report.
+HEALTHY_INCIDENT_CODES = frozenset({"idle", "managed_exposure"})
+
 
 @dataclass(frozen=True)
 class SupervisorLoopReport:
@@ -55,13 +59,15 @@ def valid_observation(report, *, now=None) -> bool:
     incident = report.get("monitor_incident")
     if (not isinstance(incident, dict)
             or incident.get("level") != "idle"
-            or incident.get("code") != "idle"):
+            or incident.get("code") not in HEALTHY_INCIDENT_CODES):
         return False
     check = report.get("reconciliation")
-    if (not isinstance(check, dict)
-            or check.get("consistent") is not True
-            or check.get("uncovered_symbols") != []
-            or check.get("blockers") != []):
+    if not isinstance(check, dict) or check.get("uncovered_symbols") != []:
+        return False
+    if incident.get("code") == "idle":
+        if check.get("consistent") is not True or check.get("blockers") != []:
+            return False
+    elif check.get("managed_exposure") is not True:
         return False
     try:
         now = now or datetime.now(timezone.utc)
@@ -79,7 +85,8 @@ def valid_observation(report, *, now=None) -> bool:
             report, now=now, max_age_seconds=120)
     except (ValueError, TypeError, AttributeError, KeyError, OverflowError):
         return False
-    return (independent.level == "idle" and independent.code == "idle"
+    return (independent.level == "idle"
+            and independent.code == incident.get("code")
             and incident.get("fingerprint") == independent.fingerprint)
 
 def one_supervisor_tick(
@@ -522,9 +529,9 @@ def diagnose_supervisor(*, phase="postopen", collector_instances=None,
     def control():
         row = state["journal"].read_control()
         state["control"] = row
-        if row.kill_switch_active is not True:
-            raise DiagnosticFailure("BLOCKERS_PRESENT")
-        if row.submissions_enabled is not False:
+        # PAUSED (kill ON, submissions OFF) or ARMED (kill OFF, submissions ON).
+        if (row.kill_switch_active, row.submissions_enabled) not in (
+                (True, False), (False, True)):
             raise DiagnosticFailure("BLOCKERS_PRESENT")
         return True
 
@@ -540,8 +547,8 @@ def diagnose_supervisor(*, phase="postopen", collector_instances=None,
 
     def reconciliation():
         rec = state["report"]["reconciliation"]
-        if (rec.get("consistent") is not True
-                or rec.get("blockers") != []
+        flat_ok = rec.get("consistent") is True and rec.get("blockers") == []
+        if (not (flat_ok or rec.get("managed_exposure") is True)
                 or rec.get("uncovered_symbols") != []):
             raise DiagnosticFailure("BLOCKERS_PRESENT")
         return True

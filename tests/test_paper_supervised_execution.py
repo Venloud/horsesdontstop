@@ -959,3 +959,64 @@ def test_last_database_ack_cannot_make_a_remote_broker_post_atomic(monkeypatch):
     result=execute(p,broker=broker,journal=journal)
     assert len(broker.sent)==1 and result.result=='broker_acknowledged_unreconciled_stop_not_proven'
     assert ('unknown',p.client_order_id) in journal.calls
+
+
+# ---- Policy-authorized (autonomous) single-entry path ----
+
+class PolicyJournal(FakeJournal):
+    def __init__(self, *, deny=False):
+        super().__init__()
+        self.deny = deny
+
+    def policy_authorize_entry(self, plan, *, request_sha256, account_id_sha256):
+        self.calls.append(("policy", plan.client_order_id, request_sha256, account_id_sha256))
+        if self.deny:
+            raise TradeBlocked("PAPER policy authorization denied")
+        return True
+
+    def reserve_if_enabled(self, plan):
+        raise AssertionError("policy path must not use the owner-review reservation")
+
+
+def policy_execute(*, journal, broker=None, approval=None):
+    p = preview()
+    return entry.submit_paper_once_supervised(
+        trading=broker or FakeBroker(p), journal=journal, market_quote=quote(),
+        preview=p, safety_state=healthy(), approval=approval, now=NOW,
+        expected_account_sha256=PAPER_ACCOUNT_SHA256, market_data=FakeMarketData(),
+        policy_authorize=True, verify_watchdog=lambda: 2)
+
+
+def test_policy_path_is_still_behind_the_code_release_gate():
+    journal = PolicyJournal()
+    with pytest.raises(TradeBlocked, match="NOT RELEASED"):
+        policy_execute(journal=journal)
+    assert journal.calls == []
+
+
+def test_policy_path_authorizes_in_neon_then_dispatches_exactly_once(monkeypatch):
+    monkeypatch.setattr(entry, "PAPER_ORDER_SUBMISSIONS_RELEASED", True)
+    journal, p = PolicyJournal(), preview()
+    broker = FakeBroker(p)
+    result = policy_execute(journal=journal, broker=broker)
+    assert result.submitted_to_paper_broker is True
+    kinds = [c[0] for c in journal.calls]
+    assert kinds == ["policy", "unknown"]          # DB authority, then pre-POST UNKNOWN
+    assert journal.calls[0][3] == PAPER_ACCOUNT_SHA256
+    assert broker.calls.count("submit_order") == 1
+    assert broker.calls.index("get_order_by_client_id") < broker.calls.index("submit_order")
+
+
+def test_policy_denial_in_neon_means_no_broker_post(monkeypatch):
+    monkeypatch.setattr(entry, "PAPER_ORDER_SUBMISSIONS_RELEASED", True)
+    p = preview()
+    broker = FakeBroker(p)
+    with pytest.raises(TradeBlocked, match="policy authorization denied"):
+        policy_execute(journal=PolicyJournal(deny=True), broker=broker)
+    assert "submit_order" not in broker.calls
+
+
+def test_policy_path_refuses_external_approval_or_mixed_modes(monkeypatch):
+    monkeypatch.setattr(entry, "PAPER_ORDER_SUBMISSIONS_RELEASED", True)
+    with pytest.raises(TradeBlocked, match="own single-entry mode"):
+        policy_execute(journal=PolicyJournal(), approval=approved(preview()))

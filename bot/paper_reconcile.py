@@ -116,6 +116,9 @@ class Reconciliation:
     open_broker_positions: int
     unresolved_journal_intents: int
     uncovered_symbols: tuple[str, ...]
+    # True only when the sole findings are live exposure that is fully
+    # journaled and protected (or an accepted, broker-matched OTO entry).
+    managed_exposure: bool = False
 
     def to_dict(self):
         return {
@@ -125,6 +128,7 @@ class Reconciliation:
             "open_broker_positions": self.open_broker_positions,
             "unresolved_journal_intents": self.unresolved_journal_intents,
             "uncovered_symbols": list(self.uncovered_symbols),
+            "managed_exposure": self.managed_exposure,
         }
 
 
@@ -168,11 +172,11 @@ def reconcile_observation(
         ids.add(client_id)
         if value(status) not in (
             "reserved", "submitted", "accepted", "filled",
-            "rejected", "canceled", "unknown"
+            "rejected", "canceled", "unknown", "expired"
         ):
             blockers.append("unknown_journal_status")
         if value(status) in UNRESOLVED_INTENTS:
-            unresolved.append(client_id)
+            unresolved.append((client_id, value(status)))
         if number(qty) <= 0:
             blockers.append("invalid_journal_quantity")
     if unresolved:
@@ -321,9 +325,17 @@ def reconcile_observation(
             blockers.append("position_missing_verified_gtc_oto_stop")
 
     reasons = tuple(dict.fromkeys(blockers))
+    open_parent_clients = {getattr(o, "client_order_id", None) for o in open_orders}
+    tolerated = {"open_broker_positions", "open_broker_orders"}
+    if unresolved and all(status == "accepted" and cid in open_parent_clients
+                          for cid, status in unresolved):
+        tolerated.add("unresolved_order_intent_requires_broker_lookup")
+    managed = (bool(positions or open_orders) and not uncovered
+               and set(reasons) <= tolerated)
     return Reconciliation(
         consistent=not reasons, blockers=reasons,
         open_broker_orders=len(open_orders), open_broker_positions=len(positions),
         unresolved_journal_intents=len(unresolved),
         uncovered_symbols=tuple(sorted(set(uncovered))),
+        managed_exposure=managed,
     )
