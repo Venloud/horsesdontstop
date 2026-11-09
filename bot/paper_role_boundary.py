@@ -44,6 +44,7 @@ SELECT /* paper_acl_boundary */
         'paper_mark_reserved_intent_unknown(text)',
         'paper_consume_submission_authorization(text)',
         'paper_record_reconciled_intent_status(text,text,text,text)',
+        'paper_expire_unapproved_reservation(text,boolean)',
         'paper_authorize_unknown_submission(text,text,text,date,integer,numeric,numeric)'))
 """
 

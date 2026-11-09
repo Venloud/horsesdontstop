@@ -117,6 +117,27 @@ class PaperStatusReconcilerJournal(PostgresPaperJournal):
                 time_in_force=tif))
         return plans
 
+    def expire_unapproved_reservation(self, client_order_id):
+        """Audited reserved -> expired, ONLY after a caller-verified broker 404.
+
+        The database function independently requires: still reserved, no
+        dispatch receipt, no consumed or live owner approval, and either an
+        earlier trading day or >= 10 minutes since reservation. Returns False
+        (no write) while the proposal is still within its approval window.
+        """
+        if not isinstance(client_order_id, str) or not client_order_id:
+            raise TradeBlocked("Missing PAPER client ID")
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SET LOCAL statement_timeout = '3000ms'")
+                cur.execute(
+                    "SELECT public.paper_expire_unapproved_reservation(%s,%s)",
+                    (client_order_id, True))
+                row = cur.fetchone()
+        if not isinstance(row, tuple) or len(row) != 1 or type(row[0]) is not bool:
+            raise TradeBlocked("Unverifiable PAPER reservation expiry")
+        return row[0]
+
     def record_broker_verified_state(self, client_order_id, old, new, broker_id):
         """Call restricted function, never direct UPDATE or audit INSERT.
 
@@ -156,7 +177,22 @@ def _durable_matches_plan(plan, row):
         return False
 
 
-def reconcile_verified_paper_order(*, trading, journal, plan, record=True):
+def _broker_definitely_lacks_order(trading, client_order_id):
+    """True only on a definite Alpaca 404; found -> False; anything else blocks."""
+    from alpaca.common.exceptions import APIError
+    try:
+        trading.get_order_by_client_id(client_order_id)
+    except APIError as exc:
+        if getattr(exc, "status_code", None) == 404:
+            return True
+        raise TradeBlocked("Broker client-order lookup unavailable") from None
+    except Exception:
+        raise TradeBlocked("Broker client-order lookup unavailable") from None
+    return False
+
+
+def reconcile_verified_paper_order(*, trading, journal, plan, record=True,
+                                   expire_unapproved=False):
     """Reconcile ONE persisted intent, using only Alpaca PAPER read-only GETs.
 
     The journal is intentionally a separate service principal. Do not
@@ -188,6 +224,16 @@ def reconcile_verified_paper_order(*, trading, journal, plan, record=True):
     if positions and getattr(positions[0], "symbol", None) != plan.symbol:
         raise TradeBlocked("Unexpected broker position symbol")
     exposure = getattr(positions[0], "qty", None) if positions else 0
+    if old == "reserved" and original_broker_id is None:
+        if _broker_definitely_lacks_order(trading, plan.client_order_id):
+            # Never dispatched: a prepared proposal awaiting owner approval.
+            # It is not broker exposure; it can only expire, never be sent here.
+            if positions:
+                raise TradeBlocked("Unexpected PAPER position for an undispatched proposal")
+            if expire_unapproved is True and journal.expire_unapproved_reservation(
+                    plan.client_order_id) is True:
+                return "expired"
+            return "reserved"
     try:
         audit = recover_by_client_id(trading, plan, position_qty=exposure)
     except Exception:
@@ -214,7 +260,13 @@ def reconcile_verified_paper_order(*, trading, journal, plan, record=True):
     return new
 
 
-def reconcile_pending_once(*, trading, journal, record=True):
+def pending_blockers(results):
+    """Intents that still block new proposals after a reconciliation tick."""
+    return tuple(item for item in results if item[1] != "expired")
+
+
+def reconcile_pending_once(*, trading, journal, record=True,
+                           expire_unapproved=False):
     """Bounded service tick, including durable restart recovery.
 
     The surrounding trusted supervisor must alert on ANY TradeBlocked and
@@ -230,4 +282,5 @@ def reconcile_pending_once(*, trading, journal, record=True):
         raise TradeBlocked("Independent PAPER broker authentication unverified")
     plans = journal.read_pending_plans()
     return tuple((plan.client_order_id, reconcile_verified_paper_order(
-        trading=trading, journal=journal, plan=plan, record=record)) for plan in plans)
+        trading=trading, journal=journal, plan=plan, record=record,
+        expire_unapproved=expire_unapproved)) for plan in plans)

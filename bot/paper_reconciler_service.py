@@ -34,7 +34,11 @@ def run_service(*, trading, journal, apply_status=False, max_ticks=1,
                 actual = hashlib.sha256(str(account.id).encode()).hexdigest()
                 if actual != expected_account_hash:
                     raise TradeBlocked("Independent reconciler account identity changed")
-            reconcile_pending_once(trading=trading, journal=journal, record=apply_status)
+            # Broker-status writes stay unreleased. Expiring an unapproved,
+            # broker-404, never-dispatched proposal is a separate, narrower,
+            # audited DB function that can only remove a blocker.
+            reconcile_pending_once(trading=trading, journal=journal,
+                                   record=apply_status, expire_unapproved=True)
             if tick_observer is not None:
                 tick_observer(ticks + 1)
         except Exception:

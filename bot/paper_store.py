@@ -33,7 +33,7 @@ CREATE TABLE IF NOT EXISTS paper_intents (
         (time_in_force IN ('day','gtc')),
     status TEXT NOT NULL DEFAULT 'reserved' CHECK
         (status IN ('reserved', 'submitted', 'accepted', 'filled',
-                    'rejected', 'canceled', 'unknown')),
+                    'rejected', 'canceled', 'unknown', 'expired')),
     broker_order_id TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -61,13 +61,15 @@ CREATE TABLE IF NOT EXISTS paper_equity_snapshots (
 
 
 ALLOWED_TRANSITIONS = {
-    "reserved": frozenset(("submitted", "unknown", "rejected")),
+    "reserved": frozenset(("submitted", "unknown", "rejected", "expired")),
     "submitted": frozenset(("accepted", "filled", "unknown", "rejected", "canceled")),
     "accepted": frozenset(("filled", "unknown", "canceled", "rejected")),
     "unknown": frozenset(("submitted", "accepted", "filled", "rejected", "canceled")),
     "filled": frozenset(),
     "rejected": frozenset(),
     "canceled": frozenset(),
+    # Unapproved, never-dispatched proposal; only via the audited DB function.
+    "expired": frozenset(),
 }
 
 

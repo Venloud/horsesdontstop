@@ -110,7 +110,117 @@ def test_unfilled_new_broker_parent_only_transitions_to_submitted():
     assert journal.modified == [
         (PLAN.client_order_id, "reserved", "submitted", "broker-paper-id")]
     assert journal.calls == ["attest", "read_intent", "atomic_transition"]
-    assert broker.calls == ["positions", "lookup", "nested"]
+    # A reserved intent is first checked for a definite 404 (never dispatched).
+    assert broker.calls == ["positions", "lookup", "lookup", "nested"]
+
+
+class Broker404(FakeBroker):
+    def __init__(self, *, positions=0, error_status=404):
+        super().__init__(exposure=positions)
+        self.error_status = error_status
+
+    def get_order_by_client_id(self, cid):
+        from alpaca.common.exceptions import APIError
+        self.calls.append("lookup")
+        error = APIError("{}")
+        error._http_error = SimpleNamespace(
+            response=SimpleNamespace(status_code=self.error_status))
+        raise error
+
+
+class ExpiringJournal(FakeJournal):
+    def __init__(self, *, eligible, status="reserved", broker_id=None):
+        super().__init__(status=status, broker_id=broker_id)
+        self.eligible = eligible
+
+    def expire_unapproved_reservation(self, cid):
+        self.calls.append("expire")
+        assert cid == PLAN.client_order_id
+        return self.eligible
+
+
+def test_reserved_broker_404_is_pending_not_an_error_and_writes_nothing():
+    broker, journal = Broker404(), ExpiringJournal(eligible=True)
+    state = reconcile_verified_paper_order(
+        trading=broker, journal=journal, plan=PLAN)
+    assert state == "reserved"
+    assert "expire" not in journal.calls and journal.modified == []
+
+
+def test_reserved_broker_404_expires_through_audited_function_when_eligible():
+    broker, journal = Broker404(), ExpiringJournal(eligible=True)
+    state = reconcile_verified_paper_order(
+        trading=broker, journal=journal, plan=PLAN, record=False,
+        expire_unapproved=True)
+    assert state == "expired"
+    assert journal.calls == ["attest", "read_intent", "expire"]
+    assert journal.modified == []  # no broker-status write path used
+    assert broker.calls == ["positions", "lookup"]
+
+
+def test_reserved_inside_approval_window_stays_reserved():
+    journal = ExpiringJournal(eligible=False)
+    state = reconcile_verified_paper_order(
+        trading=Broker404(), journal=journal, plan=PLAN,
+        expire_unapproved=True)
+    assert state == "reserved"
+    assert journal.calls[-1] == "expire"
+
+
+def test_reserved_lookup_error_other_than_404_blocks_and_never_expires():
+    journal = ExpiringJournal(eligible=True)
+    with pytest.raises(TradeBlocked, match="lookup unavailable"):
+        reconcile_verified_paper_order(
+            trading=Broker404(error_status=500), journal=journal, plan=PLAN,
+            expire_unapproved=True)
+    assert "expire" not in journal.calls
+
+
+def test_reserved_404_with_live_position_blocks_and_never_expires():
+    journal = ExpiringJournal(eligible=True)
+    with pytest.raises(TradeBlocked, match="undispatched"):
+        reconcile_verified_paper_order(
+            trading=Broker404(positions=PLAN.whole_shares), journal=journal,
+            plan=PLAN, expire_unapproved=True)
+    assert "expire" not in journal.calls
+
+
+def test_unknown_intent_with_broker_404_is_never_expired():
+    journal = ExpiringJournal(eligible=True, status="unknown")
+    with pytest.raises(TradeBlocked):
+        reconcile_verified_paper_order(
+            trading=Broker404(), journal=journal, plan=PLAN,
+            expire_unapproved=True)
+    assert "expire" not in journal.calls
+
+
+def test_expired_is_terminal_and_only_reachable_from_reserved():
+    from bot.paper_store import transition_allowed
+    assert transition_allowed("reserved", "expired")
+    for old in ("submitted", "accepted", "unknown", "filled", "rejected", "canceled"):
+        assert not transition_allowed(old, "expired")
+    for new in ("reserved", "submitted", "accepted", "filled", "unknown"):
+        assert not transition_allowed("expired", new)
+
+
+def test_expiry_migration_sql_keeps_every_guard():
+    from pathlib import Path
+    sql = Path(__file__).resolve().parents[1].joinpath(
+        "sql", "paper_reservation_expiry.sql").read_text(encoding="utf-8")
+    for guard in (
+            "p_broker_order_absent IS DISTINCT FROM TRUE",
+            "horsesdontstop-paper-exclusive-intent",
+            "v_status IS DISTINCT FROM 'reserved'",
+            "paper_pilot_dispatch_receipts",
+            "consumed_at IS NOT NULL",
+            "expires_at > v_now",
+            "interval '10 minutes'",
+            "'reservation_expired_unapproved'",
+            "SECURITY DEFINER",
+            "TO hds_paper_reconciler;",
+            "REVOKE CREATE ON SCHEMA public FROM hds_paper_status_owner"):
+        assert guard in sql
+    assert "TO hds_paper_executor" not in sql
 
 
 def test_accepted_broker_order_moves_submitted_to_accepted():

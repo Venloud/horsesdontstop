@@ -332,21 +332,37 @@ def prepare_live_candidate(*, components, now=None, symbols=None, utcnow=None,
     positions = trading.get_all_positions()
     orders = trading.get_orders(filter=GetOrdersRequest(
         status=QueryOrderStatus.OPEN, nested=True, limit=500))
-    unresolved = monitor.read_unresolved_intents(limit=501)
-    if len(unresolved) >= 501:
-        raise TradeBlocked("PAPER journal unresolved intent list incomplete")
-    if unresolved or positions or orders:
-        raise TradeBlocked("Earlier PAPER orders or existing exposure require reconciliation")
-
-    # Authentic GET-only reconciliation is performed even for an empty queue.
-    stage("independent_broker_reconciliation")
-    from .paper_status_reconciler import reconcile_pending_once
+    # Independent GET-only reconciliation runs before the blocker check so an
+    # earlier unapproved, never-dispatched proposal can expire (audited, via
+    # the reconciler role) instead of blocking every later session forever.
+    stage("reconcile_prior_reservations")
+    from .paper_status_reconciler import pending_blockers, reconcile_pending_once
     from .live_quotes import (
         MAX_SPREAD_BPS, inspect_live_quote, preview_live_paper_entry,
     )
-    if reconcile_pending_once(
-            trading=components["reconciler_trading"],
-            journal=reconciler, record=False):
+    reconciled = reconcile_pending_once(
+        trading=components["reconciler_trading"], journal=reconciler,
+        record=False, expire_unapproved=True)
+    expired = [cid for cid, status in reconciled if status == "expired"]
+    stage("read_positions_orders_and_journal")
+    unresolved = monitor.read_unresolved_intents(limit=501)
+    if len(unresolved) >= 501:
+        raise TradeBlocked("PAPER journal unresolved intent list incomplete")
+    awaiting = [cid for cid, status in pending_blockers(reconciled)
+                if status == "reserved"]
+    if (unresolved and not positions and not orders
+            and len(awaiting) == len(unresolved)
+            and {row[0] for row in unresolved} == set(awaiting)
+            and all(row[1] == "reserved" for row in unresolved)):
+        return {"mode": "AWAITING_OWNER_APPROVAL",
+                "reason": "Prepared proposal is inside its owner-approval window; "
+                          "it expires automatically if unapproved",
+                "pending_client_order_ids": awaiting,
+                "expired_client_order_ids": expired,
+                "broker_orders": 0, "database_writes": len(expired)}
+    if unresolved or positions or orders:
+        raise TradeBlocked("Earlier PAPER orders or existing exposure require reconciliation")
+    if pending_blockers(reconciled):
         raise TradeBlocked("Existing PAPER order requires independent reconciliation")
     stage("verify_account_lifetime_history")
     account, activities, history, complete = fetch_account_history(trading)
@@ -489,7 +505,8 @@ def prepare_live_candidate(*, components, now=None, symbols=None, utcnow=None,
                 "order_notional_usd": preview.max_limit_purchase_usd,
             },
             "durable_reservation_written": True,
-            "database_writes": 1,
+            "expired_client_order_ids": expired,
+            "database_writes": 1 + len(expired),
             "broker_orders": 0,
             "submissions_enabled": False,
             "kill_switch_active": True,
