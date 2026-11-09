@@ -88,6 +88,11 @@ def plan_maintenance(*, positions, orders, unresolved, approved_stops, now) -> M
     cid_by_symbol = {}
     for cid, symbol in symbols_by_cid.items():
         cid_by_symbol.setdefault(symbol, []).append(cid)
+    own_exits = {exit_client_order_id(cid) for cid in symbols_by_cid}
+    pending_exit_symbols = {
+        getattr(o, "symbol", None) for o in nested
+        if getattr(o, "client_order_id", None) in own_exits
+        and value(getattr(o, "status", None)) in OPEN_STATUSES}
     open_sell_symbols = {
         getattr(o, "symbol", None) for o in nested
         if value(getattr(o, "side", None)) == "sell"
@@ -103,6 +108,10 @@ def plan_maintenance(*, positions, orders, unresolved, approved_stops, now) -> M
             continue
         # Client IDs embed the trading day (hds-YYYYMMDD-...): newest wins.
         cids = cids[-1:]
+        if symbol in pending_exit_symbols:
+            # Our own flatten is already queued (e.g. after hours): wait for it.
+            notes.append(f"{symbol}: bot exit order pending")
+            continue
         if symbol in open_sell_symbols:
             # A live SELL (e.g. the stop leg) still holds these shares; a
             # second SELL could double-sell. Alert instead of flattening.

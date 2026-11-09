@@ -25,7 +25,7 @@ CREATE TABLE IF NOT EXISTS public.paper_trading_policy (
     autonomous_entries_enabled boolean NOT NULL DEFAULT FALSE,
     max_trade_risk_fraction numeric NOT NULL CHECK (max_trade_risk_fraction > 0 AND max_trade_risk_fraction <= 0.02),
     max_position_fraction numeric NOT NULL CHECK (max_position_fraction > 0 AND max_position_fraction <= 1),
-    max_entries_per_day integer NOT NULL CHECK (max_entries_per_day = 1)  -- one live intent/day (002 unique index),
+    max_entries_per_day integer NOT NULL CHECK (max_entries_per_day = 1),  -- one live intent/day (002 unique index)
     entry_window_start time NOT NULL,
     entry_window_end time NOT NULL CHECK (entry_window_end > entry_window_start),
     updated_at timestamptz NOT NULL DEFAULT clock_timestamp());

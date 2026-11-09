@@ -332,3 +332,19 @@ def test_003_review_fixes_present():
     assert "IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'hds_paper_operator')" in sql
     assert "interval '15 minutes'" in sql and "dispatch_never_reached_broker" in sql
     assert "paper_retire_unsent_dispatch(text, boolean) TO hds_paper_reconciler;" in sql
+
+
+def test_migration_sql_has_no_code_hidden_behind_line_comments():
+    """A separator inside a -- comment silently breaks the statement."""
+    for path in sorted((ROOT / "sql" / "migrations").glob("*.sql")):
+        for n, line in enumerate(path.read_text().splitlines(), 1):
+            if "--" in line and line.strip() and not line.strip().startswith("--"):
+                comment = line.split("--", 1)[1]
+                assert not comment.rstrip().endswith((",", ";")), f"{path.name}:{n}"
+
+
+def test_maintenance_still_runs_when_reconciliation_blocks():
+    src = (ROOT / "bot" / "paper_executor_service.py").read_text()
+    body = src[src.index("reconcile_error = None"):src.index("if paused:")]
+    assert "_run_maintenance(" in body and "raise reconcile_error" in body
+    assert body.index("_run_maintenance(") < body.index("raise reconcile_error")

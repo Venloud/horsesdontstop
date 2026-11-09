@@ -406,11 +406,20 @@ def prepare_live_candidate(*, components, now=None, symbols=None, utcnow=None,
         MAX_SPREAD_BPS, inspect_live_quote, preview_live_paper_entry,
     )
     from .paper_reconciler_service import PAPER_RECONCILIATION_SERVICE_RELEASED
-    reconciled = reconcile_pending_once(
-        trading=components["reconciler_trading"], journal=reconciler,
-        record=(autonomous is True
-                and PAPER_RECONCILIATION_SERVICE_RELEASED is True),
-        expire_unapproved=True)
+    reconcile_error = None
+    try:
+        reconciled = reconcile_pending_once(
+            trading=components["reconciler_trading"], journal=reconciler,
+            record=(autonomous is True
+                    and PAPER_RECONCILIATION_SERVICE_RELEASED is True),
+            expire_unapproved=True)
+    except TradeBlocked as exc:
+        # Partial fills, unverified stops and lookup errors raise here, and
+        # those are exactly the cases that need risk reduction. Maintenance
+        # still runs; the original block is re-raised afterwards.
+        if autonomous is not True:
+            raise
+        reconcile_error, reconciled = exc, ()
     expired = [cid for cid, status in reconciled if status == "expired"]
     maintenance = None
     if autonomous is True:
@@ -419,6 +428,9 @@ def prepare_live_candidate(*, components, now=None, symbols=None, utcnow=None,
         stage("risk_reducing_maintenance")
         maintenance, positions, orders = _run_maintenance(
             trading, monitor, positions, orders, utcnow())
+        if reconcile_error is not None:
+            stage("reconcile_prior_reservations")
+            raise reconcile_error
         if paused:
             return {"mode": "PAUSED", "reason": "Kill switch engaged; no entries",
                     "maintenance": maintenance,

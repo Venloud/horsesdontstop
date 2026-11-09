@@ -269,3 +269,10 @@ def test_newest_intent_explains_a_repeat_symbol():
     assert [a.client_order_id for a in p.actions] == [old[0]]
     p2 = plan([SimpleNamespace(symbol="F", qty="1")], [], ((CID, "accepted", "F", 2),), [old])
     assert p2.actions[0].client_order_id == CID
+
+
+def test_queued_bot_exit_is_awaited_not_alerted():
+    exit_leg = order("77777777-2222-3333-4444-555555555555", status="accepted", qty=1,
+                     cid=CID + "-x", side="sell", kind="market", klass="simple")
+    p = plan([SimpleNamespace(symbol="F", qty="1")], [exit_leg])
+    assert p.actions == () and p.unexplained_symbols == ()
