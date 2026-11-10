@@ -175,6 +175,21 @@ def _plan_from_quoted_preview(preview):
     return plan
 
 
+def _preview_entry_sequence(preview):
+    """Daily entry number encoded in the preview's own client order ID."""
+    from zoneinfo import ZoneInfo
+    from .paper_safety import entry_sequence_of
+    try:
+        day = datetime.fromisoformat(preview.observed_at_utc).astimezone(
+            ZoneInfo("America/New_York")).date()
+    except (TypeError, ValueError):
+        raise TradeBlocked("Invalid quote observation timestamp") from None
+    sequence = entry_sequence_of(preview.client_order_id, day, preview.symbol)
+    if sequence is None:
+        raise TradeBlocked("Preview client order ID is not a valid daily entry ID")
+    return sequence
+
+
 def _broker_did_not_find_order(trading, client_id):
     """Return True only on a definite 404; any other result aborts.
 
@@ -359,6 +374,7 @@ def submit_paper_once_supervised(
     assert_single_attempt_transport(trading)
     if not isinstance(preview, LivePaperEntryPreview):
         raise TradeBlocked("Invalid live IEX preview")
+    _seq = _preview_entry_sequence(preview)
 
     # Refresh actual broker account/clock/exposure immediately before
     # any database reservation. No non-paper endpoint can be passed in
@@ -395,7 +411,7 @@ def submit_paper_once_supervised(
     # Compute full order anew from a fresh IEX quote, latest account
     # balances, and today's Alpaca clock; reject stale/swapped previews.
     recomputed = preview_live_paper_entry(
-        symbol=preview.symbol, quote=market_quote, equity=account.equity,
+        symbol=preview.symbol, entry_sequence=_seq, quote=market_quote, equity=account.equity,
         available_cash=account.cash,
         available_buying_power=account.buying_power,
         now=now, market_open=bool(clock.is_open))
@@ -435,7 +451,7 @@ def submit_paper_once_supervised(
         assert_watchdog_fresh()
         final_now = now + timedelta(seconds=monotonic() - started)
         final_preview = preview_live_paper_entry(
-            symbol=preview.symbol, quote=market_quote, equity=account.equity,
+            symbol=preview.symbol, entry_sequence=_seq, quote=market_quote, equity=account.equity,
             available_cash=account.cash,
             available_buying_power=account.buying_power,
             now=final_now, market_open=True)
@@ -477,7 +493,7 @@ def submit_paper_once_supervised(
         assert_watchdog_fresh()
         final_now = now + timedelta(seconds=monotonic() - started)
         final_preview = preview_live_paper_entry(
-            symbol=preview.symbol, quote=market_quote, equity=account.equity,
+            symbol=preview.symbol, entry_sequence=_seq, quote=market_quote, equity=account.equity,
             available_cash=account.cash,
             available_buying_power=account.buying_power,
             now=final_now, market_open=True)
@@ -513,7 +529,7 @@ def submit_paper_once_supervised(
             _validate_approval(approval, recomputed, final_now,
                                expected_account_sha256)
             preview_live_paper_entry(
-                symbol=preview.symbol, quote=market_quote, equity=account.equity,
+                symbol=preview.symbol, entry_sequence=_seq, quote=market_quote, equity=account.equity,
                 available_cash=account.cash,
                 available_buying_power=account.buying_power,
                 now=final_now, market_open=True)
@@ -546,7 +562,7 @@ def submit_paper_once_supervised(
             _validate_approval(approval, recomputed, send_now,
                                expected_account_sha256)
             preview_live_paper_entry(
-                symbol=preview.symbol, quote=market_quote, equity=final_account.equity,
+                symbol=preview.symbol, entry_sequence=_seq, quote=market_quote, equity=final_account.equity,
                 available_cash=final_account.cash,
                 available_buying_power=final_account.buying_power,
                 now=send_now, market_open=True)

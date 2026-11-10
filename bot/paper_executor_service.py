@@ -393,6 +393,15 @@ def _record_equity_peak_sample(executor, account, now):
         return False
 
 
+def _entry_seq(plan):
+    from .paper_safety import entry_sequence_of
+    seq = entry_sequence_of(plan.client_order_id, date.fromisoformat(plan.trading_day),
+                            plan.symbol, plan.strategy)
+    if seq is None:
+        raise TradeBlocked("Prepared order has an invalid daily entry ID")
+    return seq
+
+
 def _managed_position_report(monitor, positions, orders, unresolved, *,
                              trading=None, now=None):
     """Holding: prove the exposure is journaled and stop-protected, or block."""
@@ -537,8 +546,11 @@ def prepare_live_candidate(*, components, now=None, symbols=None, utcnow=None,
         return report
     if unresolved or positions or orders:
         raise TradeBlocked("Earlier PAPER orders or existing exposure require reconciliation")
-    if autonomous is True and monitor.count_entries_today() >= 1:
-        return {"mode": "NO_TRADE", "reason": "Daily PAPER entry already used",
+    entries_today = 0
+    if autonomous is True:
+        entries_today = monitor.count_entries_today()
+    if autonomous is True and entries_today >= monitor.read_max_entries_per_day():
+        return {"mode": "NO_TRADE", "reason": "Daily PAPER entry limit reached",
                 "expired_client_order_ids": expired,
                 "broker_orders": 0, "database_writes": len(expired)}
     if pending_blockers(reconciled):
@@ -625,7 +637,8 @@ def prepare_live_candidate(*, components, now=None, symbols=None, utcnow=None,
         now = utcnow()
         try:
             preview = preview_live_paper_entry(
-                symbol=symbol, quote=quote, equity=account.equity,
+                symbol=symbol, entry_sequence=entries_today + 1,
+                quote=quote, equity=account.equity,
                 available_cash=account.cash,
                 available_buying_power=account.buying_power,
                 now=now, market_open=clock.is_open)
@@ -820,7 +833,8 @@ def dispatch_approved_artifact(*, components, artifact, now=None, utcnow=None):
         raise TradeBlocked("Fresh approved-symbol IEX quote unavailable")
     from .live_quotes import preview_live_paper_entry
     live_preview = preview_live_paper_entry(
-        symbol=plan.symbol, quote=quote, equity=account.equity,
+        symbol=plan.symbol, entry_sequence=_entry_seq(plan), quote=quote,
+        equity=account.equity,
         available_cash=account.cash,
         available_buying_power=account.buying_power,
         now=utcnow(), market_open=True)
@@ -830,7 +844,8 @@ def dispatch_approved_artifact(*, components, artifact, now=None, utcnow=None):
         raise TradeBlocked("Fresh SDK order does not match recorded owner-approved request")
     now = utcnow()
     live_preview = preview_live_paper_entry(
-        symbol=plan.symbol, quote=quote, equity=account.equity,
+        symbol=plan.symbol, entry_sequence=_entry_seq(plan), quote=quote,
+        equity=account.equity,
         available_cash=account.cash,
         available_buying_power=account.buying_power,
         now=now, market_open=True)

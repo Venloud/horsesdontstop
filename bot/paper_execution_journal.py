@@ -161,13 +161,14 @@ class PaperExecutorJournal(PostgresPaperJournal):
     def validate_protected_intent(plan: PaperOrderPlan):
         if not isinstance(plan, PaperOrderPlan):
             raise TradeBlocked("Invalid paper intent plan")
+        from .paper_safety import entry_sequence_of
         try:
-            key = make_client_order_id(
-                date.fromisoformat(plan.trading_day),
+            sequence = entry_sequence_of(
+                plan.client_order_id, date.fromisoformat(plan.trading_day),
                 plan.symbol, plan.strategy)
         except (ValueError, TypeError) as exc:
             raise TradeBlocked("Invalid session identifier") from exc
-        if key != plan.client_order_id:
+        if sequence is None:
             raise TradeBlocked("Unexpected client order ID")
         if (plan.order_class != "oto"
                 or plan.time_in_force not in {"day", "gtc"}

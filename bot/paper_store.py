@@ -227,6 +227,17 @@ class PostgresPaperJournal:
             raise TradeBlocked("Daily PAPER entry count unavailable")
         return row[0]
 
+    def read_max_entries_per_day(self) -> int:
+        """Active Neon policy cap (read only). The DB enforces it independently."""
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT max_entries_per_day FROM paper_trading_policy "
+                            "WHERE singleton")
+                row = cur.fetchone()
+        if not row or type(row[0]) is not int or not 1 <= row[0] <= 3:
+            raise TradeBlocked("PAPER policy entry cap unavailable")
+        return row[0]
+
     def read_equity_references(self, day_start_utc, as_of_utc):
         """Read only. Require an equity sample very near the NYSE opening.
 

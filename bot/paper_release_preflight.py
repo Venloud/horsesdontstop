@@ -83,9 +83,11 @@ def main(argv=None):
         gate("neon: controls PAUSED (kill ON)", (kill, enabled) == (True, False),
              f"kill={kill} submissions={enabled}")
     gate("neon: policy entries", policy[0] is supervised, f"enabled={policy[0]}")
-    gate("neon: policy risk 1% and 1 entry/day", (float(policy[1]), policy[2]) == (0.01, 1))
+    gate("neon: policy risk 1%, entries/day 1-3", float(policy[1]) == 0.01 and 1 <= policy[2] <= 3,
+         f"entries/day={policy[2]}")
     gate("neon: no open intents", open_intents == 0, f"open={open_intents}")
-    gate("neon: today's entry unused", today == 0, f"used={today}", required=supervised)
+    gate("neon: today's entries below cap", today < policy[2], f"used={today}/{policy[2]}",
+         required=supervised)
     gate("neon: today's opening equity recorded", opening is not None, f"equity={opening}",
          required=supervised)
     gate("neon: operator login provisioned", login is True, f"exists={login}", required=supervised)
