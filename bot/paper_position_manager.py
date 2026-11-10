@@ -59,6 +59,10 @@ def plan_maintenance(*, positions, orders, unresolved, approved_stops, now) -> M
     journal_cids = {row[0]: row[2] for row in unresolved}
     journal_cids.update({row[0]: row[2] for row in approved_stops or ()})
     symbols_by_cid = dict(journal_cids)
+    # Recency order: unresolved intents are newer than any approved one;
+    # approved rows arrive newest first (created_at DESC).
+    recency = [row[0] for row in reversed(list(unresolved))] + \
+              [row[0] for row in approved_stops or ()]
     nested = order_legs(orders)
     parents = [o for o in nested
                if value(getattr(o, "side", None)) == "buy"
@@ -102,12 +106,11 @@ def plan_maintenance(*, positions, orders, unresolved, approved_stops, now) -> M
         symbol = getattr(position, "symbol", None)
         if symbol not in rec.uncovered_symbols:
             continue
-        cids = sorted(cid_by_symbol.get(symbol, []))
+        cids = [c for c in recency if c in cid_by_symbol.get(symbol, [])]
         if not cids:
             unexplained.append(symbol)
             continue
-        # Client IDs embed the trading day (hds-YYYYMMDD-...): newest wins.
-        cids = cids[-1:]
+        cids = cids[:1]   # newest intent for this symbol
         if symbol in pending_exit_symbols:
             # Our own flatten is already queued (e.g. after hours): wait for it.
             notes.append(f"{symbol}: bot exit order pending")

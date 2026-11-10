@@ -65,20 +65,23 @@ def bot_positions(*, positions, orders, approved_stops):
             by_cid.setdefault(symbol, []).append((cid, money(stop), str(parent_id)))
     for position in positions:
         symbol = getattr(position, "symbol", None)
-        candidates = sorted(by_cid.get(symbol, []))
-        if not candidates:
+        live = []
+        for cid, stop, parent_id in by_cid.get(symbol, []):
+            parent = next((o for o in nested if str(getattr(o, "id", "")) == parent_id), None)
+            if parent is None:
+                continue
+            legs = [l for l in (getattr(parent, "legs", None) or [])
+                    if value(getattr(l, "side", None)) == "sell"
+                    and value(getattr(l, "type", None)) == "stop"
+                    and value(getattr(l, "status", None)) in PROTECTIVE_ACTIVE]
+            if len(legs) == 1:
+                live.append((cid, stop, parent, legs[0]))
+        # Same-symbol history (closed earlier trades) is ignored; exactly one
+        # intent must hold the live stop for this position.
+        if len(live) != 1:
             continue
-        cid, stop, parent_id = candidates[-1]   # cid embeds the date: newest
-        parent = next((o for o in nested if str(getattr(o, "id", "")) == parent_id), None)
-        if parent is None:
-            continue
-        legs = [l for l in (getattr(parent, "legs", None) or [])
-                if value(getattr(l, "side", None)) == "sell"
-                and value(getattr(l, "type", None)) == "stop"
-                and value(getattr(l, "status", None)) in PROTECTIVE_ACTIVE]
-        if len(legs) != 1:
-            continue
-        yield position, cid, stop, parent, legs[0]
+        cid, stop, parent, leg = live[0]
+        yield position, cid, stop, parent, leg
 
 
 def plan_exits(*, positions, orders, approved_stops, now, market, operator_close=False):

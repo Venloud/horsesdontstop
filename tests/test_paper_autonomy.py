@@ -385,3 +385,22 @@ def test_equity_peak_sample_skips_opening_window_and_never_raises():
     assert _record_equity_peak_sample(ok, acct, NOW) is True and calls == [(500.14, 500.14)]
     def boom(e, c): raise RuntimeError("db down")
     assert _record_equity_peak_sample(SimpleNamespace(record_equity=boom), acct, NOW) is False
+
+
+def test_supervisor_stop_proof_ignores_an_earlier_closed_same_symbol_trade():
+    from bot.paper_post_fill_confirmation import confirm_nested_filled_stops
+    def parent_tree(pid, cid, stop_status):
+        leg = order(pid + "-leg", side="sell", kind="stop", status=stop_status,
+                    parent=pid, stop_price=24)
+        return order(pid, status="filled", filled=2, cid=cid, legs=(leg,), klass="oto")
+    trees = {"hds-old": parent_tree("p-old", "hds-old", "canceled"),
+             "hds-new": parent_tree("p-new", "hds-new", "new")}
+    class Broker:
+        def get_order_by_client_id(self, cid): return trees[cid]
+        def get_order_by_id(self, oid, filter): return next(t for t in trees.values() if t.id == oid)
+    pos = [SimpleNamespace(symbol="F", qty="2")]
+    approvals = [("hds-new", "filled", "F", 2, 24, "p-new", "gtc"),
+                 ("hds-old", "filled", "F", 2, 24, "p-old", "gtc")]
+    assert confirm_nested_filled_stops(Broker(), pos, approvals) == ()
+    trees["hds-new"] = parent_tree("p-new", "hds-new", "canceled")
+    assert confirm_nested_filled_stops(Broker(), pos, approvals) == ("F",)

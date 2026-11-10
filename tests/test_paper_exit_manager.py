@@ -172,3 +172,15 @@ def test_existing_exit_order_is_never_duplicated():
     b.exit = SimpleNamespace(status="filled")
     assert run(b)["result"] == "exit_already_exists"
     assert not any(c[0] in ("cancel", "submit") for c in b.calls)
+
+
+def test_earlier_closed_same_symbol_trade_does_not_hide_the_live_one():
+    old_cid = "hds-20261110-WMT-zzzzzzzzzzzz"   # sorts after CID; closed trade
+    old_leg = SimpleNamespace(**{**leg("canceled").__dict__, "id": "old-leg"})
+    old_parent = SimpleNamespace(**{**parent().__dict__, "id": "old-parent",
+                                    "client_order_id": old_cid, "legs": [old_leg]})
+    approved = [(CID, "filled", "WMT", 1, Decimal("121.67"), PID, "gtc"),
+                (old_cid, "filled", "WMT", 1, Decimal("121.00"), "old-parent", "gtc")]
+    acts = plan_exits(positions=POS, orders=[parent(), old_parent], approved_stops=approved,
+                      now=NOW, market={}, operator_close=True)
+    assert [a.client_order_id for a in acts] == [CID]
