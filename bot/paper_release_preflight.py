@@ -106,6 +106,25 @@ def main(argv=None):
     orders = broker.get_orders(filter=GetOrdersRequest(status=QueryOrderStatus.OPEN, nested=True, limit=500))
     gate("alpaca: flat (no positions/orders)", not positions and not orders,
          f"positions={len(positions)} orders={len(orders)}")
+    # Same lifetime accounting proof the executor requires before any entry.
+    from .paper_accounting import fetch_account_history, reconcile_cash_lifetime
+    try:
+        acct, activities, history, complete = fetch_account_history(broker)
+        ledger = reconcile_cash_lifetime(
+            account=acct, activities=activities, history=history,
+            positions=positions, orders=orders,
+            expected_account_hash=hashlib.sha256(str(acct.id).encode()).hexdigest(),
+            observed_at=datetime.now(timezone.utc), activities_complete=complete)
+        fills = [a for a in activities if a.get("activity_type") == "FILL"]
+        gate("ledger: lifetime accounting reconciles", True,
+             f"funding={ledger['net_external_funding']} realized={ledger['realized_pnl']} "
+             f"equity={ledger['equity']} fills={len(fills)} "
+             f"drawdown={ledger['historical_trading_drawdown_pct']}%")
+        for a in fills:
+            gate("ledger: fill", True, f"{str(a.get('transaction_time', ''))[:19]} {a.get('side')} "
+                 f"{a.get('qty')} {a.get('symbol')} @ {a.get('price')}", required=False)
+    except Exception as exc:
+        gate("ledger: lifetime accounting reconciles", False, str(exc)[:80])
     clock = broker.get_clock()
     gate("alpaca: market open", clock.is_open is True, f"is_open={clock.is_open}", required=supervised)
     gate("alpaca: equity", True, f"equity={account.equity} buying_power={account.buying_power}",

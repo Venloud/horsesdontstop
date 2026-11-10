@@ -99,3 +99,23 @@ def test_pre_trade_days_stay_exact():
 def test_malformed_fill_is_refused():
     with pytest.raises(TradeBlocked, match="fill unverified"):
         run([FUND, dict(BUY, qty="0"), SELL])
+
+
+@pytest.mark.parametrize("change,match", [
+    (lambda kw: kw.update(activities_complete=False), "completeness"),
+    (lambda kw: kw.update(activities=[]), "evidence missing"),
+    (lambda kw: kw.update(history={}), "history incomplete"),
+    (lambda kw: kw.update(history={**history(), "cashflow": {"JNLC": [0, 0, 0]}}), "cashflow disagree"),
+    (lambda kw: kw.update(activities=[FUND, BUY, dict(SELL, transaction_time="2026-11-10T16:00:00Z")]), "chronology"),
+    (lambda kw: kw.update(activities=[FUND, SELL, BUY]), "short"),
+    (lambda kw: kw.update(activities=[FUND, BUY, dict(BUY)]), "unverified"),
+    (lambda kw: kw.update(expected_account_hash="0" * 64), "identity"),
+    (lambda kw: kw.update(positions=[object()]), "exposure"),
+])
+def test_missing_or_incomplete_evidence_still_blocks(change, match):
+    kw = dict(account=account(), activities=[FUND, BUY, SELL], history=history(),
+              positions=[], orders=[], expected_account_hash=HASH,
+              observed_at=NOW, activities_complete=True)
+    change(kw)
+    with pytest.raises(TradeBlocked, match=match):
+        reconcile_cash_lifetime(**kw)
