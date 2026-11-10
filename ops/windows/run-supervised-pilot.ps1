@@ -115,6 +115,7 @@ try {
             Notify 'order submitted' "BUY $($l.shares) $($l.symbol) limit $($l.buy_limit_usd) stop $($l.stop_usd) risk $($l.estimated_stop_risk_usd)" 'high'
             break
         }
+        if ($run.mode -eq 'PAUSED') { throw 'Trading is PAUSED: run set-paper-trading.ps1 -Arm before the pilot.' }
         if ($run.mode -eq 'BLOCKED') { throw "Executor blocked at $($run.receipt_stage): $($run.receipt_reason)" }
         if ((Get-Date).ToString('HH:mm') -ge $LatestEntryTime) { Step 'entry' 'no qualifying candidate before cutoff'; break }
         Start-Sleep -Seconds 900

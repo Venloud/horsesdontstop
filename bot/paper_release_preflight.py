@@ -76,8 +76,12 @@ def main(argv=None):
             "AND (observed_at AT TIME ZONE 'America/New_York')::time < '09:35'").fetchone()[0]
         login = c.execute("SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='hds_paper_operator_login' "
                           "AND rolcanlogin AND pg_has_role(oid,'hds_paper_operator','MEMBER'))").fetchone()[0]
-    gate("neon: controls PAUSED (kill ON)", (kill, enabled) == (True, False),
-         f"kill={kill} submissions={enabled}", required=not supervised)
+    if supervised:
+        gate("neon: controls ARMED (operator)", (kill, enabled) == (False, True),
+             f"kill={kill} submissions={enabled}")
+    else:
+        gate("neon: controls PAUSED (kill ON)", (kill, enabled) == (True, False),
+             f"kill={kill} submissions={enabled}")
     gate("neon: policy entries", policy[0] is supervised, f"enabled={policy[0]}")
     gate("neon: policy risk 1% and 1 entry/day", (float(policy[1]), policy[2]) == (0.01, 1))
     gate("neon: no open intents", open_intents == 0, f"open={open_intents}")
