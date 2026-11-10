@@ -1,7 +1,7 @@
 [
   {
     "strategy": "momentum_daily_eod",
-    "selection": "highest 2024 train daily Sharpe; no OOS tuning",
+    "selection": "2024 training daily Sharpe only; four configurations tested per strategy",
     "config": {
       "strategy": "momentum_daily_eod",
       "opening_minutes": 20,
@@ -34,7 +34,7 @@
       "win_rate": 0.4625,
       "profit_factor": 1.035175729317728,
       "expectancy": 0.024713963385249654,
-      "max_drawdown": 0.045740782695704585,
+      "max_drawdown": 0.04043522909505404,
       "sharpe_daily": 0.12932021124970364,
       "days": 249,
       "unaffordable_or_liquidity_skips": 67,
@@ -54,11 +54,23 @@
       "unaffordable_or_liquidity_skips": 71,
       "drawdown_halt": false,
       "split": "test"
+    },
+    "test_quarter_pnl": {
+      "2025Q1": -4.795935492406511,
+      "2025Q2": -3.016722436773236,
+      "2025Q3": 5.207794999999866,
+      "2025Q4": 4.581979999999859
+    },
+    "test_symbol_pnl": {
+      "WMT": -0.9814275000001806,
+      "F": 9.37163959706104,
+      "KO": -4.753975000000184,
+      "AMD": -1.6591200262407
     }
   },
   {
     "strategy": "momentum_intraday",
-    "selection": "highest 2024 train daily Sharpe; no OOS tuning",
+    "selection": "2024 training daily Sharpe only; four configurations tested per strategy",
     "config": {
       "strategy": "momentum_intraday",
       "opening_minutes": 20,
@@ -111,11 +123,22 @@
       "unaffordable_or_liquidity_skips": 1,
       "drawdown_halt": true,
       "split": "test"
+    },
+    "test_quarter_pnl": {
+      "2025Q1": -14.118988837536577,
+      "2025Q2": -49.779913133984685
+    },
+    "test_symbol_pnl": {
+      "AMD": -11.275897331181334,
+      "F": -16.242466831132745,
+      "WMT": -5.296973793000265,
+      "KO": 3.742049529912075,
+      "AAPL": -34.82561354611899
     }
   },
   {
     "strategy": "orb_plain",
-    "selection": "highest 2024 train daily Sharpe; no OOS tuning",
+    "selection": "2024 training daily Sharpe only; four configurations tested per strategy",
     "config": {
       "strategy": "orb_plain",
       "opening_minutes": 20,
@@ -168,11 +191,23 @@
       "unaffordable_or_liquidity_skips": 54,
       "drawdown_halt": true,
       "split": "test"
+    },
+    "test_quarter_pnl": {
+      "2025Q1": -8.82002450000025,
+      "2025Q2": -21.14343629024283,
+      "2025Q3": -0.22221250000027615,
+      "2025Q4": 4.024214999999549
+    },
+    "test_symbol_pnl": {
+      "AMD": -10.684888867959476,
+      "F": -3.614007657802281,
+      "KO": -13.301565000000481,
+      "WMT": 1.4390032355184434
     }
   },
   {
     "strategy": "orb_vwap_volume",
-    "selection": "highest 2024 train daily Sharpe; no OOS tuning",
+    "selection": "2024 training daily Sharpe only; four configurations tested per strategy",
     "config": {
       "strategy": "orb_vwap_volume",
       "opening_minutes": 20,
@@ -225,11 +260,23 @@
       "unaffordable_or_liquidity_skips": 2,
       "drawdown_halt": true,
       "split": "test"
+    },
+    "test_quarter_pnl": {
+      "2025Q1": -3.1810604565539524,
+      "2025Q2": -49.13255770369005,
+      "2025Q3": -6.554216017750025
+    },
+    "test_symbol_pnl": {
+      "AMD": -11.999060744578323,
+      "AAPL": -8.915557353319034,
+      "F": -31.3031672743213,
+      "KO": 9.55354099626223,
+      "WMT": -16.203589802037587
     }
   },
   {
     "strategy": "vwap_reclaim",
-    "selection": "highest 2024 train daily Sharpe; no OOS tuning",
+    "selection": "2024 training daily Sharpe only; four configurations tested per strategy",
     "config": {
       "strategy": "vwap_reclaim",
       "opening_minutes": 20,
@@ -282,6 +329,18 @@
       "unaffordable_or_liquidity_skips": 33,
       "drawdown_halt": true,
       "split": "test"
+    },
+    "test_quarter_pnl": {
+      "2025Q1": -12.46532056115033,
+      "2025Q2": -24.690763791431458,
+      "2025Q3": -7.448745000000236,
+      "2025Q4": 4.825379999999631
+    },
+    "test_symbol_pnl": {
+      "F": -8.941709250000324,
+      "AMD": -17.44427857662511,
+      "KO": -16.709460000000433,
+      "WMT": 3.3159984740434787
     }
   }
 ]
