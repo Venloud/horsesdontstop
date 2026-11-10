@@ -64,7 +64,9 @@ def main():
             "id", "status", "side", "type", "time_in_force", "qty", "filled_qty", "stop_price")}
             for l in (getattr(parent, "legs", None) or [])]
     positions = broker.get_all_positions()
-    orders = broker.get_orders(filter=GetOrdersRequest(status=QueryOrderStatus.OPEN, nested=True, limit=500))
+    from .paper_reconcile import orders_with_recent_parents
+    open_orders = broker.get_orders(filter=GetOrdersRequest(status=QueryOrderStatus.OPEN, nested=True, limit=500))
+    orders, _ = orders_with_recent_parents(broker, open_orders, now=datetime.now(timezone.utc))
     out["positions"] = [{"symbol": p.symbol, "qty": str(p.qty),
                          "unrealized_pl": str(getattr(p, "unrealized_pl", ""))} for p in positions]
     rec = reconcile_observation(positions, orders, monitor.read_unresolved_intents(limit=501),

@@ -53,6 +53,10 @@ MANAGED_EXPOSURE_BLOCKERS = frozenset({
     "unresolved_order_intent_requires_broker_lookup",
     "broker_orders_not_reconciled",
     "stale_or_unmaintained_equity_peak",
+    # Reconciliation facts (not failures) merged into safety blockers by the
+    # watchdog while a verified, protected position is open.
+    "open_broker_positions",
+    "open_broker_orders",
 })
 NO_TRADE_MODE = "ALPACA_PAPER_READ_ONLY_PREFLIGHT"
 

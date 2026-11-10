@@ -349,3 +349,27 @@ def test_maintenance_still_runs_when_reconciliation_blocks():
     body = src[src.index("reconcile_error = None"):src.index("if paused:")]
     assert "_run_maintenance(" in body and "raise reconcile_error" in body
     assert body.index("_run_maintenance(") < body.index("raise reconcile_error")
+
+
+def test_filled_parent_only_in_closed_list_still_proves_protection():
+    """Live 2026-11-10 shape: OPEN returns only the stop leg; parent is CLOSED."""
+    stop = order("stop-leg", side="sell", kind="stop", status="new",
+                 parent="parent-1", stop_price=24)
+    parent = order("parent-1", status="filled", filled=2, cid="hds-c",
+                   legs=(stop,), klass="oto")
+    approved = [("hds-c", "filled", "F", 2, 24, "parent-1", "gtc")]
+    pos = [SimpleNamespace(symbol="F", qty="2")]
+    open_only = reconcile_observation(pos, [stop], [], order_fetch_complete=True,
+                                      approved_stops=approved)
+    assert open_only.managed_exposure is False          # what the pilot saw
+    with_parent = reconcile_observation(pos, [stop, parent], [], order_fetch_complete=True,
+                                        approved_stops=approved)
+    assert with_parent.managed_exposure is True and with_parent.uncovered_symbols == ()
+
+
+def test_watchdog_merged_reconciliation_facts_do_not_degrade_managed_exposure():
+    a = assess_read_only_report(report(
+        protected_position(), kill=True, enabled=False,
+        blockers=("existing_position_or_open_order", "broker_orders_not_reconciled",
+                  "open_broker_positions", "open_broker_orders")), now=NOW)
+    assert (a.level, a.code) == ("idle", "managed_exposure")

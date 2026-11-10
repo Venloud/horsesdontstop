@@ -297,8 +297,10 @@ def _run_maintenance(trading, monitor, positions, orders, now):
     for _ in range(2):
         if not positions and not orders:
             break
+        from .paper_reconcile import orders_with_recent_parents
+        with_parents, _ = orders_with_recent_parents(trading, orders, now=now)
         plan = plan_maintenance(
-            positions=positions, orders=orders,
+            positions=positions, orders=with_parents,
             unresolved=monitor.read_unresolved_intents(limit=501),
             approved_stops=monitor.read_approved_stop_intents(limit=501), now=now)
         unexplained.update(plan.unexplained_symbols)
@@ -323,11 +325,16 @@ def _run_maintenance(trading, monitor, positions, orders, now):
              "released": released, "broker_writes": writes}, positions, orders)
 
 
-def _managed_position_report(monitor, positions, orders, unresolved):
+def _managed_position_report(monitor, positions, orders, unresolved, *,
+                             trading=None, now=None):
     """Holding: prove the exposure is journaled and stop-protected, or block."""
-    from .paper_reconcile import reconcile_observation
+    from .paper_reconcile import orders_with_recent_parents, reconcile_observation
+    complete = len(orders) < 500
+    if trading is not None:
+        orders, complete = orders_with_recent_parents(
+            trading, orders, now=now or datetime.now(timezone.utc))
     rec = reconcile_observation(
-        positions, orders, unresolved, order_fetch_complete=len(orders) < 500,
+        positions, orders, unresolved, order_fetch_complete=complete,
         approved_stops=monitor.read_approved_stop_intents(limit=501))
     if rec.managed_exposure is not True or rec.uncovered_symbols:
         raise TradeBlocked("Open PAPER exposure is not verified as stop-protected")
@@ -453,7 +460,8 @@ def prepare_live_candidate(*, components, now=None, symbols=None, utcnow=None,
                 "expired_client_order_ids": expired,
                 "broker_orders": 0, "database_writes": len(expired)}
     if autonomous is True and (positions or orders):
-        report = _managed_position_report(monitor, positions, orders, unresolved)
+        report = _managed_position_report(monitor, positions, orders, unresolved,
+                                          trading=trading, now=utcnow())
         report["maintenance"] = maintenance
         return report
     if unresolved or positions or orders:

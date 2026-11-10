@@ -108,6 +108,23 @@ def nested_parent_ids(orders: Iterable, max_depth: int = 4):
     return parents
 
 
+def orders_with_recent_parents(trading, open_orders, *, now, days=30):
+    """Open orders plus recently closed nested orders.
+
+    After an OTO entry fills, Alpaca's OPEN list returns only the live stop
+    leg; its filled parent appears only among CLOSED orders. Coverage needs
+    the parent's nesting, exactly as the watchdog already reads it.
+    Returns (orders, complete).
+    """
+    from datetime import timedelta
+    from alpaca.trading.enums import QueryOrderStatus
+    from alpaca.trading.requests import GetOrdersRequest
+    closed = trading.get_orders(filter=GetOrdersRequest(
+        status=QueryOrderStatus.CLOSED, limit=500, nested=True,
+        after=now - timedelta(days=days)))
+    return [*open_orders, *closed], len(open_orders) < 500 and len(closed) < 500
+
+
 @dataclass(frozen=True)
 class Reconciliation:
     consistent: bool
