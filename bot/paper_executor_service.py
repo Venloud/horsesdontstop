@@ -286,7 +286,50 @@ def _live_components(*, stage_observer=None):
     }
 
 
-def _run_maintenance(trading, monitor, positions, orders, now):
+def _run_exits(trading, market_data, monitor, positions, orders, now, *, released):
+    """Trailing-stop and time-limit exits for bot positions (one per run)."""
+    from .paper_exit_manager import bot_positions, execute_exit, market_snapshot, plan_exits
+    from .paper_reconcile import orders_with_recent_parents, value
+    if not positions:
+        return []
+    with_parents, _ = orders_with_recent_parents(trading, orders, now=now)
+    approved = monitor.read_approved_stop_intents(limit=501)
+    market = {}
+    for position, cid, stop, parent, leg in bot_positions(
+            positions=positions, orders=with_parents, approved_stops=approved):
+        filled_at = getattr(parent, "filled_at", None)
+        if filled_at is None or market_data is None:
+            continue
+        market[position.symbol] = market_snapshot(
+            market_data=market_data, trading=trading, symbol=position.symbol,
+            filled_at=filled_at, now=now)
+    actions = plan_exits(positions=positions, orders=with_parents,
+                         approved_stops=approved, now=now, market=market)
+    results = []
+    for action in actions[:1]:
+        result = execute_exit(trading, action, released=released)
+        results.append(result)
+        _record_exit(result)
+        if result.get("result") in ("exit_filled", "exit_submitted"):
+            _notify("position closed",
+                    f"{action.reason}: SELL {result['shares']} {action.symbol} "
+                    f"fill {result.get('fill_price')} ({action.detail})", "high")
+    return results
+
+
+def _record_exit(result):
+    """Append-only local exit log (the executor role has no audit INSERT)."""
+    try:
+        folder = Path(os.environ.get("LOCALAPPDATA", ".")) / "horsesdontstop"
+        folder.mkdir(parents=True, exist_ok=True)
+        with open(folder / "exits.jsonl", "a", encoding="utf-8") as f:
+            f.write(json.dumps({"at": datetime.now(timezone.utc).isoformat(), **result},
+                               default=str) + "\n")
+    except Exception:
+        pass
+
+
+def _run_maintenance(trading, monitor, positions, orders, now, market_data=None):
     """Plan/apply risk-reducing actions; re-plan once after a cancel."""
     from alpaca.trading.enums import QueryOrderStatus
     from alpaca.trading.requests import GetOrdersRequest
@@ -320,7 +363,14 @@ def _run_maintenance(trading, monitor, positions, orders, now):
     if unexplained:
         _notify("unexplained position",
                 "Not touched: " + ",".join(sorted(unexplained)), "urgent")
-    return ({"results": [list(r) for r in results],
+    exits = _run_exits(trading, market_data, monitor, positions, orders, now,
+                       released=released)
+    if any(e.get("result") in ("exit_filled", "exit_submitted") for e in exits):
+        writes += 2   # stop-leg cancel + exit SELL
+        positions = trading.get_all_positions()
+        orders = trading.get_orders(filter=GetOrdersRequest(
+            status=QueryOrderStatus.OPEN, nested=True, limit=500))
+    return ({"results": [list(r) for r in results], "exits": exits,
              "unexplained_symbols": sorted(unexplained),
              "released": released, "broker_writes": writes}, positions, orders)
 
@@ -434,7 +484,8 @@ def prepare_live_candidate(*, components, now=None, symbols=None, utcnow=None,
         # journal state; risk-reducing, so it also runs while paused.
         stage("risk_reducing_maintenance")
         maintenance, positions, orders = _run_maintenance(
-            trading, monitor, positions, orders, utcnow())
+            trading, monitor, positions, orders, utcnow(),
+            market_data=components.get("market_data"))
         if reconcile_error is not None:
             stage("reconcile_prior_reservations")
             raise reconcile_error

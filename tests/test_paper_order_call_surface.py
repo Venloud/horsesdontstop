@@ -63,6 +63,9 @@ def test_only_existing_disabled_gateway_can_invoke_broker_write():
     # Reviewed 2026-11-09: the risk-reducing maintenance module may cancel ONE
     # stale entry by UUID and submit ONE flatten SELL; both release-gated.
     assert sorted(calls) == [
+        ("bot/paper_exit_manager.py", "cancel_order_by_id"),
+        ("bot/paper_exit_manager.py", "submit_order"),
+        ("bot/paper_exit_manager.py", "submit_order"),
         ("bot/paper_position_manager.py", "cancel_order_by_id"),
         ("bot/paper_position_manager.py", "submit_order"),
         ("bot/paper_supervised_execution.py", "submit_order"),
