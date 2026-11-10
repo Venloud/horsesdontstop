@@ -373,3 +373,15 @@ def test_watchdog_merged_reconciliation_facts_do_not_degrade_managed_exposure():
         blockers=("existing_position_or_open_order", "broker_orders_not_reconciled",
                   "open_broker_positions", "open_broker_orders")), now=NOW)
     assert (a.level, a.code) == ("idle", "managed_exposure")
+
+
+def test_equity_peak_sample_skips_opening_window_and_never_raises():
+    from bot.paper_executor_service import _record_equity_peak_sample
+    calls = []
+    ok = SimpleNamespace(record_equity=lambda e, c: calls.append((e, c)))
+    acct = SimpleNamespace(equity="500.14", cash="500.14")
+    opening = datetime(2026, 11, 10, 14, 32, tzinfo=timezone.utc)     # 09:32 NY
+    assert _record_equity_peak_sample(ok, acct, opening) is False and calls == []
+    assert _record_equity_peak_sample(ok, acct, NOW) is True and calls == [(500.14, 500.14)]
+    def boom(e, c): raise RuntimeError("db down")
+    assert _record_equity_peak_sample(SimpleNamespace(record_equity=boom), acct, NOW) is False

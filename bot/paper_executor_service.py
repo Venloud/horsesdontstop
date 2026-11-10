@@ -375,6 +375,24 @@ def _run_maintenance(trading, monitor, positions, orders, now, market_data=None)
              "released": released, "broker_writes": writes}, positions, orders)
 
 
+def _record_equity_peak_sample(executor, account, now):
+    """Keep the durable equity peak current (best effort, never blocks).
+
+    Without intraday samples, equity above the last 09:30 snapshot reads as an
+    unmaintained peak after every profitable exit. The 09:30-09:35 window is
+    left to the opening collector; Neon's policy uses that window's MIN, so a
+    sample there could only shrink limits anyway.
+    """
+    local = now.astimezone(NY)
+    if local.hour == 9 and 30 <= local.minute < 35:
+        return False
+    try:
+        executor.record_equity(float(money(account.equity)), float(money(account.cash)))
+        return True
+    except Exception:
+        return False
+
+
 def _managed_position_report(monitor, positions, orders, unresolved, *,
                              trading=None, now=None):
     """Holding: prove the exposure is journaled and stop-protected, or block."""
@@ -449,6 +467,8 @@ def prepare_live_candidate(*, components, now=None, symbols=None, utcnow=None,
     expected_hash = components["expected_account_hash"]
     if _account_hash(account) != expected_hash:
         raise TradeBlocked("Authenticated PAPER account does not match pinned identity")
+    if autonomous is True:
+        _record_equity_peak_sample(executor, account, now)
     stage("read_positions_orders_and_journal")
     clock = trading.get_clock()
     positions = trading.get_all_positions()
