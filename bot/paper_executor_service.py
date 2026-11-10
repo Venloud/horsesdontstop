@@ -36,8 +36,10 @@ def build_safety_state(*, account, clock, positions, orders, control,
     if not isinstance(lifetime_evidence, dict):
         raise TradeBlocked("Authenticated lifetime accounting proof missing")
     history_complete = (
-        lifetime_evidence.get("history_scope") ==
-        "authenticated cash-only account lifetime"
+        lifetime_evidence.get("history_scope") in (
+            "authenticated cash-only account lifetime",
+            "authenticated account lifetime with trading ledger")
+        and lifetime_evidence.get("trading_drawdown_limit_breached") is not True
         and lifetime_evidence.get("equity_history_explained") is True
         and lifetime_evidence.get("cashflows_reconciled") is True
         and lifetime_evidence.get("can_submit_orders") is False

@@ -73,17 +73,45 @@ def reconcile_cash_lifetime(*, account, activities, history, positions, orders,
         raise TradeBlocked("Accounting historical evidence missing")
     ids, flows, last_time = set(), [], created
     journal_count = 0
+    shares = {}                        # symbol -> held shares (never negative)
+    trade_cash = Decimal("0")          # cash from fills (sell +, buy -)
+    first_fill_at = None
+    realized_path = []                 # (time, realized equity) at each flat point
     for item in activities:
-        if (not isinstance(item, dict) or not isinstance(item.get("id"), str)
-                or not item["id"] or item["id"] in ids
-                or item.get("status") != "executed" or item.get("currency") != "USD"):
+        if not isinstance(item, dict) or not isinstance(item.get("id"), str) \
+                or not item["id"] or item["id"] in ids:
             raise TradeBlocked("Accounting activity unverified")
         ids.add(item["id"])
-        at = timestamp(item.get("created_at"))
+        kind = item.get("activity_type")
+        if kind == "FILL":
+            # Trade activity: Alpaca FILL rows carry transaction_time, side,
+            # qty and price (no status/currency/net_amount fields).
+            at = timestamp(item.get("transaction_time"))
+            if not created <= at <= now or at < last_time:
+                raise TradeBlocked("Accounting activity chronology unverified")
+            last_time = at
+            side, symbol = item.get("side"), item.get("symbol")
+            qty, price = money(item.get("qty")), money(item.get("price"))
+            if (item.get("type") not in ("fill", "partial_fill") or side not in ("buy", "sell")
+                    or not isinstance(symbol, str) or not symbol or qty <= 0 or price <= 0):
+                raise TradeBlocked("Accounting fill unverified")
+            held = shares.get(symbol, Decimal("0")) + (qty if side == "buy" else -qty)
+            if held < 0:
+                raise TradeBlocked("Accounting fill implies a short position")
+            shares[symbol] = held
+            trade_cash += (-qty * price) if side == "buy" else (qty * price)
+            first_fill_at = first_fill_at or at
+            if all(v == 0 for v in shares.values()):
+                funding = sum((a for _, _, a in flows), Decimal("0"))
+                realized_path.append((at, funding + trade_cash))
+            continue
+        if item.get("status") != "executed" or item.get("currency") != "USD":
+            raise TradeBlocked("Accounting activity unverified")
+        at = timestamp(item.get("created_at") or item.get("date"))
         if not created <= at <= now or at < last_time:
             raise TradeBlocked("Accounting activity chronology unverified")
         last_time = at
-        kind, amount = item.get("activity_type"), money(item.get("net_amount"))
+        amount = money(item.get("net_amount"))
         if kind == "JNLC":
             journal_count += 1
             if (len(flows) or journal_count != 1 or amount <= 0
@@ -95,9 +123,16 @@ def reconcile_cash_lifetime(*, account, activities, history, positions, orders,
         elif kind == "CSW":
             if amount >= 0:
                 raise TradeBlocked("Invalid broker cash withdrawal evidence")
+        elif kind == "FEE":
+            if amount >= 0:
+                raise TradeBlocked("Invalid broker fee evidence")
+            trade_cash += amount
+            continue
         else:
-            raise TradeBlocked("Non-cash activity requires full trading ledger")
+            raise TradeBlocked("Activity type requires manual accounting review")
         flows.append((at, kind, amount))
+    if any(v != 0 for v in shares.values()):
+        raise TradeBlocked("Ledger shares do not reconcile to a flat account")
     times, equities = history.get("timestamp"), history.get("equity")
     pnl, cashflow = history.get("profit_loss"), history.get("cashflow")
     if (not isinstance(times, list) or not times or times != sorted(set(times))
@@ -117,16 +152,31 @@ def reconcile_cash_lifetime(*, account, activities, history, positions, orders,
         activity_totals[kind] = activity_totals.get(kind, Decimal("0")) + amount
     if totals != {k: v for k, v in activity_totals.items() if v}:
         raise TradeBlocked("Activity and portfolio cashflow disagree")
-    for raw_time, raw_equity, raw_pnl in zip(times, equities, pnl):
+    flow_series = {kind: values for kind, values in cashflow.items()}
+    previous = None
+    for i, (raw_time, raw_equity, raw_pnl) in enumerate(zip(times, equities, pnl)):
         if type(raw_time) not in (int, float):
             raise TradeBlocked("Portfolio observation timestamp unverified")
         at = datetime.fromtimestamp(raw_time, timezone.utc)
-        expected = sum((amount for t, _, amount in flows if t <= at), Decimal("0"))
-        if at > now or at < created or money(raw_equity) != expected or money(raw_pnl) != 0:
+        if at > now or at < created:
             raise TradeBlocked("Broker historical equity is unexplained")
-    total = sum((amount for _, _, amount in flows), Decimal("0"))
+        trading_day = first_fill_at is not None and at.date() >= first_fill_at.date()
+        if not trading_day:
+            # Pre-trade period: equity is exactly the funding to date, no P&L.
+            expected = sum((amount for t, _, amount in flows if t <= at), Decimal("0"))
+            if money(raw_equity) != expected or money(raw_pnl) != 0:
+                raise TradeBlocked("Broker historical equity is unexplained")
+        else:
+            # Trading period: the broker's own series must be self-consistent:
+            # equity(t) = equity(t-1) + profit_loss(t) + cashflow(t).
+            day_flow = sum((money(v[i]) for v in flow_series.values()), Decimal("0"))
+            if previous is not None and abs(
+                    money(raw_equity) - (previous + money(raw_pnl) + day_flow)) > Decimal("0.01"):
+                raise TradeBlocked("Broker equity series is internally inconsistent")
+        previous = money(raw_equity)
+    funding = sum((amount for _, _, amount in flows), Decimal("0"))
     equity, cash = money(account.equity), money(account.cash)
-    if equity != cash or cash != total or equity <= 0:
+    if equity != cash or cash != funding + trade_cash or equity <= 0:
         raise TradeBlocked("Current cash equity does not reconcile")
     evidence = json.dumps({"activities": activities, "history": history,
         "account_id_sha256": identity, "created_at": created.isoformat(), "currency": "USD",
@@ -138,12 +188,22 @@ def reconcile_cash_lifetime(*, account, activities, history, positions, orders,
         if running < 0:
             raise TradeBlocked("Historical cash balance unexplained")
         peak = max(peak, running)
+    drawdown = Decimal("0")
+    for _, realized in realized_path:
+        peak = max(peak, realized)
+        if peak > 0:
+            drawdown = max(drawdown, (peak - realized) / peak * 100)
+    scope = ("authenticated cash-only account lifetime" if first_fill_at is None
+             else "authenticated account lifetime with trading ledger")
     return dict(account_id_sha256=identity, observed_at_utc=now.isoformat(),
-                history_scope="authenticated cash-only account lifetime",
-                equity=str(equity), cash=str(cash), realized_pnl="0", unrealized_pnl="0",
-                net_external_funding=str(total), historical_trading_drawdown_pct="0",
+                history_scope=scope,
+                equity=str(equity), cash=str(cash), realized_pnl=str(trade_cash),
+                unrealized_pnl="0",
+                net_external_funding=str(funding),
+                historical_trading_drawdown_pct=str(drawdown.quantize(Decimal("0.0001"))),
                 nominal_peak_equity=str(peak), daily_trading_loss_pct="0",
-                daily_loss_limit_breached=False, trading_drawdown_limit_breached=False,
+                daily_loss_limit_breached=False,
+                trading_drawdown_limit_breached=drawdown >= 15,
                 equity_history_explained=True, cashflows_reconciled=True,
                 evidence_sha256=hashlib.sha256(evidence.encode()).hexdigest(),
                 can_submit_orders=False)
