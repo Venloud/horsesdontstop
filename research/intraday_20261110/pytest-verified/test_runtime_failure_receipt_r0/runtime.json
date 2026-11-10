@@ -1,0 +1,14 @@
+{
+  "broker_order_attempted": false,
+  "candidate_evaluations": [],
+  "checks": {},
+  "error_type": "TradeBlocked",
+  "exit_code": 2,
+  "mode": "prepare",
+  "observed_at_utc": "2026-11-10T19:10:39.324731+00:00",
+  "run_id": "0cbb4d9c012644f8babf8fddc4f7ed3b",
+  "safe_reason": "Independent supervisor lease is not healthy",
+  "schema": 1,
+  "stage": "prepare_live_workflow",
+  "status": "blocked"
+}

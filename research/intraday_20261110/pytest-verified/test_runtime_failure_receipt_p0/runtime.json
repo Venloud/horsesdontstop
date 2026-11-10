@@ -1,0 +1,25 @@
+{
+  "broker_order_attempted": false,
+  "candidate_evaluations": [],
+  "checks": {
+    "cloudflare_external_ack": {
+      "age_seconds": null,
+      "reason": "ack_not_recorded",
+      "status": "FAIL"
+    },
+    "neon_supervisor_lease": {
+      "age_seconds": 4,
+      "reason": null,
+      "status": "PASS"
+    }
+  },
+  "error_type": "TradeBlocked",
+  "exit_code": 2,
+  "mode": "prepare",
+  "observed_at_utc": "2026-11-10T19:10:39.335031+00:00",
+  "run_id": "19404933e4b742aa8f43632ee095941b",
+  "safe_reason": "Cloudflare external heartbeat was not acknowledged",
+  "schema": 1,
+  "stage": "prepare_live_workflow",
+  "status": "blocked"
+}

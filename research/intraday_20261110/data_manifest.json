@@ -1,0 +1,11 @@
+{
+  "source": "Alpaca historical IEX 5Min adjusted all",
+  "start": "2024-01-01T00:00:00Z",
+  "end_exclusive": "2026-01-01T00:00:00Z",
+  "symbols": "AAPL,AMD,F,KO,SPY,WMT",
+  "pages": 111,
+  "rows": 236922,
+  "sha256": "126dca9b4ccd26e26fc775ec72885c6b2006cce5f0594b9f574e5d514fb75334",
+  "broker_calls": 0,
+  "database_calls": 0
+}

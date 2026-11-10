@@ -1,0 +1,64 @@
+
+=================================== ERRORS ====================================
+________________ ERROR collecting pytest-cache-files-0l6hi5qd _________________
+.venv\Lib\site-packages\_pytest\runner.py:361: in from_call
+    result: TResult | None = func()
+                             ^^^^^^
+.venv\Lib\site-packages\_pytest\runner.py:406: in collect
+    return list(collector.collect())
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv\Lib\site-packages\_pytest\main.py:569: in collect
+    for direntry in scandir(self.path):
+                    ^^^^^^^^^^^^^^^^^^
+.venv\Lib\site-packages\_pytest\pathlib.py:954: in scandir
+    scandir_iter = os.scandir(path)
+                   ^^^^^^^^^^^^^^^^
+E   PermissionError: [WinError 5] Access is denied: 'C:\\Users\\van02\\repos\\horsesdontstop\\pytest-cache-files-0l6hi5qd'
+________________ ERROR collecting pytest-cache-files-u_ekduns _________________
+.venv\Lib\site-packages\_pytest\runner.py:361: in from_call
+    result: TResult | None = func()
+                             ^^^^^^
+.venv\Lib\site-packages\_pytest\runner.py:406: in collect
+    return list(collector.collect())
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv\Lib\site-packages\_pytest\main.py:569: in collect
+    for direntry in scandir(self.path):
+                    ^^^^^^^^^^^^^^^^^^
+.venv\Lib\site-packages\_pytest\pathlib.py:954: in scandir
+    scandir_iter = os.scandir(path)
+                   ^^^^^^^^^^^^^^^^
+E   PermissionError: [WinError 5] Access is denied: 'C:\\Users\\van02\\repos\\horsesdontstop\\pytest-cache-files-u_ekduns'
+________________ ERROR collecting pytest-cache-files-y6_o3c18 _________________
+.venv\Lib\site-packages\_pytest\runner.py:361: in from_call
+    result: TResult | None = func()
+                             ^^^^^^
+.venv\Lib\site-packages\_pytest\runner.py:406: in collect
+    return list(collector.collect())
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv\Lib\site-packages\_pytest\main.py:569: in collect
+    for direntry in scandir(self.path):
+                    ^^^^^^^^^^^^^^^^^^
+.venv\Lib\site-packages\_pytest\pathlib.py:954: in scandir
+    scandir_iter = os.scandir(path)
+                   ^^^^^^^^^^^^^^^^
+E   PermissionError: [WinError 5] Access is denied: 'C:\\Users\\van02\\repos\\horsesdontstop\\pytest-cache-files-y6_o3c18'
+============================== warnings summary ===============================
+.venv\Lib\site-packages\websockets\legacy\__init__.py:6
+  C:\Users\van02\repos\horsesdontstop\.venv\Lib\site-packages\websockets\legacy\__init__.py:6: DeprecationWarning: websockets.legacy is deprecated; see https://websockets.readthedocs.io/en/stable/howto/upgrade.html for upgrade instructions
+    warnings.warn(  # deprecated in 14.0 - 2024-11-09
+
+.venv\Lib\site-packages\_pytest\cacheprovider.py:469
+  C:\Users\van02\repos\horsesdontstop\.venv\Lib\site-packages\_pytest\cacheprovider.py:469: PytestCacheWarning: could not create cache path C:\Users\van02\repos\horsesdontstop\.pytest_cache\v\cache\nodeids: [WinError 183] Cannot create a file when that file already exists: 'C:\\Users\\van02\\repos\\horsesdontstop\\.pytest_cache\\v\\cache'
+    config.cache.set("cache/nodeids", sorted(self.cached_nodeids))
+
+.venv\Lib\site-packages\_pytest\cacheprovider.py:423
+  C:\Users\van02\repos\horsesdontstop\.venv\Lib\site-packages\_pytest\cacheprovider.py:423: PytestCacheWarning: could not create cache path C:\Users\van02\repos\horsesdontstop\.pytest_cache\v\cache\lastfailed: [WinError 183] Cannot create a file when that file already exists: 'C:\\Users\\van02\\repos\\horsesdontstop\\.pytest_cache\\v\\cache'
+    config.cache.set("cache/lastfailed", self.lastfailed)
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ===========================
+ERROR pytest-cache-files-0l6hi5qd - PermissionError: [WinError 5] Access is d...
+ERROR pytest-cache-files-u_ekduns - PermissionError: [WinError 5] Access is d...
+ERROR pytest-cache-files-y6_o3c18 - PermissionError: [WinError 5] Access is d...
+!!!!!!!!!!!!!!!!!!! Interrupted: 3 errors during collection !!!!!!!!!!!!!!!!!!!
+3 warnings, 3 errors in 3.13s

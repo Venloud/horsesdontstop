@@ -1,0 +1,93 @@
+[
+  {
+    "repo": "sam-bateman/trading-orb",
+    "commit": "23f2400a696296cddb00166dd429c0d048bee1bb",
+    "path": "README.md",
+    "url": "https://raw.githubusercontent.com/sam-bateman/trading-orb/23f2400a696296cddb00166dd429c0d048bee1bb/README.md",
+    "sha256": "7780a31829e263343db7bfb83939344942f4d4fdc9af274e6831375c754c371f"
+  },
+  {
+    "repo": "sam-bateman/trading-orb",
+    "commit": "23f2400a696296cddb00166dd429c0d048bee1bb",
+    "path": "LICENSE",
+    "url": "https://raw.githubusercontent.com/sam-bateman/trading-orb/23f2400a696296cddb00166dd429c0d048bee1bb/LICENSE",
+    "sha256": "3be1d573ea5392a8c63e001897de389ca9206270895ead4a6fb89e349c04e06d"
+  },
+  {
+    "repo": "sam-bateman/trading-orb",
+    "commit": "23f2400a696296cddb00166dd429c0d048bee1bb",
+    "path": "src/backtester_v2.py",
+    "url": "https://raw.githubusercontent.com/sam-bateman/trading-orb/23f2400a696296cddb00166dd429c0d048bee1bb/src/backtester_v2.py",
+    "sha256": "d3505008a83f2183d3290fba3850556561e49f52d151c828ef92d6389944b061"
+  },
+  {
+    "repo": "sam-bateman/trading-orb",
+    "commit": "23f2400a696296cddb00166dd429c0d048bee1bb",
+    "path": "src/intraday_data.py",
+    "url": "https://raw.githubusercontent.com/sam-bateman/trading-orb/23f2400a696296cddb00166dd429c0d048bee1bb/src/intraday_data.py",
+    "sha256": "28f9efdd74d5291cee8ee7e2f10bc00f97a1f7515a24b174d6a837c42637c096"
+  },
+  {
+    "repo": "sam-bateman/trading-orb",
+    "commit": "23f2400a696296cddb00166dd429c0d048bee1bb",
+    "path": "src/orb_strategy.py",
+    "url": "https://raw.githubusercontent.com/sam-bateman/trading-orb/23f2400a696296cddb00166dd429c0d048bee1bb/src/orb_strategy.py",
+    "sha256": "1de5e7605c40e04f1372023e04f72a5d566dc7ab37fce8191bbf8acd8ec1aa4f"
+  },
+  {
+    "repo": "sam-bateman/trading-orb",
+    "commit": "23f2400a696296cddb00166dd429c0d048bee1bb",
+    "path": "src/run_max_backtest.py",
+    "url": "https://raw.githubusercontent.com/sam-bateman/trading-orb/23f2400a696296cddb00166dd429c0d048bee1bb/src/run_max_backtest.py",
+    "sha256": "5498877baa54f1ab907be63c5b86354db39e677e01e08fec1fd8993d20ab0b26"
+  },
+  {
+    "repo": "QuantConnect/Lean",
+    "commit": "3ca6e9b03f5aba806d32c6e446baf696233864e1",
+    "path": "LICENSE",
+    "url": "https://raw.githubusercontent.com/QuantConnect/Lean/3ca6e9b03f5aba806d32c6e446baf696233864e1/LICENSE",
+    "sha256": "522cf0a716ce03f67d46f8fceb5bf78c5b84400ec5cd8d14bf9f02cddc1cb6ba"
+  },
+  {
+    "repo": "QuantConnect/Lean",
+    "commit": "3ca6e9b03f5aba806d32c6e446baf696233864e1",
+    "path": "Common/Orders/Fills/EquityFillModel.cs",
+    "url": "https://raw.githubusercontent.com/QuantConnect/Lean/3ca6e9b03f5aba806d32c6e446baf696233864e1/Common/Orders/Fills/EquityFillModel.cs",
+    "sha256": "7f8c0e35eb538f5a63184c9b5ef4b32886e2c7779ccce1e773229a1a1ec18232"
+  },
+  {
+    "repo": "polakowo/vectorbt",
+    "commit": "07f5e85e83a5286c396f4ecfd55dfaa05f25442d",
+    "path": "LICENSE.md",
+    "url": "https://raw.githubusercontent.com/polakowo/vectorbt/07f5e85e83a5286c396f4ecfd55dfaa05f25442d/LICENSE.md",
+    "sha256": "a914859a115b70e80956a3cbd613139ad74c04e5d1bd38da8bcc16725822ec84"
+  },
+  {
+    "repo": "polakowo/vectorbt",
+    "commit": "07f5e85e83a5286c396f4ecfd55dfaa05f25442d",
+    "path": "vectorbt/portfolio/base.py",
+    "url": "https://raw.githubusercontent.com/polakowo/vectorbt/07f5e85e83a5286c396f4ecfd55dfaa05f25442d/vectorbt/portfolio/base.py",
+    "sha256": "1762c6597013ff2084316b15ece1d3ad3110230ead03f98a195024c348c2ca4e"
+  },
+  {
+    "repo": "mericck/QQQ-Opening-Range-Breakout",
+    "commit": "27fab3095be85c1a2f5ce15c959362d4c7abf601",
+    "path": "README.md",
+    "url": "https://raw.githubusercontent.com/mericck/QQQ-Opening-Range-Breakout/27fab3095be85c1a2f5ce15c959362d4c7abf601/README.md",
+    "sha256": "c75deed82dfad5145e1601954a16f7af5219f566ab62b4bcf7b2ba718bbb3d97"
+  },
+  {
+    "repo": "kernc/backtesting.py",
+    "commit": "ca2e2611621e472542ba90f7243a1fa06a7d7108",
+    "path": "README.md",
+    "url": "https://raw.githubusercontent.com/kernc/backtesting.py/ca2e2611621e472542ba90f7243a1fa06a7d7108/README.md",
+    "sha256": "849a6a8ee692f47dee16bdf72bf37eb23e2a2358fed722aae077ff9014ffa304"
+  },
+  {
+    "repo": "kernc/backtesting.py",
+    "commit": "ca2e2611621e472542ba90f7243a1fa06a7d7108",
+    "path": "LICENSE.md",
+    "url": "https://raw.githubusercontent.com/kernc/backtesting.py/ca2e2611621e472542ba90f7243a1fa06a7d7108/LICENSE.md",
+    "sha256": "ad858d53cae05eed9531ecd4c467440803acffe34c69de7b88e03affc5b6a1bd"
+  }
+]

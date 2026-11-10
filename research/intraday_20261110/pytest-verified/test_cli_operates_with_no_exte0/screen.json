@@ -1,0 +1,1 @@
+{"companies": [{"ticker": "AAPL", "net_margin": 20}], "rules": {"missing": "fail", "rules": [{"metric": "net_margin", "op": ">=", "value": 15}]}}

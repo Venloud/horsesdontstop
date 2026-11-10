@@ -1,0 +1,20 @@
+✔ authenticated paper worker check-in is accepted without public status (50.1173ms)
+✔ invalid auth, blank token, other endpoints and bad JSON fail before writes (3.8807ms)
+✔ duplicate/out-of-order and competing workers cannot refresh an active lease (2.224ms)
+✔ storage failures return sanitized 503, not false acceptance (1.0924ms)
+✔ classify closed-flat as LIVE PROCESS only, not trade readiness (0.3145ms)
+✔ cron sends fixed critical alert for missing/stale heartbeat, then deduplicates (1.1223ms)
+✔ poll_failed triggers independent alert immediately, even with timely beats (1.351ms)
+✔ notification 500 or network exception is not marked sent and retries (0.9435ms)
+✔ missing topic and D1 failure fail closed on critical cron (0.2815ms)
+✔ authenticated diagnostic repeats without changing active lease or alarms (3.5692ms)
+✔ diagnostic auth, method, storage failures cannot write or report health (0.7596ms)
+✔ stale diagnostic cannot renew a lease or permit old positive sequences (1.3205ms)
+ℹ tests 12
+ℹ suites 0
+ℹ pass 12
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 145.9986
