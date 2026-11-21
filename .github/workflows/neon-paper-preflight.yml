@@ -52,6 +52,7 @@ jobs:
           PAPER_MONITOR_NTFY_TOPIC: ${{ secrets.PAPER_MONITOR_NTFY_TOPIC }}
         run: |
           if [ -z "$PAPER_JOURNAL_DSN" ]; then
+            echo "STAGE required_env: FAIL MISSING_ENV"
             echo "BLOCKED: PAPER_JOURNAL_DSN repository secret is not configured."
             echo "ZERO trades. Connect a SELECT-only role; do not use an owner/admin DSN."
             exit 2
