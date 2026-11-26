@@ -62,7 +62,15 @@ def test_only_existing_disabled_gateway_can_invoke_broker_write():
             calls.extend(find_order_write_calls(rel, filename.read_text(encoding="utf-8")))
     # Reviewed 2026-11-09: the risk-reducing maintenance module may cancel ONE
     # stale entry by UUID and submit ONE flatten SELL; both release-gated.
+    # Reviewed 2026-11-26 (owner autonomy directive): the autopilot Broker
+    # wrapper is the autonomous PAPER order path: limit buys, market exits,
+    # stop orders, stop raises and cancels, each in one wrapper method.
     assert sorted(calls) == [
+        ("bot/autopilot.py", "cancel_order_by_id"),
+        ("bot/autopilot.py", "replace_order_by_id"),
+        ("bot/autopilot.py", "submit_order"),
+        ("bot/autopilot.py", "submit_order"),
+        ("bot/autopilot.py", "submit_order"),
         ("bot/paper_exit_manager.py", "cancel_order_by_id"),
         ("bot/paper_exit_manager.py", "submit_order"),
         ("bot/paper_exit_manager.py", "submit_order"),
