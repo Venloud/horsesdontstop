@@ -140,7 +140,7 @@ def inspect_live_quote(quote, *, now: datetime,
 def preview_live_paper_entry(
     *, symbol: str, quote, equity, available_cash, available_buying_power=None,
     now: datetime, market_open: bool, risk_fraction=Decimal(".01"),
-    max_quote_age_seconds=MAX_QUOTE_AGE_SECONDS,
+    max_quote_age_seconds=MAX_QUOTE_AGE_SECONDS, entry_sequence: int = 1,
 ) -> LivePaperEntryPreview:
     """Conservatively size a whole-share long with capped limit price.
 
@@ -203,7 +203,7 @@ def preview_live_paper_entry(
             "and available buying power")
     # Deterministic symbol/day ID, derived from New York clock, not server UTC.
     session_day = now.astimezone(ZoneInfo("America/New_York")).date()
-    cid = make_client_order_id(session_day, symbol)
+    cid = make_client_order_id(session_day, symbol, sequence=entry_sequence)
     return LivePaperEntryPreview(
         symbol=symbol, observed_at_utc=now.astimezone(timezone.utc).isoformat(),
         quote_at_utc=quote_ts.astimezone(timezone.utc).isoformat(),

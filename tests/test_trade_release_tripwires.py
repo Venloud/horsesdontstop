@@ -26,8 +26,11 @@ def test_alpaca_order_release_constant_is_off_in_source_and_runtime():
     ]
     assert len(assignments) == 1
     assert isinstance(assignments[0].value, ast.Constant)
-    assert assignments[0].value.value is False
-    assert PAPER_ORDER_SUBMISSIONS_RELEASED is False
+    # SUPERVISED PAPER RELEASE (branch release/paper-supervised-pilot): ON by
+    # explicit owner authorization. Neon kill switch, operator-only ARM and the
+    # disabled-by-default policy still gate every order.
+    assert assignments[0].value.value is True
+    assert PAPER_ORDER_SUBMISSIONS_RELEASED is True
 
 
 def test_paper_endpoint_cannot_silently_become_real_money():

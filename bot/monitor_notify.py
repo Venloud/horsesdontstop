@@ -69,6 +69,32 @@ def send_critical_ntfy(incident: MonitorIncident, *, topic: str,
     return True
 
 
+_ACTIVITY_LINE = re.compile(r"[A-Za-z0-9_:;,.$%()/ -]{1,600}")
+
+
+def send_activity_ntfy(title: str, message: str, *, topic: str,
+                       priority: str = "default", open_url=urlopen) -> bool:
+    """PAPER activity (entries, fills, exits, blocks). Sanitized text only."""
+    key = validate_topic(topic)
+    if priority not in ("default", "high", "urgent"):
+        raise NotificationError("Invalid notification priority")
+    if not _ACTIVITY_LINE.fullmatch(title or "") or not _ACTIVITY_LINE.fullmatch(message or ""):
+        raise NotificationError("Notification text rejected by sanitizer")
+    request = Request(
+        f"https://ntfy.sh/{key}", data=message.encode("utf-8"), method="POST",
+        headers={"Title": "horsesdontstop PAPER: " + title, "Priority": priority,
+                 "Tags": "chart_with_upwards_trend",
+                 "Content-Type": "text/plain; charset=utf-8"})
+    try:
+        with open_url(request, timeout=5) as response:
+            status = response.status
+    except Exception:
+        raise NotificationError("NTFY delivery failed") from None
+    if not 200 <= status < 300:
+        raise NotificationError("NTFY declined the notification")
+    return True
+
+
 class NotificationThrottle:
     """In-process cooldown only, NOT durable across workflow runs.
 

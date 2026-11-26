@@ -26,13 +26,23 @@ def confirm_nested_filled_stops(trading, positions, approvals):
         if not isinstance(symbol, str) or not symbol:
             uncovered.append("unknown_position")
             continue
+        matching = [a for a in approvals
+                    if isinstance(a, (tuple, list)) and len(a) in (6, 7)
+                    and a[2] == symbol and a[1] in ("accepted", "filled")]
+        # Several same-symbol entries can exist (e.g. an earlier closed
+        # trade). Exactly ONE durable intent must currently prove a live
+        # nested GTC stop covering this position; zero or several fail.
+        proven = sum(1 for approved in matching
+                     if _proves_live_stop(trading, position, approved))
+        if proven != 1:
+            uncovered.append(symbol)
+    return tuple(sorted(set(uncovered)))
+
+
+def _proves_live_stop(trading, position, approved):
+    symbol = getattr(position, "symbol", None)
+    if True:
         try:
-            matching = [a for a in approvals
-                        if isinstance(a, (tuple, list)) and len(a) in (6, 7)
-                        and a[2] == symbol and a[1] in ("accepted", "filled")]
-            if len(matching) != 1:
-                raise ValueError("No unique durable approved stop")
-            approved = matching[0]
             client_id, _status, _symbol, qty, stop, parent_id = approved[:6]
             approved_tif = approved[6] if len(approved) == 7 else "day"
             if (not isinstance(client_id, str) or not client_id
@@ -88,6 +98,6 @@ def confirm_nested_filled_stops(trading, positions, approvals):
             # ONLY the stop-specific proof is extracted here.
             if audit.uncovered_symbols or "position_missing_verified_gtc_oto_stop" in audit.blockers:
                 raise ValueError("No current GTC stop protection")
+            return True
         except Exception:
-            uncovered.append(symbol)
-    return tuple(sorted(set(uncovered)))
+            return False

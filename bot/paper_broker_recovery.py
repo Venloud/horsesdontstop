@@ -52,7 +52,40 @@ class BrokerOrderAudit:
         return asdict(self)
 
 
-def inspect_nested_oto(plan: PaperOrderPlan, parent, *, position_qty) -> BrokerOrderAudit:
+def exit_client_order_id(entry_client_order_id: str) -> str:
+    """Deterministic client ID of the ONE bot flatten order for an entry."""
+    return entry_client_order_id + "-x"
+
+
+# Blockers that a verified bot flatten (cancel remainder, then market SELL of
+# exactly the filled shares, now flat) legitimately explains.
+FLATTEN_EXPLAINS = frozenset({
+    "terminal_parent_has_unresolved_position",
+    "filled_entry_flat_without_verified_stop_exit",
+    "broker_position_change_without_verified_stop_execution",
+})
+
+
+def verified_flatten(plan, exit_order, *, filled_entry_shares, position_qty):
+    """True only for the bot's own filled market SELL of all filled shares."""
+    if exit_order is None:
+        return False
+    try:
+        return (getattr(exit_order, "client_order_id", None)
+                == exit_client_order_id(plan.client_order_id)
+                and field(exit_order, "symbol").upper() == plan.symbol
+                and field(exit_order, "side") == "sell"
+                and field(exit_order, "type") == "market"
+                and field(exit_order, "status") == "filled"
+                and filled_entry_shares > 0
+                and quantity(getattr(exit_order, "filled_qty", None)) == filled_entry_shares
+                and quantity(position_qty) == 0)
+    except TradeBlocked:
+        return False
+
+
+def inspect_nested_oto(plan: PaperOrderPlan, parent, *, position_qty,
+                       exit_order=None) -> BrokerOrderAudit:
     """Compare Alpaca's nested parent+child to durable approved intent.
 
     Caller MUST fetch the parent using get_order_by_id(...nested=True)
@@ -194,6 +227,10 @@ def inspect_nested_oto(plan: PaperOrderPlan, parent, *, position_qty) -> BrokerO
             blockers.append("overnight_protective_stop_gtc_not_verified")
     if parent_status == "filled" and fill_qty != expected_qty:
         blockers.append("filled_parent_has_wrong_fill_quantity")
+    if (parent_status in ENTRY_TERMINAL_UNFILLED
+            and verified_flatten(plan, exit_order, filled_entry_shares=fill_qty,
+                                 position_qty=qty)):
+        blockers = [b for b in blockers if b not in FLATTEN_EXPLAINS]
     return BrokerOrderAudit(
         client_order_id=plan.client_order_id,
         parent_order_id=pid,
@@ -246,4 +283,21 @@ def recover_by_client_id(trading, plan: PaperOrderPlan, *, position_qty,
         raise TradeBlocked("Nested broker stop-leg lookup unavailable") from None
     if str(getattr(nested, "id", None)) != str(pid):
         raise TradeBlocked("Nested broker parent ID changed unexpectedly")
-    return inspect_nested_oto(plan, nested, position_qty=position_qty)
+    exit_order = None
+    try:
+        partially_filled_terminal = (
+            field(nested, "status") in ENTRY_TERMINAL_UNFILLED
+            and quantity(getattr(nested, "filled_qty", None) or 0) > 0)
+    except TradeBlocked:
+        partially_filled_terminal = False
+    if partially_filled_terminal:
+        try:
+            exit_order = trading.get_order_by_client_id(
+                exit_client_order_id(plan.client_order_id))
+        except APIError as exc:
+            if exc.status_code != 404:
+                raise TradeBlocked("Broker exit-order lookup unavailable") from None
+        except Exception:
+            raise TradeBlocked("Broker exit-order lookup unavailable") from None
+    return inspect_nested_oto(plan, nested, position_qty=position_qty,
+                              exit_order=exit_order)

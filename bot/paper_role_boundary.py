@@ -14,7 +14,8 @@ SELECT /* paper_acl_boundary */
    SELECT 1 FROM pg_roles r
    WHERE (r.rolsuper OR r.rolcreaterole OR r.rolcreatedb OR r.rolreplication
           OR r.rolbypassrls OR r.rolname IN
-          ('hds_paper_status_owner','hds_paper_reservation_guard','neondb_owner'))
+          ('hds_paper_status_owner','hds_paper_reservation_guard','neondb_owner',
+           'hds_paper_operator','hds_paper_control_owner'))
      AND pg_has_role(current_user,r.oid,'MEMBER'))
  AND NOT has_schema_privilege(current_user,'public','CREATE')
  AND NOT has_database_privilege(current_user,current_database(),'CREATE')
@@ -44,6 +45,10 @@ SELECT /* paper_acl_boundary */
         'paper_mark_reserved_intent_unknown(text)',
         'paper_consume_submission_authorization(text)',
         'paper_record_reconciled_intent_status(text,text,text,text)',
+        'paper_expire_unapproved_reservation(text,boolean)',
+        'paper_retire_unsent_dispatch(text,boolean)',
+        'paper_policy_authorize_entry(text,text,text,date,integer,numeric,numeric,text,text)',
+        'paper_engage_kill_switch(text)',
         'paper_authorize_unknown_submission(text,text,text,date,integer,numeric,numeric)'))
 """
 
@@ -57,7 +62,8 @@ def assert_journal_acl_boundary(cursor, *, reconciler=False):
             ('paper_reserve_intent_if_enabled','paper_reserve_bounded_pilot_intent',
              'paper_commit_bounded_pilot_dispatch','paper_mark_reserved_intent_unknown',
              'paper_consume_submission_authorization',
-             'paper_authorize_unknown_submission','paper_reservation_control_guard')
+             'paper_authorize_unknown_submission','paper_reservation_control_guard',
+             'paper_policy_authorize_entry','paper_arm_autonomous_trading')
             AND has_function_privilege(current_user,p.oid,'EXECUTE'))"""
     cursor.execute(sql)
     if cursor.fetchone() != (True,):

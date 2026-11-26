@@ -1,6 +1,7 @@
 # Bounded PAPER executor coordinator. Prepare mode can reserve one exact
 # proposal; dispatch mode is separately hard-gated in Python and the Neon DB.
 param(
+    [switch]$Autonomous,
     [switch]$Dispatch,
     [string]$ProposalPath
 )
@@ -21,7 +22,7 @@ function Write-HdsRuntimeReceipt([string]$status, [int]$code, [string]$errorType
         New-Item -ItemType Directory -Path $parent -Force | Out-Null
         $record = [ordered]@{
             schema = 1; run_id = $runId; observed_at_utc = [DateTime]::UtcNow.ToString('o')
-            started_at_utc = $started; mode = $(if ($Dispatch) { 'dispatch' } else { 'prepare' })
+            started_at_utc = $started; mode = $(if ($Dispatch) { 'dispatch' } elseif ($Autonomous) { 'autonomous' } else { 'prepare' })
             stage = $stage; status = $status; error_type = $errorType
             exit_code = $code; broker_order_attempted = [bool]$Dispatch
         }
@@ -40,7 +41,7 @@ function Read-HdsExecutorSecret([string]$name) {
 
 $names = @('ALPACA_PAPER_API_KEY','ALPACA_PAPER_SECRET_KEY','PAPER_JOURNAL_DSN',
            'PAPER_EXECUTOR_DSN','PAPER_RECONCILER_DSN','PAPER_ACCOUNT_SHA256',
-           'PAPER_SUPERVISOR_RECEIPT','PAPER_SUPERVISOR_RECEIPT_PID')
+           'PAPER_SUPERVISOR_RECEIPT','PAPER_SUPERVISOR_RECEIPT_PID','PAPER_MONITOR_NTFY_TOPIC')
 try {
     if ($repo -ne 'C:\Users\van02\horsesdontstop') { $stage='validate_stable_runtime_path'; throw 'Executor must run from the stable runtime checkout.' }
     if (-not (Test-Path -LiteralPath $python)) { $stage='validate_stable_python'; throw 'Stable runtime Python environment is missing.' }
@@ -66,6 +67,9 @@ try {
     $env:PAPER_RECONCILER_DSN = Read-HdsExecutorSecret 'neon-reconciler-dsn.dpapi'
     $stage = 'read_paper_account_identity_pin'
     $env:PAPER_ACCOUNT_SHA256 = (Get-Content -LiteralPath (Join-Path $folder 'paper-account-sha256.txt') -Raw).Trim()
+    if (Test-Path -LiteralPath (Join-Path $folder 'paper-ntfy-topic.dpapi')) {
+        $env:PAPER_MONITOR_NTFY_TOPIC = Read-HdsExecutorSecret 'paper-ntfy-topic.dpapi'
+    }
     $env:PAPER_SUPERVISOR_RECEIPT = Join-Path $folder 'supervisor-runtime.json'
     $stage = 'identify_single_live_supervisor_process'
     $supervisors = @(Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction Stop |
@@ -96,6 +100,8 @@ try {
                 throw 'Dispatch requires an existing exact prepared proposal file.'
             }
             & $python -m bot.paper_executor_service --dispatch-file $ProposalPath --output $output --runtime-receipt $receipt
+        } elseif ($Autonomous) {
+            & $python -m bot.paper_executor_service --autonomous --output $output --runtime-receipt $receipt
         } else {
             & $python -m bot.paper_executor_service --prepare --output $output --runtime-receipt $receipt
         }

@@ -143,14 +143,32 @@ def execution_blockers(state: PaperSafetyState) -> list[str]:
     return failures
 
 
-def make_client_order_id(day: date, symbol: str, strategy: str = "momentum_volume"):
+MAX_ENTRIES_PER_DAY = 3   # hard code ceiling; Neon policy holds the active cap
+
+
+def make_client_order_id(day: date, symbol: str, strategy: str = "momentum_volume",
+                         sequence: int = 1):
     if not isinstance(day, date) or not re.fullmatch(r"[A-Z]{1,5}", symbol):
         raise TradeBlocked("Invalid day or ticker")
     if strategy not in ALLOWED_STRATEGIES:
         raise TradeBlocked("Unapproved paper strategy")
-    # Stable one-per-symbol-per-trading-day id for eventual broker reconciliation.
+    if type(sequence) is not int or not 1 <= sequence <= MAX_ENTRIES_PER_DAY:
+        raise TradeBlocked("Invalid daily entry sequence")
+    # Stable per-symbol-per-day-per-entry id for broker reconciliation. Entry 1
+    # keeps the original v1 key so earlier IDs are unchanged.
     key = f"horsesdontstop|{day.isoformat()}|{symbol}|{strategy}|v1"
+    if sequence > 1:
+        key += f"|entry{sequence}"
     return f"hds-{day:%Y%m%d}-{symbol}-" + sha256(key.encode()).hexdigest()[:12]
+
+
+def entry_sequence_of(client_order_id: str, day: date, symbol: str,
+                      strategy: str = "momentum_volume"):
+    """Which daily entry number produced this ID, or None if none did."""
+    for n in range(1, MAX_ENTRIES_PER_DAY + 1):
+        if make_client_order_id(day, symbol, strategy, n) == client_order_id:
+            return n
+    return None
 
 
 def plan_paper_entry(symbol: str, day: date, reference_price: float,

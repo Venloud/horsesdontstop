@@ -8,7 +8,7 @@ from bot.paper_safety import PAPER_ENDPOINT, TradeBlocked
 
 
 def test_default_service_cannot_release_status_writes_or_start_without_credentials(monkeypatch):
-    assert service.PAPER_RECONCILIATION_SERVICE_RELEASED is False
+    monkeypatch.setattr(service, "PAPER_RECONCILIATION_SERVICE_RELEASED", False)
     assert service.main(["--apply-status"]) == 2
     for key in ("PAPER_RECONCILER_DSN", "ALPACA_RECONCILER_PAPER_API_KEY", "ALPACA_RECONCILER_PAPER_SECRET_KEY"):
         monkeypatch.delenv(key, raising=False)
@@ -24,6 +24,7 @@ def test_observe_service_ticks_never_record_status(monkeypatch):
 
 
 def test_unreleased_status_mode_stops_before_broker_or_journal(monkeypatch):
+    monkeypatch.setattr(service, "PAPER_RECONCILIATION_SERVICE_RELEASED", False)
     monkeypatch.setattr(service, "reconcile_pending_once", lambda **kw: pytest.fail("Read reached"))
     with pytest.raises(TradeBlocked, match="NOT RELEASED"):
         service.run_service(trading=object(), journal=object(), apply_status=True)

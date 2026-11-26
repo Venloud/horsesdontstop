@@ -93,4 +93,6 @@ def test_broker_gateway_never_promotes_its_own_ack():
     assert gateway.index("assert_lock_alive()") < gateway.index("trading.submit_order(")
     assert "paper_commit_bounded_pilot_dispatch" in authorization
     assert "journal.record_observed_state(" not in gateway
-    assert "PAPER_ORDER_SUBMISSIONS_RELEASED = False" in inspect.getsource(entry)
+    # Supervised PAPER release: the code gate is ON; Neon controls, policy and
+    # the single-use dispatch commit remain the authority for every order.
+    assert "PAPER_ORDER_SUBMISSIONS_RELEASED = True" in inspect.getsource(entry)

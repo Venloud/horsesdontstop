@@ -15,6 +15,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import sys
 from tempfile import NamedTemporaryFile
 from zoneinfo import ZoneInfo
@@ -24,6 +25,7 @@ from .paper_safety import PAPER_ENDPOINT, PaperSafetyState, TradeBlocked, money
 
 
 NY = ZoneInfo("America/New_York")
+EXITS_IN_EXECUTOR = False
 
 
 def build_safety_state(*, account, clock, positions, orders, control,
@@ -35,8 +37,10 @@ def build_safety_state(*, account, clock, positions, orders, control,
     if not isinstance(lifetime_evidence, dict):
         raise TradeBlocked("Authenticated lifetime accounting proof missing")
     history_complete = (
-        lifetime_evidence.get("history_scope") ==
-        "authenticated cash-only account lifetime"
+        lifetime_evidence.get("history_scope") in (
+            "authenticated cash-only account lifetime",
+            "authenticated account lifetime with trading ledger")
+        and lifetime_evidence.get("trading_drawdown_limit_breached") is not True
         and lifetime_evidence.get("equity_history_explained") is True
         and lifetime_evidence.get("cashflows_reconciled") is True
         and lifetime_evidence.get("can_submit_orders") is False
@@ -285,11 +289,158 @@ def _live_components(*, stage_observer=None):
     }
 
 
+def _run_exits(trading, market_data, monitor, positions, orders, now, *, released):
+    """Trailing-stop and time-limit exits for bot positions (one per run)."""
+    from .paper_exit_manager import bot_positions, execute_exit, market_snapshot, plan_exits
+    from .paper_reconcile import orders_with_recent_parents, value
+    if not positions:
+        return []
+    with_parents, _ = orders_with_recent_parents(trading, orders, now=now)
+    approved = monitor.read_approved_stop_intents(limit=501)
+    market = {}
+    for position, cid, stop, parent, leg in bot_positions(
+            positions=positions, orders=with_parents, approved_stops=approved):
+        filled_at = getattr(parent, "filled_at", None)
+        if filled_at is None or market_data is None:
+            continue
+        market[position.symbol] = market_snapshot(
+            market_data=market_data, trading=trading, symbol=position.symbol,
+            filled_at=filled_at, now=now,
+            position_price=getattr(position, "current_price", None))
+    actions = plan_exits(positions=positions, orders=with_parents,
+                         approved_stops=approved, now=now, market=market,
+                         market_open=getattr(trading.get_clock(), "is_open", None) is True)
+    results = []
+    for action in actions[:1]:
+        result = execute_exit(trading, action, released=released)
+        results.append(result)
+        _record_exit(result)
+        if result.get("result") in ("exit_filled", "exit_submitted"):
+            _notify("position closed",
+                    f"{action.reason}: SELL {result['shares']} {action.symbol} "
+                    f"fill {result.get('fill_price')} ({action.detail})", "high")
+    return results
+
+
+def _record_exit(result):
+    """Append-only local exit log (the executor role has no audit INSERT)."""
+    try:
+        folder = Path(os.environ.get("LOCALAPPDATA", ".")) / "horsesdontstop"
+        folder.mkdir(parents=True, exist_ok=True)
+        with open(folder / "exits.jsonl", "a", encoding="utf-8") as f:
+            f.write(json.dumps({"at": datetime.now(timezone.utc).isoformat(), **result},
+                               default=str) + "\n")
+    except Exception:
+        pass
+
+
+def _run_maintenance(trading, monitor, positions, orders, now, market_data=None):
+    """Plan/apply risk-reducing actions; re-plan once after a cancel."""
+    from alpaca.trading.enums import QueryOrderStatus
+    from alpaca.trading.requests import GetOrdersRequest
+    from .paper_position_manager import execute_maintenance, plan_maintenance
+    from .paper_supervised_execution import PAPER_ORDER_SUBMISSIONS_RELEASED
+    released = PAPER_ORDER_SUBMISSIONS_RELEASED is True
+    results, unexplained, writes = [], set(), 0
+    for _ in range(2):
+        if not positions and not orders:
+            break
+        from .paper_reconcile import orders_with_recent_parents
+        with_parents, _ = orders_with_recent_parents(trading, orders, now=now)
+        plan = plan_maintenance(
+            positions=positions, orders=with_parents,
+            unresolved=monitor.read_unresolved_intents(limit=501),
+            approved_stops=monitor.read_approved_stop_intents(limit=501), now=now)
+        unexplained.update(plan.unexplained_symbols)
+        if not plan.actions:
+            break
+        done = execute_maintenance(trading, plan, released=released)
+        results.extend(done)
+        applied = [d for d in done if d[0] in ("canceled", "flatten_submitted")]
+        writes += len(applied)
+        for kind, action, cid in applied:
+            _notify("risk action", f"{kind} for {cid}", "high")
+        if not any(d[0] == "canceled" for d in done):
+            break
+        positions = trading.get_all_positions()
+        orders = trading.get_orders(filter=GetOrdersRequest(
+            status=QueryOrderStatus.OPEN, nested=True, limit=500))
+    if unexplained:
+        _notify("unexplained position",
+                "Not touched: " + ",".join(sorted(unexplained)), "urgent")
+    # Exits are owned by the separate exit-only service (paper_exit_service,
+    # task HorsesDontStop-PAPER-Exits) so two processes never race to cancel
+    # the same stop. Set EXITS_IN_EXECUTOR=True only if that task is removed.
+    exits = (_run_exits(trading, market_data, monitor, positions, orders, now,
+                        released=released) if EXITS_IN_EXECUTOR else [])
+    if any(e.get("result") in ("exit_filled", "exit_submitted") for e in exits):
+        writes += 2   # stop-leg cancel + exit SELL
+        positions = trading.get_all_positions()
+        orders = trading.get_orders(filter=GetOrdersRequest(
+            status=QueryOrderStatus.OPEN, nested=True, limit=500))
+    return ({"results": [list(r) for r in results], "exits": exits,
+             "unexplained_symbols": sorted(unexplained),
+             "released": released, "broker_writes": writes}, positions, orders)
+
+
+def _record_equity_peak_sample(executor, account, now):
+    """Keep the durable equity peak current (best effort, never blocks).
+
+    Without intraday samples, equity above the last 09:30 snapshot reads as an
+    unmaintained peak after every profitable exit. The 09:30-09:35 window is
+    left to the opening collector; Neon's policy uses that window's MIN, so a
+    sample there could only shrink limits anyway.
+    """
+    local = now.astimezone(NY)
+    if local.hour == 9 and 30 <= local.minute < 35:
+        return False
+    try:
+        executor.record_equity(float(money(account.equity)), float(money(account.cash)))
+        return True
+    except Exception:
+        return False
+
+
+def _entry_seq(plan):
+    from .paper_safety import entry_sequence_of
+    seq = entry_sequence_of(plan.client_order_id, date.fromisoformat(plan.trading_day),
+                            plan.symbol, plan.strategy)
+    if seq is None:
+        raise TradeBlocked("Prepared order has an invalid daily entry ID")
+    return seq
+
+
+def _managed_position_report(monitor, positions, orders, unresolved, *,
+                             trading=None, now=None):
+    """Holding: prove the exposure is journaled and stop-protected, or block."""
+    from .paper_reconcile import orders_with_recent_parents, reconcile_observation
+    complete = len(orders) < 500
+    if trading is not None:
+        orders, complete = orders_with_recent_parents(
+            trading, orders, now=now or datetime.now(timezone.utc))
+    rec = reconcile_observation(
+        positions, orders, unresolved, order_fetch_complete=complete,
+        approved_stops=monitor.read_approved_stop_intents(limit=501))
+    if rec.managed_exposure is not True or rec.uncovered_symbols:
+        raise TradeBlocked("Open PAPER exposure is not verified as stop-protected")
+    return {
+        "mode": "POSITION_MANAGED",
+        "reason": "Open PAPER exposure verified against durable GTC OTO stop",
+        "positions": [{"symbol": getattr(p, "symbol", None),
+                       "qty": str(getattr(p, "qty", None)),
+                       "unrealized_pl": str(getattr(p, "unrealized_pl", None))}
+                      for p in positions],
+        "open_orders": rec.open_broker_orders,
+        "broker_orders": 0, "database_writes": 0,
+    }
+
+
 def prepare_live_candidate(*, components, now=None, symbols=None, utcnow=None,
                           prepared_observer=None, stage_observer=None,
                           check_observer=None,
-                          candidate_evaluation_observer=None):
-    """Read fresh evidence and reserve at most one exact proposal; never POST."""
+                          candidate_evaluation_observer=None, autonomous=False):
+    """Read fresh evidence; reserve one proposal, or in autonomous mode
+    policy-authorize and submit at most one protected PAPER entry."""
     from alpaca.data.enums import DataFeed
     from alpaca.data.requests import StockLatestQuoteRequest
     from alpaca.trading.enums import QueryOrderStatus
@@ -320,33 +471,97 @@ def prepare_live_candidate(*, components, now=None, symbols=None, utcnow=None,
     executor.assert_executor_permissions(reservation=True)
     stage("read_safety_controls")
     control = monitor.read_control()
-    if control.kill_switch_active is not True or control.submissions_enabled is not False:
+    paused = False
+    if autonomous is True:
+        paused = (control.kill_switch_active, control.submissions_enabled) == (True, False)
+        if not paused and (control.kill_switch_active,
+                           control.submissions_enabled) != (False, True):
+            raise TradeBlocked("PAPER controls are incoherent")
+    elif control.kill_switch_active is not True or control.submissions_enabled is not False:
         raise TradeBlocked("PAPER preparation requires kill ON and submissions OFF")
     stage("authenticate_alpaca_paper_account")
     account = trading.get_account()
     expected_hash = components["expected_account_hash"]
     if _account_hash(account) != expected_hash:
         raise TradeBlocked("Authenticated PAPER account does not match pinned identity")
+    if autonomous is True:
+        _record_equity_peak_sample(executor, account, now)
     stage("read_positions_orders_and_journal")
     clock = trading.get_clock()
     positions = trading.get_all_positions()
     orders = trading.get_orders(filter=GetOrdersRequest(
         status=QueryOrderStatus.OPEN, nested=True, limit=500))
-    unresolved = monitor.read_unresolved_intents(limit=501)
-    if len(unresolved) >= 501:
-        raise TradeBlocked("PAPER journal unresolved intent list incomplete")
-    if unresolved or positions or orders:
-        raise TradeBlocked("Earlier PAPER orders or existing exposure require reconciliation")
-
-    # Authentic GET-only reconciliation is performed even for an empty queue.
-    stage("independent_broker_reconciliation")
-    from .paper_status_reconciler import reconcile_pending_once
+    # Independent GET-only reconciliation runs before the blocker check so an
+    # earlier unapproved, never-dispatched proposal can expire (audited, via
+    # the reconciler role) instead of blocking every later session forever.
+    stage("reconcile_prior_reservations")
+    from .paper_status_reconciler import pending_blockers, reconcile_pending_once
     from .live_quotes import (
         MAX_SPREAD_BPS, inspect_live_quote, preview_live_paper_entry,
     )
-    if reconcile_pending_once(
-            trading=components["reconciler_trading"],
-            journal=reconciler, record=False):
+    from .paper_reconciler_service import PAPER_RECONCILIATION_SERVICE_RELEASED
+    reconcile_error = None
+    try:
+        reconciled = reconcile_pending_once(
+            trading=components["reconciler_trading"], journal=reconciler,
+            record=(autonomous is True
+                    and PAPER_RECONCILIATION_SERVICE_RELEASED is True),
+            expire_unapproved=True)
+    except TradeBlocked as exc:
+        # Partial fills, unverified stops and lookup errors raise here, and
+        # those are exactly the cases that need risk reduction. Maintenance
+        # still runs; the original block is re-raised afterwards.
+        if autonomous is not True:
+            raise
+        reconcile_error, reconciled = exc, ()
+    expired = [cid for cid, status in reconciled if status == "expired"]
+    maintenance = None
+    if autonomous is True:
+        # After reconciliation so a just-filled entry is judged on current
+        # journal state; risk-reducing, so it also runs while paused.
+        stage("risk_reducing_maintenance")
+        maintenance, positions, orders = _run_maintenance(
+            trading, monitor, positions, orders, utcnow(),
+            market_data=components.get("market_data"))
+        if reconcile_error is not None:
+            stage("reconcile_prior_reservations")
+            raise reconcile_error
+        if paused:
+            return {"mode": "PAUSED", "reason": "Kill switch engaged; no entries",
+                    "maintenance": maintenance,
+                    "broker_orders": maintenance["broker_writes"],
+                    "database_writes": len(expired)}
+    stage("read_positions_orders_and_journal")
+    unresolved = monitor.read_unresolved_intents(limit=501)
+    if len(unresolved) >= 501:
+        raise TradeBlocked("PAPER journal unresolved intent list incomplete")
+    awaiting = [cid for cid, status in pending_blockers(reconciled)
+                if status == "reserved"]
+    if (unresolved and not positions and not orders
+            and len(awaiting) == len(unresolved)
+            and {row[0] for row in unresolved} == set(awaiting)
+            and all(row[1] == "reserved" for row in unresolved)):
+        return {"mode": "AWAITING_OWNER_APPROVAL",
+                "reason": "Prepared proposal is inside its owner-approval window; "
+                          "it expires automatically if unapproved",
+                "pending_client_order_ids": awaiting,
+                "expired_client_order_ids": expired,
+                "broker_orders": 0, "database_writes": len(expired)}
+    if autonomous is True and (positions or orders):
+        report = _managed_position_report(monitor, positions, orders, unresolved,
+                                          trading=trading, now=utcnow())
+        report["maintenance"] = maintenance
+        return report
+    if unresolved or positions or orders:
+        raise TradeBlocked("Earlier PAPER orders or existing exposure require reconciliation")
+    entries_today = 0
+    if autonomous is True:
+        entries_today = monitor.count_entries_today()
+    if autonomous is True and entries_today >= monitor.read_max_entries_per_day():
+        return {"mode": "NO_TRADE", "reason": "Daily PAPER entry limit reached",
+                "expired_client_order_ids": expired,
+                "broker_orders": 0, "database_writes": len(expired)}
+    if pending_blockers(reconciled):
         raise TradeBlocked("Existing PAPER order requires independent reconciliation")
     stage("verify_account_lifetime_history")
     account, activities, history, complete = fetch_account_history(trading)
@@ -430,7 +645,8 @@ def prepare_live_candidate(*, components, now=None, symbols=None, utcnow=None,
         now = utcnow()
         try:
             preview = preview_live_paper_entry(
-                symbol=symbol, quote=quote, equity=account.equity,
+                symbol=symbol, entry_sequence=entries_today + 1,
+                quote=quote, equity=account.equity,
                 available_cash=account.cash,
                 available_buying_power=account.buying_power,
                 now=now, market_open=clock.is_open)
@@ -459,6 +675,35 @@ def prepare_live_candidate(*, components, now=None, symbols=None, utcnow=None,
             lifetime_evidence=lifetime, lease=lease,
             calendar_verified=True, quote_age_seconds=preview.quote_age_seconds,
             journal_healthy=True, broker_reconciled=True)
+        from .paper_safety import execution_blockers
+        cutoffs = {"daily_three_percent_loss_cutoff",
+                   "fifteen_percent_drawdown_cutoff"} & set(execution_blockers(state))
+        if cutoffs:
+            # Independent self-stop: any service may PAUSE; only the operator re-arms.
+            executor.engage_kill_switch("executor: " + ",".join(sorted(cutoffs)))
+            raise TradeBlocked("Loss cutoff reached; kill switch engaged")
+        if autonomous is True:
+            stage("policy_authorize_and_submit")
+            submitted = submit_paper_once_supervised(
+                trading=trading, journal=executor, market_quote=quote,
+                preview=preview, safety_state=state, approval=None, now=now,
+                expected_account_sha256=expected_hash, market_data=market_data,
+                policy_authorize=True, verify_watchdog=verify_watchdog)
+            return {
+                "mode": "SUBMITTED_POLICY_AUTHORIZED",
+                "client_order_id": submitted.client_order_id,
+                "broker_order_id": submitted.broker_order_id,
+                "result": submitted.result,
+                "symbol": preview.symbol, "shares": preview.shares,
+                "buy_limit_usd": preview.buy_limit_usd,
+                "stop_usd": preview.stop_usd,
+                "estimated_stop_risk_usd": preview.stop_distance_risk_usd,
+                "order_notional_usd": preview.max_limit_purchase_usd,
+                "momentum_score": candidate["momentum_score"],
+                "candidate_evaluations": candidate_evaluations,
+                "expired_client_order_ids": expired,
+                "broker_orders": int(submitted.submitted_to_paper_broker),
+            }
         stage("reserve_exact_pilot_proposal")
         prepared = submit_paper_once_supervised(
             trading=trading, journal=executor, market_quote=quote,
@@ -489,7 +734,8 @@ def prepare_live_candidate(*, components, now=None, symbols=None, utcnow=None,
                 "order_notional_usd": preview.max_limit_purchase_usd,
             },
             "durable_reservation_written": True,
-            "database_writes": 1,
+            "expired_client_order_ids": expired,
+            "database_writes": 1 + len(expired),
             "broker_orders": 0,
             "submissions_enabled": False,
             "kill_switch_active": True,
@@ -595,7 +841,8 @@ def dispatch_approved_artifact(*, components, artifact, now=None, utcnow=None):
         raise TradeBlocked("Fresh approved-symbol IEX quote unavailable")
     from .live_quotes import preview_live_paper_entry
     live_preview = preview_live_paper_entry(
-        symbol=plan.symbol, quote=quote, equity=account.equity,
+        symbol=plan.symbol, entry_sequence=_entry_seq(plan), quote=quote,
+        equity=account.equity,
         available_cash=account.cash,
         available_buying_power=account.buying_power,
         now=utcnow(), market_open=True)
@@ -605,7 +852,8 @@ def dispatch_approved_artifact(*, components, artifact, now=None, utcnow=None):
         raise TradeBlocked("Fresh SDK order does not match recorded owner-approved request")
     now = utcnow()
     live_preview = preview_live_paper_entry(
-        symbol=plan.symbol, quote=quote, equity=account.equity,
+        symbol=plan.symbol, entry_sequence=_entry_seq(plan), quote=quote,
+        equity=account.equity,
         available_cash=account.cash,
         available_buying_power=account.buying_power,
         now=now, market_open=True)
@@ -640,8 +888,21 @@ def dispatch_approved_artifact(*, components, artifact, now=None, utcnow=None):
         intent_already_reserved=True, verify_watchdog=verify_watchdog)
 
 
+def _notify(title, message, priority="default"):
+    """Best effort; never affects trading outcome. Topic from DPAPI runner."""
+    topic = os.environ.get("PAPER_MONITOR_NTFY_TOPIC")
+    if not topic:
+        return False
+    try:
+        from .monitor_notify import send_activity_ntfy
+        return send_activity_ntfy(title, message, topic=topic, priority=priority)
+    except Exception:
+        return False
+
+
 def run_once(*, output: Path, reserve: bool = False, stage_observer=None,
-             check_observer=None, candidate_evaluation_observer=None):
+             check_observer=None, candidate_evaluation_observer=None,
+             autonomous=False):
     if reserve is not True:
         raise TradeBlocked("Executor requires explicit --prepare to perform a durable reservation")
     components = _live_components(stage_observer=stage_observer)
@@ -656,8 +917,16 @@ def run_once(*, output: Path, reserve: bool = False, stage_observer=None,
     report = prepare_live_candidate(
         components=components, prepared_observer=persist_before_reservation,
         stage_observer=stage_observer, check_observer=check_observer,
-        candidate_evaluation_observer=candidate_evaluation_observer)
+        candidate_evaluation_observer=candidate_evaluation_observer,
+        autonomous=autonomous)
     _atomic_json(output, report)
+    if report.get("mode") == "SUBMITTED_POLICY_AUTHORIZED":
+        _notify("entry submitted",
+                f"BUY {report['shares']} {report['symbol']} limit ${report['buy_limit_usd']} "
+                f"stop ${report['stop_usd']}; risk ${report['estimated_stop_risk_usd']}; "
+                f"cost ${report['order_notional_usd']}", "high")
+    for cid in report.get("expired_client_order_ids") or ():
+        _notify("proposal expired", f"Unfilled proposal {cid} expired and was audited")
     return report
 
 
@@ -666,6 +935,8 @@ def main(argv=None):
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--prepare", action="store_true",
                       help="allow one guarded durable proposal reservation; never submit")
+    mode.add_argument("--autonomous", action="store_true",
+                      help="policy-authorized entry: Neon policy + armed controls; one protected order max")
     mode.add_argument("--dispatch-file", type=Path,
                       help="single approved proposal artifact; hard release gate still applies")
     parser.add_argument("--output", default=".state/paper-executor/latest.json")
@@ -677,8 +948,10 @@ def main(argv=None):
     check_results = {}
     candidate_evaluations = []
     def set_stage(value):
-        nonlocal current_stage
+        nonlocal current_stage, dispatch_started
         current_stage = value
+        if value == "policy_authorize_and_submit":
+            dispatch_started = True
     def record_check(name, result):
         check_results[name] = result
     def runtime_receipt(status, *, error_type=None, reason=None, exit_code=None):
@@ -687,7 +960,8 @@ def main(argv=None):
         record = {
             "schema": 1, "run_id": run_id,
             "observed_at_utc": datetime.now(timezone.utc).isoformat(),
-            "mode": "prepare" if args.prepare else "dispatch",
+            "mode": ("prepare" if args.prepare else
+                     "autonomous" if args.autonomous else "dispatch"),
             "stage": current_stage, "status": status,
             "error_type": error_type, "safe_reason": reason,
             "exit_code": exit_code,
@@ -696,14 +970,30 @@ def main(argv=None):
             "candidate_evaluations": candidate_evaluations,
         }
         _atomic_json(Path(args.runtime_receipt), record)
+    def alert_once(reason, priority="high"):
+        if not (args.autonomous and args.runtime_receipt):
+            return
+        path = Path(args.runtime_receipt).with_name("executor-alerts.json")
+        try:
+            sent = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            sent = {}
+        now_s = datetime.now(timezone.utc).timestamp()
+        key = f"{current_stage}:{reason}"[:200]
+        if now_s - sent.get(key, 0) < 3600:
+            return
+        if _notify("executor blocked", f"Stage {current_stage}: {reason}"[:600], priority):
+            sent[key] = now_s
+            _atomic_json(path, sent)
     try:
-        if args.prepare:
-            set_stage("prepare_live_workflow")
+        if args.prepare or args.autonomous:
+            set_stage("autonomous_live_workflow" if args.autonomous else "prepare_live_workflow")
             result = run_once(output=Path(args.output), reserve=True,
                               stage_observer=set_stage,
                               check_observer=record_check,
-                              candidate_evaluation_observer=candidate_evaluations.append)
-            broker_orders = 0
+                              candidate_evaluation_observer=candidate_evaluations.append,
+                              autonomous=bool(args.autonomous))
+            broker_orders = int(result.get("broker_orders") or 0)
         else:
             from .paper_supervised_execution import PAPER_ORDER_SUBMISSIONS_RELEASED
             if PAPER_ORDER_SUBMISSIONS_RELEASED is not True:
@@ -739,6 +1029,8 @@ def main(argv=None):
         safe_reason = str(exc)
         runtime_receipt("blocked", error_type=type(exc).__name__,
                         reason=safe_reason, exit_code=2)
+        alert_once(re.sub(r"[^A-Za-z0-9_:;,. -]", "", safe_reason),
+                   "urgent" if "UNKNOWN" in safe_reason else "high")
         if dispatch_started:
             print("PAPER EXECUTOR DISPATCH OUTCOME UNKNOWN OR BLOCKED; perform independent broker reconciliation; NEVER retry this client order ID.",
                   file=sys.stderr)
@@ -749,6 +1041,7 @@ def main(argv=None):
     except Exception as exc:
         runtime_receipt("error", error_type=type(exc).__name__,
                         exit_code=2)
+        alert_once("unexpected " + type(exc).__name__, "high")
         if dispatch_started:
             print("PAPER EXECUTOR DISPATCH OUTCOME UNKNOWN OR BLOCKED; perform independent broker reconciliation; NEVER retry this client order ID.",
                   file=sys.stderr)

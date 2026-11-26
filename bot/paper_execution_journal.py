@@ -161,13 +161,14 @@ class PaperExecutorJournal(PostgresPaperJournal):
     def validate_protected_intent(plan: PaperOrderPlan):
         if not isinstance(plan, PaperOrderPlan):
             raise TradeBlocked("Invalid paper intent plan")
+        from .paper_safety import entry_sequence_of
         try:
-            key = make_client_order_id(
-                date.fromisoformat(plan.trading_day),
+            sequence = entry_sequence_of(
+                plan.client_order_id, date.fromisoformat(plan.trading_day),
                 plan.symbol, plan.strategy)
         except (ValueError, TypeError) as exc:
             raise TradeBlocked("Invalid session identifier") from exc
-        if key != plan.client_order_id:
+        if sequence is None:
             raise TradeBlocked("Unexpected client order ID")
         if (plan.order_class != "oto"
                 or plan.time_in_force not in {"day", "gtc"}
@@ -217,6 +218,43 @@ class PaperExecutorJournal(PostgresPaperJournal):
                         or type(row[0]) is not bool):
                     raise TradeBlocked("Unverifiable protected reservation")
                 return row[0]
+
+    def policy_authorize_entry(self, plan: PaperOrderPlan, *, request_sha256,
+                               account_id_sha256) -> bool:
+        """Neon policy authority: reserve + single-use 120s approval + audit.
+
+        Independent of Python: the DB checks ARMED controls, policy limits
+        against today's opening equity, the entry window and daily cap.
+        """
+        self.validate_protected_intent(plan)
+        if (plan.time_in_force != "gtc" or not isinstance(request_sha256, str)
+                or len(request_sha256) != 64
+                or not isinstance(account_id_sha256, str)
+                or len(account_id_sha256) != 64):
+            raise TradeBlocked("Policy authorization requires exact GTC terms")
+        self.assert_executor_permissions(reservation=True)
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SET LOCAL statement_timeout = '3000ms'")
+                cur.execute(
+                    "SELECT public.paper_policy_authorize_entry("
+                    "%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                    (plan.client_order_id, plan.strategy, plan.symbol,
+                     date.fromisoformat(plan.trading_day), plan.whole_shares,
+                     money(plan.estimated_entry), money(plan.protective_stop),
+                     request_sha256, account_id_sha256))
+                row = cur.fetchone()
+        if row != (True,):
+            raise TradeBlocked("PAPER policy authorization denied")
+        return True
+
+    def engage_kill_switch(self, reason: str) -> bool:
+        """Any service may PAUSE trading; none may re-arm it."""
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT public.paper_engage_kill_switch(%s)",
+                            (str(reason)[:200],))
+                return cur.fetchone() == (True,)
 
     def mark_uncertain(self, client_order_id):
         """Atomically mark reserved -> unknown, audit, NEVER blindly retry.

@@ -26,7 +26,7 @@ from .paper_safety import (
 
 # Locked code-level release switch, separate from the Neon kill switch.
 # Change only with explicit owner approval and verified persistent watchdog.
-PAPER_ORDER_SUBMISSIONS_RELEASED = False
+PAPER_ORDER_SUBMISSIONS_RELEASED = True
 
 
 @dataclass(frozen=True)
@@ -175,6 +175,21 @@ def _plan_from_quoted_preview(preview):
     return plan
 
 
+def _preview_entry_sequence(preview):
+    """Daily entry number encoded in the preview's own client order ID."""
+    from zoneinfo import ZoneInfo
+    from .paper_safety import entry_sequence_of
+    try:
+        day = datetime.fromisoformat(preview.observed_at_utc).astimezone(
+            ZoneInfo("America/New_York")).date()
+    except (TypeError, ValueError):
+        raise TradeBlocked("Invalid quote observation timestamp") from None
+    sequence = entry_sequence_of(preview.client_order_id, day, preview.symbol)
+    if sequence is None:
+        raise TradeBlocked("Preview client order ID is not a valid daily entry ID")
+    return sequence
+
+
 def _broker_did_not_find_order(trading, client_id):
     """Return True only on a definite 404; any other result aborts.
 
@@ -309,7 +324,7 @@ def submit_paper_once_supervised(
     *, trading, journal, market_quote, preview, safety_state,
     approval, now: datetime, expected_account_sha256=None, market_data=None,
     prepare_only=False, intent_already_reserved=False, verify_watchdog=None,
-    prepared_observer=None,
+    prepared_observer=None, policy_authorize=False,
 ) -> PaperSubmitResult | PreparedPaperOrder:
     """ONE broker submission at most, with exact matching reviewed terms.
 
@@ -321,6 +336,9 @@ def submit_paper_once_supervised(
         raise TradeBlocked("Invalid PAPER pilot mode")
     if prepare_only and intent_already_reserved:
         raise TradeBlocked("Preparation cannot reuse a prior intent")
+    if type(policy_authorize) is not bool or (policy_authorize and (
+            prepare_only or intent_already_reserved or approval is not None)):
+        raise TradeBlocked("Policy authorization is its own single-entry mode")
     if prepared_observer is not None and (not prepare_only or not callable(prepared_observer)):
         raise TradeBlocked("Prepared artifact observer is valid only before a preparation reservation")
     if PAPER_ORDER_SUBMISSIONS_RELEASED is not True and not prepare_only:
@@ -356,6 +374,7 @@ def submit_paper_once_supervised(
     assert_single_attempt_transport(trading)
     if not isinstance(preview, LivePaperEntryPreview):
         raise TradeBlocked("Invalid live IEX preview")
+    _seq = _preview_entry_sequence(preview)
 
     # Refresh actual broker account/clock/exposure immediately before
     # any database reservation. No non-paper endpoint can be passed in
@@ -392,7 +411,7 @@ def submit_paper_once_supervised(
     # Compute full order anew from a fresh IEX quote, latest account
     # balances, and today's Alpaca clock; reject stale/swapped previews.
     recomputed = preview_live_paper_entry(
-        symbol=preview.symbol, quote=market_quote, equity=account.equity,
+        symbol=preview.symbol, entry_sequence=_seq, quote=market_quote, equity=account.equity,
         available_cash=account.cash,
         available_buying_power=account.buying_power,
         now=now, market_open=bool(clock.is_open))
@@ -407,7 +426,7 @@ def submit_paper_once_supervised(
     observed = datetime.fromisoformat(preview.observed_at_utc)
     if observed.tzinfo is None or not -3 <= (now - observed).total_seconds() <= 45:
         raise TradeBlocked("Reviewed live order preview is stale")
-    if not prepare_only:
+    if not prepare_only and not policy_authorize:
         _validate_approval(approval, recomputed, now, expected_account_sha256)
     plan = _plan_from_quoted_preview(recomputed)
     from .paper_execution_journal import PaperExecutorJournal
@@ -424,6 +443,39 @@ def submit_paper_once_supervised(
     # lookup/race failures cannot cause a duplicate post: stable client
     # id + journal uniqueness + explicit no-repeat rule.
     _broker_did_not_find_order(trading, plan.client_order_id)
+    if policy_authorize:
+        # Neon policy authority replaces per-trade owner approval. Recheck
+        # session, lease, quote terms and deadline right before it commits.
+        final_now = now + timedelta(seconds=monotonic() - started)
+        _verify_paper_market_session(trading, clock, now=final_now)
+        assert_watchdog_fresh()
+        final_now = now + timedelta(seconds=monotonic() - started)
+        final_preview = preview_live_paper_entry(
+            symbol=preview.symbol, entry_sequence=_seq, quote=market_quote, equity=account.equity,
+            available_cash=account.cash,
+            available_buying_power=account.buying_power,
+            now=final_now, market_open=True)
+        for key in (
+            "client_order_id", "quote_at_utc", "bid_usd", "ask_usd",
+            "buy_limit_usd", "stop_usd", "shares", "risk_budget_usd",
+            "stop_distance_risk_usd", "max_limit_purchase_usd",
+        ):
+            if getattr(recomputed, key) != getattr(final_preview, key):
+                raise TradeBlocked("PAPER quote or order terms changed before authorization")
+        if final_now >= clock.next_close - timedelta(minutes=30):
+            raise TradeBlocked("PAPER entry deadline passed before authorization")
+        journal.policy_authorize_entry(
+            plan, request_sha256=request_digest,
+            account_id_sha256=expected_account_sha256)
+        approved_at = now + timedelta(seconds=monotonic() - started)
+        approval = ExplicitPaperTradeApproval(
+            client_order_id=plan.client_order_id, symbol=plan.symbol,
+            shares=plan.whole_shares, max_buy_limit_usd=recomputed.buy_limit_usd,
+            protective_stop_usd=recomputed.stop_usd,
+            approved_at_utc=approved_at,
+            expires_at_utc=approved_at + timedelta(seconds=120),
+            account_id_sha256=expected_account_sha256)
+        intent_already_reserved = True
     if prepare_only:
         # Do network-based calendar and watchdog reads first. Then recheck
         # quote age/deadline locally immediately before the durable reservation.
@@ -441,7 +493,7 @@ def submit_paper_once_supervised(
         assert_watchdog_fresh()
         final_now = now + timedelta(seconds=monotonic() - started)
         final_preview = preview_live_paper_entry(
-            symbol=preview.symbol, quote=market_quote, equity=account.equity,
+            symbol=preview.symbol, entry_sequence=_seq, quote=market_quote, equity=account.equity,
             available_cash=account.cash,
             available_buying_power=account.buying_power,
             now=final_now, market_open=True)
@@ -477,7 +529,7 @@ def submit_paper_once_supervised(
             _validate_approval(approval, recomputed, final_now,
                                expected_account_sha256)
             preview_live_paper_entry(
-                symbol=preview.symbol, quote=market_quote, equity=account.equity,
+                symbol=preview.symbol, entry_sequence=_seq, quote=market_quote, equity=account.equity,
                 available_cash=account.cash,
                 available_buying_power=account.buying_power,
                 now=final_now, market_open=True)
@@ -510,7 +562,7 @@ def submit_paper_once_supervised(
             _validate_approval(approval, recomputed, send_now,
                                expected_account_sha256)
             preview_live_paper_entry(
-                symbol=preview.symbol, quote=market_quote, equity=final_account.equity,
+                symbol=preview.symbol, entry_sequence=_seq, quote=market_quote, equity=final_account.equity,
                 available_cash=final_account.cash,
                 available_buying_power=final_account.buying_power,
                 now=send_now, market_open=True)

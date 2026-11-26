@@ -2,9 +2,15 @@
 
 No request is sent by construction. No CLI, credential storage or release flag.
 """
+import re
 from urllib.parse import urlsplit
 
 import requests
+
+# The only DELETE permitted: cancel ONE order by its broker UUID. No bulk
+# cancel (/v2/orders), no position liquidation endpoints, no account writes.
+_SINGLE_ORDER_PATH = re.compile(
+    r"^/v2/orders/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 
 from .paper_safety import PAPER_ENDPOINT, TradeBlocked
 
@@ -14,8 +20,10 @@ class BoundedPaperSession(requests.Session):
         parsed = urlsplit(str(url))
         if (parsed.scheme != "https" or parsed.netloc != "paper-api.alpaca.markets"
                 or parsed.query or parsed.fragment or parsed.username or parsed.password
-                or method.upper() not in ("GET", "POST")
-                or method.upper() == "POST" and parsed.path != "/v2/orders"):
+                or method.upper() not in ("GET", "POST", "DELETE")
+                or method.upper() == "POST" and parsed.path != "/v2/orders"
+                or method.upper() == "DELETE"
+                and not _SINGLE_ORDER_PATH.fullmatch(parsed.path)):
             raise TradeBlocked("Unexpected PAPER transport operation")
         kwargs["timeout"] = (3, 5)
         kwargs["allow_redirects"] = False

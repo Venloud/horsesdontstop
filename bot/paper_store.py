@@ -33,7 +33,7 @@ CREATE TABLE IF NOT EXISTS paper_intents (
         (time_in_force IN ('day','gtc')),
     status TEXT NOT NULL DEFAULT 'reserved' CHECK
         (status IN ('reserved', 'submitted', 'accepted', 'filled',
-                    'rejected', 'canceled', 'unknown')),
+                    'rejected', 'canceled', 'unknown', 'expired')),
     broker_order_id TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -61,13 +61,15 @@ CREATE TABLE IF NOT EXISTS paper_equity_snapshots (
 
 
 ALLOWED_TRANSITIONS = {
-    "reserved": frozenset(("submitted", "unknown", "rejected")),
+    "reserved": frozenset(("submitted", "unknown", "rejected", "expired")),
     "submitted": frozenset(("accepted", "filled", "unknown", "rejected", "canceled")),
     "accepted": frozenset(("filled", "unknown", "canceled", "rejected")),
     "unknown": frozenset(("submitted", "accepted", "filled", "rejected", "canceled")),
     "filled": frozenset(),
     "rejected": frozenset(),
     "canceled": frozenset(),
+    # Unapproved, never-dispatched proposal; only via the audited DB function.
+    "expired": frozenset(),
 }
 
 
@@ -208,9 +210,33 @@ class PostgresPaperJournal:
                     "protective_stop, broker_order_id" + tif + " "
                     "FROM paper_intents "
                     "WHERE status IN ('accepted','filled') "
-                    "ORDER BY created_at ASC LIMIT %s", (limit,))
+                    "ORDER BY created_at DESC LIMIT %s", (limit,))
                 rows = cur.fetchall()
                 return rows if has_tif else [tuple(row) + ("day",) for row in rows]
+
+    def count_entries_today(self) -> int:
+        """Non-expired intents for today's New York trading day (read only)."""
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT count(*) FROM paper_intents WHERE status <> 'expired' "
+                    "AND trading_day = (clock_timestamp() AT TIME ZONE "
+                    "'America/New_York')::date")
+                row = cur.fetchone()
+        if not row or type(row[0]) is not int:
+            raise TradeBlocked("Daily PAPER entry count unavailable")
+        return row[0]
+
+    def read_max_entries_per_day(self) -> int:
+        """Active Neon policy cap (read only). The DB enforces it independently."""
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT max_entries_per_day FROM paper_trading_policy "
+                            "WHERE singleton")
+                row = cur.fetchone()
+        if not row or type(row[0]) is not int or not 1 <= row[0] <= 3:
+            raise TradeBlocked("PAPER policy entry cap unavailable")
+        return row[0]
 
     def read_equity_references(self, day_start_utc, as_of_utc):
         """Read only. Require an equity sample very near the NYSE opening.
