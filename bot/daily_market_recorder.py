@@ -25,7 +25,26 @@ from .strategies import SECTOR_ETFS, DailyBar
 BACKFILL_START = date(2021, 1, 4)
 SECTOR_ETF_LIST = ("XLB", "XLC", "XLE", "XLF", "XLI", "XLK", "XLP", "XLRE", "XLU", "XLV", "XLY")
 STOCKS = tuple(sorted(SECTOR_ETFS))
-UNIVERSE = tuple(sorted(set(STOCKS) | set(SECTOR_ETFS.values()) | set(SECTOR_ETF_LIST) | {"SPY"}))
+# 2026-11-26 (autonomy rebuild): wider pool of liquid large caps and
+# asset-class ETFs so the autopilot and the researcher have more
+# opportunities. Hand-picked current large caps: survivorship-biased, so
+# backtests on them overstate results; forward paper results are the test.
+EXTRA_STOCKS = (
+    "GOOGL", "AMZN", "META", "AVGO", "ORCL", "CRM", "ADBE", "CSCO", "QCOM", "TXN", "IBM",
+    "MU", "AMAT", "NFLX", "INTU", "NOW", "PANW",
+    "WFC", "GS", "MS", "C", "BLK", "SCHW", "AXP", "V", "MA", "PYPL",
+    "JNJ", "UNH", "LLY", "MRK", "ABBV", "TMO", "ABT", "AMGN", "GILD", "CVS", "BMY", "ISRG",
+    "HD", "MCD", "NKE", "SBUX", "COST", "PG", "PEP", "TGT", "LOW", "BKNG", "GM",
+    "COP", "SLB", "OXY", "EOG",
+    "CAT", "DE", "BA", "GE", "HON", "UPS", "RTX", "LMT", "UNP",
+    "T", "VZ", "CMCSA", "TMUS",
+    "NEE", "DUK", "SO", "AMT", "PLD",
+    "LIN", "FCX", "NEM",
+)
+ASSET_ETFS = ("QQQ", "IWM", "DIA", "GLD", "TLT")
+UNIVERSE = tuple(sorted(set(STOCKS) | set(SECTOR_ETFS.values()) | set(SECTOR_ETF_LIST)
+                        | set(EXTRA_STOCKS) | set(ASSET_ETFS) | {"SPY"}))
+TRADABLE = UNIVERSE   # SPY is tradable too (and the market filter)
 FIELDS = ("day", "open", "high", "low", "close", "volume")
 
 
@@ -78,9 +97,19 @@ def fetch(client, symbols: Sequence[str], start: date, end_exclusive: date) -> M
     out = {}
     for s in symbols:
         rows = sorted(resp.data.get(s, []), key=lambda b: b.timestamp)
-        out[s] = [DailyBar(b.timestamp.date(), float(b.open), float(b.high), float(b.low),
-                           float(b.close), float(b.volume)) for b in rows]
+        out[s] = [x for x in (_bar(b) for b in rows) if x is not None]
     return out
+
+
+def _bar(b):
+    """IEX-only bars sometimes print an open/close outside the IEX high/low;
+    widen high/low to cover them. Skip bars that are still invalid."""
+    o, h, l, c, vol = (float(b.open), float(b.high), float(b.low), float(b.close),
+                       float(b.volume))
+    try:
+        return DailyBar(b.timestamp.date(), o, max(h, o, c), min(l, o, c), c, vol)
+    except ValueError:
+        return None
 
 
 def record(client, folder: Path, today: date) -> dict:

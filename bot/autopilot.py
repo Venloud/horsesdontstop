@@ -37,23 +37,28 @@ from zoneinfo import ZoneInfo
 from .autopilot_journal import Journal
 from .paper_exit_manager import time_exit_cutoff
 from .paper_safety import PAPER_ENDPOINT, TradeBlocked
-from .strategies import DailyBar, signal_score
+from .strategies import DailyBar
+from .system_signals import latest_score
 
 NY = ZoneInfo("America/New_York")
 RUNTIME = Path(os.environ.get("LOCALAPPDATA", ".")) / "horsesdontstop"
-UNIVERSE = ("AAPL", "AMD", "BAC", "CVX", "DIS", "F", "INTC", "JPM", "KO", "MSFT", "NVDA",
-            "PFE", "TSLA", "WMT", "XOM", "XLB", "XLC", "XLE", "XLF", "XLI", "XLK", "XLP",
-            "XLRE", "XLU", "XLV", "XLY")
+try:
+    from .daily_market_recorder import TRADABLE as UNIVERSE
+except Exception:                                    # pragma: no cover
+    UNIVERSE = ("SPY",)
 ACTIVE = {"new", "accepted", "pending_new", "accepted_for_bidding", "partially_filled",
           "pending_replace", "replaced", "held", "calculated", "pending_cancel"}
 
 
 @dataclass(frozen=True)
 class Settings:
-    strategy: str = "trend_following"
+    strategy: str = "trend_following"     # signal family, or "cash" = no new entries
+    params: dict = field(default_factory=dict)
+    system_id: str = "default"
     market_filter_ma: int = 50          # entries only while SPY > its N-day average (0 = off)
     max_positions: int = 5
     cash_reserve: float = 0.02          # fraction of equity kept as cash
+    size_scale: float = 1.0             # 0.5 while the engine's champion is provisional
     min_order_usd: float = 5.0
     initial_stop: float = 0.03
     trail: float = 0.05
@@ -118,13 +123,16 @@ def market_filter_ok(spy: list[DailyBar], n: int) -> bool:
     return spy[-1].close > sum(b.close for b in spy[-n:]) / n
 
 
-def rank_candidates(bars: dict[str, list[DailyBar]], strategy: str, exclude: set) -> list:
+def rank_candidates(bars: dict[str, list[DailyBar]], strategy: str, exclude: set,
+                    params: dict | None = None) -> list:
+    p = dict(params or {})
+    only = set(str(p.pop("symbols")).split("+")) if "symbols" in p else None
     out = []
     for sym, hist in bars.items():
-        if sym in exclude or sym == "SPY" or not hist:
+        if sym in exclude or not hist or (only is not None and sym not in only):
             continue
         try:
-            score = signal_score(strategy, hist)
+            score = latest_score(strategy, p, hist)
         except Exception:
             score = None
         if score is not None and score > 0:
@@ -135,7 +143,7 @@ def rank_candidates(bars: dict[str, list[DailyBar]], strategy: str, exclude: set
 def slot_budget(*, equity: float, cash: float, pending_buys: float, s: Settings) -> float:
     """Dollars for the next new position: an equal slot of current equity,
     limited by spendable cash (no margin)."""
-    slot = equity * (1 - s.cash_reserve) / s.max_positions
+    slot = equity * (1 - s.cash_reserve) / s.max_positions * s.size_scale
     spendable = cash - pending_buys - equity * s.cash_reserve
     return max(0.0, min(slot, spendable))
 
@@ -308,6 +316,8 @@ class Run:
         market_open = getattr(clock, "is_open", None) is True
         self.record.update(equity=equity, cash=cash, market_open=market_open)
         cal = b.calendar(self.today - timedelta(days=120), self.today)
+        past = [ny_date(d.date) for d in cal if ny_date(d.date) < self.today]
+        self.prev_session = past[-1] if past else None
         today_cal = next((d for d in cal if ny_date(d.date) == self.today), None)
         session_close = getattr(today_cal, "close", None)
         open_orders = b.open_orders()
@@ -373,13 +383,18 @@ class Run:
 
     # ------------------------------------------------------------------
     def _bars(self, s: Settings):
+        """Daily bars through the previous session: the nightly recorder's local
+        history when it is current (same data the researcher used), else Alpaca."""
+        local = self._local_bars(s)
+        if local is not None:
+            return local
         cache = self.folder / "autopilot-bars" / f"{self.today.isoformat()}.json"
         if cache.exists():
             raw = json.loads(cache.read_text(encoding="utf-8"))
             return {k: [DailyBar(date.fromisoformat(r[0]), *r[1:]) for r in rows]
                     for k, rows in raw.items()}
-        bars = self.broker.daily_bars(tuple(s.universe) + ("SPY",),
-                                      self.today - timedelta(days=160))
+        bars = self.broker.daily_bars(tuple(dict.fromkeys(tuple(s.universe) + ("SPY",))),
+                                      self.today - timedelta(days=400))
         bars = {k: [x for x in rows if x.day < self.today] for k, rows in bars.items()}
         try:
             cache.parent.mkdir(parents=True, exist_ok=True)
@@ -389,6 +404,39 @@ class Run:
         except OSError:
             pass
         return bars
+
+    def _local_bars(self, s: Settings):
+        hist_dir = self.folder / "market-history"
+        if not (hist_dir / "SPY.csv").exists():
+            return None
+        try:
+            from .daily_market_recorder import read_history
+            data = read_history(hist_dir, tuple(dict.fromkeys(tuple(s.universe) + ("SPY",))))
+        except Exception:
+            return None
+        spy = data.get("SPY") or []
+        prev = getattr(self, "prev_session", None)
+        if not spy or prev is None or spy[-1].day < prev:
+            return None
+        return {k: [x for x in rows if x.day < self.today][-300:] for k, rows in data.items() if rows}
+
+    def _insider_candidates(self, exclude):
+        path = self.folder / "insider-signals.json"
+        if not path.exists():
+            return [], {}
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        through = raw.get("through")
+        if not through or (self.today - date.fromisoformat(through)).days > 5:
+            return [], {}
+        sig = {k: v for k, v in raw.get("signals", {}).items() if k not in exclude}
+        if not sig:
+            return [], {}
+        syms = sorted(sig, key=lambda k: -sig[k])[:40]
+        bars = self.broker.daily_bars(syms, self.today - timedelta(days=60))
+        bars = {k: [x for x in rows if x.day < self.today] for k, rows in bars.items()}
+        from .insider_universe import liquid
+        ok = [k for k in syms if liquid(bars.get(k, []))]
+        return ok, bars
 
     def _adopt(self, p, open_orders, hist):
         sym = p.symbol
@@ -413,7 +461,7 @@ class Run:
         # Entries the autopilot itself sent keep their strategy name.
         mine = [o for o in self.journal.orders_on(opened.isoformat(), "entry") if o["symbol"] == sym]
         if mine:
-            meta.update(strategy=self.settings.strategy, adopted=0,
+            meta.update(strategy=self.settings.system_id, adopted=0,
                         stop=max(stop, cents_down(entry * (1 - self.settings.initial_stop))))
         self.journal.upsert_position(meta)
         self.log("info", "position tracked", {"symbol": sym, "entry": entry, "stop": meta["stop"],
@@ -550,6 +598,9 @@ class Run:
             self.log("alert", "runaway guard: daily order ceiling reached", s.max_orders_per_day)
             info["skip"] = "order ceiling"
             return info
+        if s.strategy == "cash":
+            info["skip"] = "strategy engine: no qualified system, staying in cash"
+            return info
         bars = bars or self._bars(s)
         spy = bars.get("SPY", [])
         if not spy or (self.today - spy[-1].day).days > 5:
@@ -567,7 +618,12 @@ class Run:
         touched = {o["symbol"] for o in self.journal.orders_on(today)
                    if o["purpose"] in ("entry", "exit")}
         free = s.max_positions - len(positions) - len(pending_syms - set(positions))
-        candidates = rank_candidates(bars, s.strategy, set(positions) | pending_syms | touched)
+        exclude = set(positions) | pending_syms | touched
+        if s.strategy == "insider":
+            candidates, extra = self._insider_candidates(exclude)
+            bars = {**bars, **extra}
+        else:
+            candidates = rank_candidates(bars, s.strategy, exclude, s.params)
         info.update(free_slots=max(free, 0), candidates=candidates[:10], bought=[])
         for sym in candidates:
             if free <= 0:
@@ -604,7 +660,7 @@ class Run:
                                           broker_id=str(o.id), status=v(o.status))
                 self.log("trade", "BUY", {"symbol": sym, "qty": str(qty), "limit": limit,
                                           "usd": round(float(qty) * limit, 2),
-                                          "strategy": s.strategy})
+                                          "strategy": s.system_id})
             info["bought"].append(sym)
             pending_usd += float(qty) * limit
             free -= 1

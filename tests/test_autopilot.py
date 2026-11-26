@@ -123,6 +123,8 @@ def test_slot_budget_uses_equity_slots_and_cash_without_margin():
     assert slot_budget(equity=500, cash=500, pending_buys=0, s=s) == pytest.approx(98.0)
     assert slot_budget(equity=500, cash=60, pending_buys=0, s=s) == pytest.approx(50.0)
     assert slot_budget(equity=500, cash=60, pending_buys=60, s=s) == 0.0
+    half = Settings(max_positions=5, cash_reserve=0.02, size_scale=0.5)
+    assert slot_budget(equity=500, cash=500, pending_buys=0, s=half) == pytest.approx(49.0)
 
 
 def test_trailing_stop_only_rises():
@@ -148,10 +150,28 @@ def test_exit_rules():
                        s=Settings(take_profit=0.06)).startswith("take-profit")
 
 
-def test_rank_excludes_held_and_spy():
+def test_rank_excludes_held_and_respects_symbol_lists():
     data = universe_bars()
     ranked = rank_candidates(data, "trend_following", {"AAPL"})
-    assert "AAPL" not in ranked and "SPY" not in ranked and "MSFT" in ranked
+    assert "AAPL" not in ranked and "MSFT" in ranked
+    only = rank_candidates(data, "ma_trend", set(), {"ma": 50, "symbols": "SPY+XLK"})
+    assert set(only) == {"SPY", "XLK"}
+
+
+def test_cash_strategy_opens_nothing(tmp_path):
+    b = FakeBroker(bars_=universe_bars())
+    rec = make_run(b, tmp_path, settings=Settings(strategy="cash")).execute(SHA)
+    assert not b.sent and "cash" in rec["entries"]["skip"]
+
+
+def test_engine_settings_file_is_loaded(tmp_path):
+    from bot.autopilot import load_settings
+    (tmp_path / "autopilot-settings.json").write_text(
+        '{"strategy": "momentum", "params": {"lookback": 126}, "system_id": "x", '
+        '"max_positions": 10, "trail": 0.1, "universe": ["SPY", "QQQ"], "unknown": 1}')
+    s = load_settings(tmp_path)
+    assert (s.strategy, s.params, s.max_positions, s.trail, s.universe) == (
+        "momentum", {"lookback": 126}, 10, 0.1, ("SPY", "QQQ"))
 
 
 def test_ids_are_deterministic_and_short():
@@ -202,7 +222,7 @@ def test_bad_price_is_skipped(tmp_path):
     data = universe_bars(up=("AAPL",))
     b = FakeBroker(bars_=data, price={"AAPL": data["AAPL"][-1].close * 2})
     make_run(b, tmp_path).execute(SHA)
-    assert not [o for o in b.sent if o.side == "buy"]
+    assert not [o for o in b.sent if o.side == "buy" and o.symbol == "AAPL"]
 
 
 def dis(qty="1", price=125.6):
@@ -277,4 +297,4 @@ def test_does_not_rebuy_symbol_traded_today(tmp_path):
     run.journal.record_order(client_order_id="e", day=TODAY.isoformat(), symbol="AAPL",
                              side="sell", kind="market", qty="1", price=None, purpose="exit")
     run.execute(SHA)
-    assert not [o for o in b.sent if o.side == "buy"]
+    assert not [o for o in b.sent if o.side == "buy" and o.symbol == "AAPL"]
