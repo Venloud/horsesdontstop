@@ -201,12 +201,9 @@ def main():
     while True:
         try:
             report = run_once(output=args.output)
-        except Exception as error:
-            # Reuse the existing sanitized diagnostic vocabulary. Never show
-            # driver messages, which can contain credentials or private URLs.
-            from .paper_supervisor_loop import _diagnostic_reason
-            print("STAGE independent_assessment: FAIL "
-                  + _diagnostic_reason(error), file=sys.stderr)
+        except Exception:
+            # Driver errors can contain DB connection strings or API URLs
+            # with credentials. Keep all exception details out of logs.
             print("BLOCKED: broker/Neon preflight unavailable; no orders sent.",
                   file=sys.stderr)
             attempt_notice(unverified_incident())
@@ -222,10 +219,6 @@ def main():
                 "ZERO order submissions."
             )
             if report["monitor_incident"]["level"] == "critical":
-                from .paper_supervisor_loop import diagnostic_assessment_result
-                # Fixed public stage and reason, no broker/DB response content.
-                print("STAGE independent_assessment: FAIL "
-                      + str(diagnostic_assessment_result(report)), file=sys.stderr)
                 print("CRITICAL: paper state unsafe or unverified; "
                       "review Alpaca positions and stop protection.",
                       file=sys.stderr)
