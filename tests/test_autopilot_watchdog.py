@@ -49,7 +49,11 @@ def test_main_reports_stale_with_no_network_or_notifications(tmp_path, monkeypat
     receipt(tmp_path, age=901)
     monkeypatch.setattr(wd, "paper_market_open", lambda: True)
     monkeypatch.setattr(wd, "notify_alert", lambda *a, **k: "NOT_CONFIGURED")
-    monkeypatch.setattr(wd, "datetime", type("Clock", (), {"now": staticmethod(lambda tz: NOW)}))
+    class FrozenDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return NOW
+    monkeypatch.setattr(wd, "datetime", FrozenDatetime)
     assert wd.main(["--folder", str(tmp_path)]) == 3
     assert "ALERT RECEIPT_STALE" in capsys.readouterr().out
 
