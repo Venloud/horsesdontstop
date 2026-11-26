@@ -25,6 +25,7 @@ from .paper_safety import PAPER_ENDPOINT, PaperSafetyState, TradeBlocked, money
 
 
 NY = ZoneInfo("America/New_York")
+EXITS_IN_EXECUTOR = False
 
 
 def build_safety_state(*, account, clock, positions, orders, control,
@@ -304,9 +305,11 @@ def _run_exits(trading, market_data, monitor, positions, orders, now, *, release
             continue
         market[position.symbol] = market_snapshot(
             market_data=market_data, trading=trading, symbol=position.symbol,
-            filled_at=filled_at, now=now)
+            filled_at=filled_at, now=now,
+            position_price=getattr(position, "current_price", None))
     actions = plan_exits(positions=positions, orders=with_parents,
-                         approved_stops=approved, now=now, market=market)
+                         approved_stops=approved, now=now, market=market,
+                         market_open=getattr(trading.get_clock(), "is_open", None) is True)
     results = []
     for action in actions[:1]:
         result = execute_exit(trading, action, released=released)
@@ -365,8 +368,11 @@ def _run_maintenance(trading, monitor, positions, orders, now, market_data=None)
     if unexplained:
         _notify("unexplained position",
                 "Not touched: " + ",".join(sorted(unexplained)), "urgent")
-    exits = _run_exits(trading, market_data, monitor, positions, orders, now,
-                       released=released)
+    # Exits are owned by the separate exit-only service (paper_exit_service,
+    # task HorsesDontStop-PAPER-Exits) so two processes never race to cancel
+    # the same stop. Set EXITS_IN_EXECUTOR=True only if that task is removed.
+    exits = (_run_exits(trading, market_data, monitor, positions, orders, now,
+                        released=released) if EXITS_IN_EXECUTOR else [])
     if any(e.get("result") in ("exit_filled", "exit_submitted") for e in exits):
         writes += 2   # stop-leg cancel + exit SELL
         positions = trading.get_all_positions()

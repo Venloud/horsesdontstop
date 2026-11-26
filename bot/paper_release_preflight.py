@@ -23,6 +23,42 @@ def _age(path):
         return None, None
 
 
+EXIT_RECEIPT_MAX_AGE_OPEN = 600          # task runs every 5 minutes in session
+EXIT_RECEIPT_MAX_AGE_CLOSED = 20 * 3600  # overnight: last run of the session
+
+
+def positions_managed(positions, orders, receipt, age, *, market_open):
+    """Pass when flat, or when the exit-only service recently saw and managed
+    every broker position and every open order is that position's SELL
+    protection or exit. Returns (ok, detail)."""
+    held = sorted(getattr(p, "symbol", "?") for p in positions)
+    if not positions and not orders:
+        return True, "flat"
+    if not positions:
+        return False, f"orders without positions={len(orders)}"
+    limit = EXIT_RECEIPT_MAX_AGE_OPEN if market_open else EXIT_RECEIPT_MAX_AGE_CLOSED
+    if receipt is None or age is None or not 0 <= age <= limit:
+        return False, f"exit-service receipt missing/stale (age={None if age is None else round(age)}s, max {limit}s)"
+    if receipt.get("status") not in ("ok",):
+        return False, f"exit-service status={receipt.get('status')}"
+    if receipt.get("released") is not True:
+        return False, "exit service is in DRY RUN; positions are watched, not managed"
+    seen = sorted(r.get("symbol") for r in receipt.get("positions", []))
+    if receipt.get("unmanaged_symbols") or seen != held:
+        return False, f"held={held} managed={seen} unmanaged={receipt.get('unmanaged_symbols')}"
+    def side(o):
+        v = getattr(o, "side", None)
+        return str(getattr(v, "value", v)).lower()
+    stray = [o for o in orders
+             if getattr(o, "symbol", None) not in held or side(o) != "sell"]
+    stray = [o for o in stray
+             if not any(side(l) == "sell" for l in (getattr(o, "legs", None) or []))]
+    if stray:
+        return False, f"non-exit open orders={len(stray)}"
+    pnl = ", ".join(f"{r.get('symbol')} {r.get('pnl_pct')}%" for r in receipt.get("positions", []))
+    return True, f"managed: {pnl} (receipt {round(age)}s old, released={receipt.get('released')})"
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument("--stage", choices=("locked", "supervised"), required=True)
@@ -104,8 +140,12 @@ def main(argv=None):
     gate("alpaca: account not blocked", account.trading_blocked is False)
     positions = broker.get_all_positions()
     orders = broker.get_orders(filter=GetOrdersRequest(status=QueryOrderStatus.OPEN, nested=True, limit=500))
-    gate("alpaca: flat (no positions/orders)", not positions and not orders,
-         f"positions={len(positions)} orders={len(orders)}")
+    folder = Path(os.environ["LOCALAPPDATA"]) / "horsesdontstop"
+    clock = broker.get_clock()
+    exit_receipt, exit_age = _age(folder / "exit-service-runtime.json")
+    ok, detail = positions_managed(positions, orders, exit_receipt, exit_age,
+                                   market_open=clock.is_open is True)
+    gate("alpaca: flat or every position managed by exit service", ok, detail)
     # Same lifetime accounting proof the executor requires before any entry.
     from .paper_accounting import fetch_account_history, reconcile_cash_lifetime
     try:
@@ -125,7 +165,6 @@ def main(argv=None):
                  f"{a.get('qty')} {a.get('symbol')} @ {a.get('price')}", required=False)
     except Exception as exc:
         gate("ledger: lifetime accounting reconciles", False, str(exc)[:80])
-    clock = broker.get_clock()
     gate("alpaca: market open", clock.is_open is True, f"is_open={clock.is_open}", required=supervised)
     gate("alpaca: equity", True, f"equity={account.equity} buying_power={account.buying_power}",
          required=False)
@@ -134,7 +173,6 @@ def main(argv=None):
     gate("transport: reconciler client is GET-only",
          type(broker._session) is ReadOnlyPaperSession)
 
-    folder = Path(os.environ["LOCALAPPDATA"]) / "horsesdontstop"
     sup, sup_age = _age(folder / "supervisor-runtime.json")
     rec, rec_age = _age(folder / "reconciler-runtime.json")
     gate("supervisor: receipt fresh (<=120s)", sup_age is not None and 0 <= sup_age <= 120,

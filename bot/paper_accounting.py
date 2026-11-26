@@ -23,6 +23,12 @@ def timestamp(value):
         raise TradeBlocked("Accounting timestamp unverified") from None
 
 
+def _activity_time(item):
+    if item.get("activity_type") == "FILL":
+        return timestamp(item.get("transaction_time"))
+    return timestamp(item.get("created_at") or item.get("date"))
+
+
 def fetch_account_history(trading):
     if str(getattr(trading, "_base_url", "")).rstrip("/") != PAPER_ENDPOINT:
         raise TradeBlocked("Accounting requires PAPER broker")
@@ -75,6 +81,7 @@ def reconcile_cash_lifetime(*, account, activities, history, positions, orders,
     journal_count = 0
     shares = {}                        # symbol -> held shares (never negative)
     trade_cash = Decimal("0")          # cash from fills (sell +, buy -)
+    fee_total = Decimal("0")           # FEE activities (negative)
     first_fill_at = None
     realized_path = []                 # (time, realized equity) at each flat point
     for item in activities:
@@ -82,6 +89,12 @@ def reconcile_cash_lifetime(*, account, activities, history, positions, orders,
                 or not item["id"] or item["id"] in ids:
             raise TradeBlocked("Accounting activity unverified")
         ids.add(item["id"])
+    # Alpaca's direction=asc orders by activity DATE, not exact time: fees for
+    # a 2026-11-10 sale were posted 01:16 and 01:05 the next night and listed
+    # before that day's fills (incident 2026-11-20). Replay in real time
+    # order instead; a stable sort keeps broker order for equal times.
+    activities = sorted(activities, key=_activity_time)
+    for item in activities:
         kind = item.get("activity_type")
         if kind == "FILL":
             # Trade activity: Alpaca FILL rows carry transaction_time, side,
@@ -127,6 +140,7 @@ def reconcile_cash_lifetime(*, account, activities, history, positions, orders,
             if amount >= 0:
                 raise TradeBlocked("Invalid broker fee evidence")
             trade_cash += amount
+            fee_total += amount
             continue
         else:
             raise TradeBlocked("Activity type requires manual accounting review")
@@ -150,9 +164,15 @@ def reconcile_cash_lifetime(*, account, activities, history, positions, orders,
     activity_totals = {}
     for _, kind, amount in flows:
         activity_totals[kind] = activity_totals.get(kind, Decimal("0")) + amount
+    # Alpaca's portfolio history also lists regulatory fees as a cashflow
+    # (seen 2026-11-20); they must match the FEE activities to the cent.
+    activity_totals["FEE"] = fee_total
     if totals != {k: v for k, v in activity_totals.items() if v}:
         raise TradeBlocked("Activity and portfolio cashflow disagree")
-    flow_series = {kind: values for kind, values in cashflow.items()}
+    # Fees are already inside the broker's daily profit_loss (2026-11-11:
+    # 500.00 - 0.53 = 499.47 with a -0.02 FEE cashflow), so they are not
+    # added again in the equity step check below.
+    flow_series = {kind: values for kind, values in cashflow.items() if kind != "FEE"}
     previous = None
     for i, (raw_time, raw_equity, raw_pnl) in enumerate(zip(times, equities, pnl)):
         if type(raw_time) not in (int, float):

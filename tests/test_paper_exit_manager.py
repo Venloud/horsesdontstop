@@ -36,7 +36,8 @@ POS = [SimpleNamespace(symbol="WMT", qty="1")]
 
 def plan(market, **kw):
     return plan_exits(positions=POS, orders=[parent()], approved_stops=APPROVED,
-                      now=kw.pop("now", NOW), market=market, **kw)
+                      now=kw.pop("now", NOW), market=market,
+                      market_open=kw.pop("market_open", True), **kw)
 
 
 def test_no_exit_while_price_is_above_trail_and_inside_hold():
@@ -64,14 +65,23 @@ def test_time_limit_exits_on_fifth_session_after_1545():
 def test_operator_close_targets_only_journaled_positions_with_live_stop():
     acts = plan_exits(positions=POS + [SimpleNamespace(symbol="XOM", qty="3")],
                       orders=[parent()], approved_stops=APPROVED, now=NOW, market={},
-                      operator_close=True)
+                      operator_close=True, market_open=True)
     assert [(a.symbol, a.stop_leg_id, a.shares) for a in acts] == [("WMT", LEG, Decimal("1"))]
 
 
-def test_position_without_live_stop_leg_is_not_an_exit_candidate():
-    acts = plan_exits(positions=POS, orders=[parent("canceled")], approved_stops=APPROVED,
-                      now=NOW, market={}, operator_close=True)
+@pytest.mark.parametrize("status", ["expired", "rejected", "filled"])
+def test_position_without_live_stop_leg_is_not_an_exit_candidate(status):
+    acts = plan_exits(positions=POS, orders=[parent(status)], approved_stops=APPROVED,
+                      now=NOW, market={}, operator_close=True, market_open=True)
     assert acts == ()
+
+
+def test_canceled_stop_on_held_position_is_recovered_for_exit():
+    # 2026-11-20: a late-confirmed cancel left shares unprotected; they must
+    # still be sellable (see test_paper_exit_cancel_recovery.py).
+    acts = plan_exits(positions=POS, orders=[parent("canceled")], approved_stops=APPROVED,
+                      now=NOW, market={}, operator_close=True, market_open=True)
+    assert [a.stop_leg_id for a in acts] == [LEG]
 
 
 class Broker:
@@ -182,5 +192,5 @@ def test_earlier_closed_same_symbol_trade_does_not_hide_the_live_one():
     approved = [(CID, "filled", "WMT", 1, Decimal("121.67"), PID, "gtc"),
                 (old_cid, "filled", "WMT", 1, Decimal("121.00"), "old-parent", "gtc")]
     acts = plan_exits(positions=POS, orders=[parent(), old_parent], approved_stops=approved,
-                      now=NOW, market={}, operator_close=True)
+                      now=NOW, market={}, operator_close=True, market_open=True)
     assert [a.client_order_id for a in acts] == [CID]

@@ -44,11 +44,14 @@ def main(argv=None):
     orders, _ = orders_with_recent_parents(trading, open_orders, now=now)
     actions = plan_exits(positions=positions, orders=orders,
                          approved_stops=monitor.read_approved_stop_intents(limit=501),
-                         now=now, market={}, operator_close=True)
+                         now=now, market={}, operator_close=True,
+                         market_open=getattr(trading.get_clock(), "is_open", None) is True)
     covered = {a.symbol for a in actions}
     for p in positions:
         if p.symbol not in covered:
             print(f"NOT TOUCHED: {p.symbol} {p.qty} (not a journaled bot position with a live stop)")
+    if positions and not actions:
+        print("Nothing closed: market closed or no live stop (a stop is never cancelled outside regular hours).")
     if not actions:
         print("Nothing to close."); return 0
     released = PAPER_ORDER_SUBMISSIONS_RELEASED is True and not args.dry_run

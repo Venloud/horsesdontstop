@@ -77,10 +77,30 @@ def test_unknown_activity_types_still_need_manual_review():
 def test_fees_reduce_cash_and_must_be_negative():
     fee = {"id": "a5", "activity_type": "FEE", "created_at": "2026-11-10T16:27:00Z",
            "net_amount": "-0.01", "status": "executed", "currency": "USD"}
-    r = run([FUND, BUY, SELL, fee], hist=history(500.13, 0.13), acct=account("500.13"))
+    hist = history(500.13, 0.13)
+    hist["cashflow"]["FEE"] = [0, 0, -0.01]
+    r = run([FUND, BUY, SELL, fee], hist=hist, acct=account("500.13"))
     assert r["realized_pnl"] == "0.13"
+    with pytest.raises(TradeBlocked, match="cashflow disagree"):
+        run([FUND, BUY, SELL, fee], hist=history(500.13, 0.13), acct=account("500.13"))
     with pytest.raises(TradeBlocked, match="fee"):
         run([FUND, BUY, SELL, dict(fee, net_amount="0.01")], acct=account("500.15"))
+
+
+def test_broker_date_ordered_fees_listed_before_fills_reconcile():
+    # Real 2026-11-20 shape: asc order lists next-night fees (01:16 then 01:05)
+    # dated 2026-11-10 ahead of that day's fills.
+    reg = {"id": "f1", "activity_type": "FEE", "created_at": "2026-11-11T01:16:00Z",
+           "date": "2026-11-10", "net_amount": "-0.01", "status": "executed", "currency": "USD"}
+    cat = dict(reg, id="f2", created_at="2026-11-11T01:05:36Z")
+    hist = history(500.12, 0.12)
+    hist["timestamp"].append(D(2026, 11, 11))
+    hist["equity"].append(500.12)
+    hist["profit_loss"].append(0)
+    hist["cashflow"]["JNLC"].append(0)
+    hist["cashflow"]["FEE"] = [0, 0, 0, -0.02]   # fees inside profit_loss, not added twice
+    r = run([FUND, reg, cat, BUY, SELL], hist=hist, acct=account("500.12"))
+    assert r["realized_pnl"] == "0.12"
 
 
 def test_inconsistent_broker_series_on_trading_days_is_refused():
@@ -106,8 +126,10 @@ def test_malformed_fill_is_refused():
     (lambda kw: kw.update(activities=[]), "evidence missing"),
     (lambda kw: kw.update(history={}), "history incomplete"),
     (lambda kw: kw.update(history={**history(), "cashflow": {"JNLC": [0, 0, 0]}}), "cashflow disagree"),
-    (lambda kw: kw.update(activities=[FUND, BUY, dict(SELL, transaction_time="2026-11-10T16:00:00Z")]), "chronology"),
-    (lambda kw: kw.update(activities=[FUND, SELL, BUY]), "short"),
+    # Replayed in real time order: a sell timed before its buy is a short.
+    (lambda kw: kw.update(activities=[FUND, BUY, dict(SELL, transaction_time="2026-11-10T16:00:00Z")]), "short"),
+    (lambda kw: kw.update(activities=[FUND, BUY, dict(SELL, transaction_time="2099-01-01T00:00:00Z")]), "chronology"),
+    (lambda kw: kw.update(activities=[FUND, SELL]), "short"),
     (lambda kw: kw.update(activities=[FUND, BUY, dict(BUY)]), "unverified"),
     (lambda kw: kw.update(expected_account_hash="0" * 64), "identity"),
     (lambda kw: kw.update(positions=[object()]), "exposure"),
