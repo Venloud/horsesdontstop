@@ -215,16 +215,34 @@ def choose_champion(state: dict, approved: list[System], data_for, insider_event
 
 
 PROVISIONAL_SIZE = 0.5
+# Rough-patch safety net (backtested 2026-11-26): while the champion's own
+# track (simulated, same rules) is >= 10% below its peak, new entries are half
+# size until it recovers. Full pauses were worse: they miss the rebound.
+SAFETY_NET_DRAWDOWN = 0.10
+SAFETY_NET_SIZE = 0.5
 
 
-def autopilot_settings(champion: dict | None, provisional: bool = False) -> dict:
+def safety_net(curve) -> dict:
+    eq = [e for _, e in curve]
+    if not eq:
+        return {"drawdown": 0.0, "active": False}
+    dd = 1 - eq[-1] / max(eq)
+    return {"drawdown": round(dd, 4), "active": dd >= SAFETY_NET_DRAWDOWN}
+
+
+def autopilot_settings(champion: dict | None, provisional: bool = False,
+                       net: dict | None = None) -> dict:
     from .daily_market_recorder import TRADABLE
     if not champion:
         return {"strategy": "cash", "system_id": "cash (no qualified system)"}
     s = System.from_dict(champion)
     return {"strategy": s.family, "params": dict(s.params),
             "system_id": ("PROVISIONAL " if provisional else "") + s.id,
-            "size_scale": PROVISIONAL_SIZE if provisional else 1.0,
+            "size_scale": (min(PROVISIONAL_SIZE, SAFETY_NET_SIZE)
+                           if provisional and (net or {}).get("active")
+                           else PROVISIONAL_SIZE if provisional
+                           else SAFETY_NET_SIZE if (net or {}).get("active") else 1.0),
+            "safety_net": net or {"drawdown": None, "active": False},
             "market_filter_ma": s.filter_ma, "initial_stop": s.stop, "trail": s.trail,
             "take_profit": s.take_profit, "max_sessions": s.max_sessions,
             "max_positions": s.slots, "cash_reserve": s.cash_reserve, "universe": list(TRADABLE)}
@@ -314,7 +332,13 @@ def run(folder: Path = RUNTIME, log=print) -> dict:
         {"generated_utc": datetime.now(timezone.utc).isoformat(), "rows": rows, "benchmark": bench},
         default=str), encoding="utf-8")
     state_path.write_text(json.dumps(state, indent=1, default=str), encoding="utf-8")
-    settings = autopilot_settings(state.get("champion"), bool(state.get("provisional")))
+    net = None
+    if state.get("champion"):
+        champ = System.from_dict(state["champion"])
+        net = safety_net(simulate(champ, data_for(champ), insider_events=insider).curve)
+        log(f"safety net: champion track {net['drawdown']:.1%} below its peak"
+            f" -> {'HALF size' if net['active'] else 'normal size'}")
+    settings = autopilot_settings(state.get("champion"), bool(state.get("provisional")), net)
     tmp = folder / "autopilot-settings.tmp"
     tmp.write_text(json.dumps(settings, indent=1), encoding="utf-8")
     os.replace(tmp, folder / "autopilot-settings.json")

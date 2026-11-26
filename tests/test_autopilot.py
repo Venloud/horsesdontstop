@@ -207,6 +207,16 @@ def test_no_entries_outside_window_or_when_paused(tmp_path):
     assert not b.sent
 
 
+def test_account_safety_net_halves_entries(tmp_path):
+    b = FakeBroker(equity=440, cash=440, bars_=universe_bars())
+    run = make_run(b, tmp_path)
+    run.journal.record_equity(500.0, 500.0)               # peak 500 -> now -12%
+    rec = run.execute(SHA)
+    buys = [o for o in b.sent if o.side == "buy"]
+    assert buys and rec["entries"]["account_drawdown"] == pytest.approx(0.12)
+    assert all(float(o.qty) * o.limit_price < 45 for o in buys)   # ~half of a $86 slot
+
+
 def test_dry_run_sends_nothing(tmp_path):
     b = FakeBroker(bars_=universe_bars())
     rec = make_run(b, tmp_path, trade=False).execute(SHA)

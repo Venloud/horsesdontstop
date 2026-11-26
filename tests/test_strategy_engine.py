@@ -129,6 +129,28 @@ def test_provisional_champion_when_nothing_qualifies():
     assert st["size_scale"] == 0.5 and st["system_id"].startswith("PROVISIONAL")
 
 
+def test_safety_net_halves_size_in_rough_patch():
+    from bot.strategy_engine import safety_net
+    d = date(2026, 1, 1)
+    assert safety_net([(d, 1.0), (d, 1.2), (d, 1.1)])["active"] is False      # -8.3%
+    net = safety_net([(d, 1.0), (d, 1.2), (d, 1.05)])                          # -12.5%
+    assert net["active"] is True
+    sysd = System("momentum", (("lookback", 63),)).to_dict()
+    assert autopilot_settings(sysd, net=net)["size_scale"] == 0.5
+    assert autopilot_settings(sysd, provisional=True, net=net)["size_scale"] == 0.5   # never stacks
+    assert autopilot_settings(sysd, net={"active": False})["size_scale"] == 1.0
+
+
+def test_brake_uses_shadow_track_and_recovers():
+    data = data_two()
+    s = System("momentum", (("lookback", 63),), filter_ma=0, slots=2)
+    braked = simulate(System("momentum", (("lookback", 63),), filter_ma=0, slots=2,
+                             brake_dd=0.0001, brake_scale=0.0), data)
+    plain = simulate(s, data)
+    assert braked.trades                 # a pause lifts when the shadow track recovers
+    assert len(braked.trades) < len(plain.trades)
+
+
 def test_qualifies_uses_profit_not_just_win_rate():
     w = {"return": 0.06, "drawdown": 0.08, "trades": 12, "win_rate": 0.38, "profit_factor": 1.6}
     assert qualifies(w)

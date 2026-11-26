@@ -570,6 +570,20 @@ class Run:
                                                     "error": f"{type(exc).__name__}: {exc}"[:200]})
             self._protect(sym, live, meta, [])
 
+    ACCOUNT_NET_DRAWDOWN = 0.10
+
+    def _account_safety_net(self, s: Settings, equity: float, info: dict) -> Settings:
+        """Real account >= 10% below its own peak -> new entries at half size
+        (never stacks below half with the engine's own safety net)."""
+        peak = max([e["equity"] for e in self.journal.equity_series()] + [equity])
+        dd = 1 - equity / peak if peak > 0 else 0.0
+        info["account_drawdown"] = round(dd, 4)
+        if dd >= self.ACCOUNT_NET_DRAWDOWN and s.size_scale > 0.5:
+            self.log("info", "safety net: account down from peak, half-size entries",
+                     {"drawdown": round(dd, 4), "peak": peak})
+            return replace(s, size_scale=0.5)
+        return s
+
     def _cancel_stale_buys(self, open_orders):
         limit = timedelta(minutes=self.settings.buy_order_minutes)
         for o in open_orders:
@@ -625,6 +639,7 @@ class Run:
         else:
             candidates = rank_candidates(bars, s.strategy, exclude, s.params)
         info.update(free_slots=max(free, 0), candidates=candidates[:10], bought=[])
+        s = self._account_safety_net(s, equity, info)
         for sym in candidates:
             if free <= 0:
                 break

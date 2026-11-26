@@ -9,7 +9,7 @@ Research only: never places orders.
 """
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from math import sqrt
 from statistics import mean, pstdev
 from typing import Mapping, Sequence
@@ -28,13 +28,27 @@ class System:
     max_sessions: int = 20
     slots: int = 5
     cash_reserve: float = 0.02
+    # Rough-patch safety net (applies to NEW entries only; open positions keep
+    # their stops). Judged on the SHADOW track: what the same system without
+    # the brake would have earned, so a pause ends when the strategy itself
+    # recovers. brake_ma: shadow equity below its N-day average -> size x
+    # brake_scale. brake_dd: shadow drawdown from its peak beyond this ->
+    # size x brake_scale.  0 = off.
+    brake_ma: int = 0
+    brake_dd: float = 0.0
+    brake_scale: float = 1.0
 
     @property
     def id(self) -> str:
         p = ",".join(f"{k}={v}" for k, v in self.params)
         tp = f"tp{self.take_profit:g}" if self.take_profit else "notp"
+        brake = ""
+        if self.brake_ma:
+            brake += f"|brake_ma{self.brake_ma}x{self.brake_scale:g}"
+        if self.brake_dd:
+            brake += f"|brake_dd{self.brake_dd:g}x{self.brake_scale:g}"
         return (f"{self.family}({p})|spy{self.filter_ma}|stop{self.stop:g}|trail{self.trail:g}"
-                f"|{tp}|{self.max_sessions}s|{self.slots}slots")
+                f"|{tp}|{self.max_sessions}s|{self.slots}slots{brake}")
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -101,6 +115,12 @@ def simulate(system: System, data: Mapping[str, Sequence], *, start=None, end=No
     bar_at = {s: {b.day: b for b in bars} for s, bars in data.items()}
     cost = cost_bps / 10_000
     res = SimResult(system)
+    shadow = None
+    if system.brake_ma or system.brake_dd:
+        base = replace(system, brake_ma=0, brake_dd=0.0, brake_scale=1.0)
+        shadow = simulate(base, data, start=start, end=end, cost_bps=cost_bps,
+                          insider_events=insider_events, cache=cache).curve
+    shadow_upto = []
     cash, equity = 1.0, 1.0
     pos: dict[str, dict] = {}
     last_close: dict[str, float] = {}
@@ -111,11 +131,15 @@ def simulate(system: System, data: Mapping[str, Sequence], *, start=None, end=No
         d, prev = days[i], days[i - 1]
         # --- entries at today's open from yesterday's signals
         free = system.slots - len(pos)
-        if free > 0 and ok.get(prev):
+        if shadow is not None:
+            while len(shadow_upto) < len(shadow) and shadow[len(shadow_upto)][0] < d:
+                shadow_upto.append(shadow[len(shadow_upto)])
+        scale = brake_scale(system, shadow_upto)
+        if free > 0 and ok.get(prev) and scale > 0:
             ranked = sorted(((sc[prev], s) for s, sc in scores.items()
                              if prev in sc and s not in pos and d in bar_at[s]), reverse=True)
             for _, sym in ranked[:free]:
-                budget = min(equity * (1 - system.cash_reserve) / system.slots,
+                budget = min(equity * (1 - system.cash_reserve) / system.slots * scale,
                              cash - equity * system.cash_reserve)
                 if budget <= equity * 0.01:
                     break
@@ -159,6 +183,19 @@ def simulate(system: System, data: Mapping[str, Sequence], *, start=None, end=No
         equity = cash + sum(p["qty"] * last_close.get(s, p["entry"]) for s, p in pos.items())
         res.curve.append((d, equity))
     return res
+
+
+def brake_scale(system: System, curve) -> float:
+    """Size multiplier for new entries from the system's own equity so far."""
+    if not (system.brake_ma or system.brake_dd) or not curve:
+        return 1.0
+    eq = [e for _, e in curve]
+    hit = False
+    if system.brake_ma and len(eq) >= system.brake_ma:
+        hit = eq[-1] < sum(eq[-system.brake_ma:]) / system.brake_ma
+    if system.brake_dd and eq[-1] < max(eq) * (1 - system.brake_dd):
+        hit = True
+    return system.brake_scale if hit else 1.0
 
 
 def max_drawdown(values) -> float:
